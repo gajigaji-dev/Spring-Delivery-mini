@@ -8,15 +8,18 @@ import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
+import com.sparta.springdeliverymini.config.TimeConfig;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,8 +43,17 @@ class PaymentServiceTest {
     @Mock
     private UserRepository userRepository;
 
-    @InjectMocks
+    // 결제 시각을 고정해 paidAt이 Clock 기준으로 기록되는지 확인 (Asia/Seoul 기준 자정 직전)
+    private static final LocalDateTime FIXED_NOW = LocalDateTime.of(2026, 11, 5, 23, 59, 59);
+    private final Clock fixedClock = Clock.fixed(FIXED_NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
+
     private PaymentService paymentService;
+
+    // Clock은 Mock이 아니라 고정 값이므로 @InjectMocks 대신 직접 생성
+    @BeforeEach
+    void setUp() {
+        paymentService = new PaymentService(paymentRepository, orderRepository, userRepository, fixedClock);
+    }
 
     private final User customer = user(1L, "customer1", Role.CUSTOMER);
     private final User otherCustomer = user(2L, "customer2", Role.CUSTOMER);
@@ -78,6 +90,7 @@ class PaymentServiceTest {
         assertThat(order.getStatus()).isEqualTo(OrderStatus.PAYMENT_COMPLETED);
         assertThat(response.orderStatus()).isEqualTo(OrderStatus.PAYMENT_COMPLETED);
         assertThat(response.amount()).isEqualTo(36000); // 요청값이 아닌 주문 총액
+        assertThat(response.paidAt()).isEqualTo(FIXED_NOW); // JVM 시간대가 아닌 Clock(Asia/Seoul) 기준
         verify(paymentRepository).saveAndFlush(any(Payment.class));
     }
 
