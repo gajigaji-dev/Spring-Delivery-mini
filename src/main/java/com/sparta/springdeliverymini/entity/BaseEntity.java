@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
 // 생성·수정 시각을 공통으로 관리하는 부모 클래스
 // @MappedSuperclass: 테이블로 만들어지지 않고, 상속한 엔티티 테이블에 컬럼(created_at, updated_at)만 추가됨
 // @EntityListeners(AuditingEntityListener): 저장·수정 시점에 아래 시각을 자동으로 채움
-//   (SpringDeliveryMiniApplication의 @EnableJpaAuditing이 있어야 동작)
+//   (config.JpaAuditingConfig의 @EnableJpaAuditing이 있어야 동작, 시각은 Clock 빈(Asia/Seoul) 기준)
 @Getter
 @MappedSuperclass
 @EntityListeners(AuditingEntityListener.class)

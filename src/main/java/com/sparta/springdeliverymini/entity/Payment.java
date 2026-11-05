@@ -23,7 +23,7 @@ public class Payment extends BaseEntity {
     // 동시에 같은 주문을 결제하는 요청이 들어와도 DB에서 중복 저장을 막음
     // TODO(@ManyToOne 전환): 결제 실패 후 재결제·부분 취소 등 한 주문에 결제 기록이 여러 건 필요해지면
     //  @ManyToOne으로 바꾸고 unique 제거 + 결제 상태(SUCCESS/FAILED/CANCELLED) 필드 추가
-    //  (ddl-auto: update는 기존 unique 제약을 지우지 않으므로 DB에서 직접 삭제 필요, README 6장 참고)
+    //  (unique 제약은 새 Flyway 마이그레이션에서 DROP CONSTRAINT uk8vo36cen604as7etdfwmyjsxt로 삭제, README 6장 참고)
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "order_id", nullable = false, unique = true)
     private Order order;
@@ -45,10 +45,12 @@ public class Payment extends BaseEntity {
     @Column(nullable = false)
     private LocalDateTime paidAt;
 
-    public Payment(Order order, int amount, PaymentMethod paymentMethod) {
+    // paidAt은 호출하는 쪽(PaymentService)이 Clock 기준 현재 시각을 넘김
+    // 엔티티 안에서 LocalDateTime.now()를 부르면 JVM 시간대에 의존하고 테스트에서 시각을 고정할 수 없음
+    public Payment(Order order, int amount, PaymentMethod paymentMethod, LocalDateTime paidAt) {
         this.order = order;
         this.amount = amount;
         this.paymentMethod = paymentMethod;
-        this.paidAt = LocalDateTime.now();
+        this.paidAt = paidAt;
     }
 }

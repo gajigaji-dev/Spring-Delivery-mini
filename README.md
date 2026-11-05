@@ -11,14 +11,18 @@
 | 데이터베이스 | PostgreSQL 18 |
 | 사용 기술 | Spring Web · Spring Data JPA · PostgreSQL Driver · Spring Security · Validation · Lombok · JWT (JJWT) |
 | API 테스트 | Postman |
+| 테스트 | JUnit 5 · Mockito · Testcontainers (PostgreSQL 18) |
+| DB 마이그레이션 | Flyway |
 
 ## 3. 프로젝트 구조
 
 ```
 src/main/java/com/sparta/springdeliverymini
-├── SpringDeliveryMiniApplication.java   # 실행 진입점 (@EnableJpaAuditing)
+├── SpringDeliveryMiniApplication.java   # 실행 진입점 (JVM 기본 시간대 Asia/Seoul 고정)
 ├── config
-│   └── SecurityConfig.java              # URL별 접근 권한, 401/403 응답, 비밀번호 암호화(BCrypt)
+│   ├── SecurityConfig.java              # URL별 접근 권한, 401/403 응답, 비밀번호 암호화(BCrypt)
+│   ├── TimeConfig.java                  # 기준 시간대(Asia/Seoul), 현재 시각용 Clock 빈
+│   └── JpaAuditingConfig.java           # @EnableJpaAuditing, 생성·수정 시각을 Clock 기준으로 기록
 ├── jwt
 │   ├── JwtProvider.java                 # JWT 생성·검증
 │   └── JwtAuthenticationFilter.java     # 요청마다 토큰을 확인해 인증 정보 등록
@@ -48,6 +52,11 @@ src/main/java/com/sparta/springdeliverymini
     ├── ApiException.java                # 상태 코드를 담아 던지는 예외
     ├── InvalidOrderStatusException.java # 허용되지 않는 주문 상태 전이 (Order 엔티티가 던짐 → 409)
     └── GlobalExceptionHandler.java      # 예외를 {"message": ...} JSON 응답으로 변환
+
+src/main/resources
+├── application.yml
+├── .env.example                         # DB 계정 환경변수 예시 (.env로 복사해 사용, .env는 git 제외)
+└── db/migration                         # Flyway 마이그레이션 SQL (V{버전}__{설명}.sql)
 ```
 
 ### 계층별 역할
@@ -70,6 +79,22 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
                                               └─ 401 / 403                         └─ ApiException ─▶ GlobalExceptionHandler
                                                                                       InvalidOrderStatusException(Order 엔티티) ─▶ 〃 (409)
 ```
+
+### 테스트
+
+```bash
+./gradlew test   # Docker 실행 중이어야 함 (로컬 DB·DB 환경변수 불필요)
+```
+
+| 종류 | 대상 | DB |
+|---|---|---|
+| 단위 테스트 | `OrderTest`(상태 전이), `OrderServiceTest`, `PaymentServiceTest` | 없음 (Mockito) |
+| 웹 계층 테스트 | `OrderCancelSecurityTest` (`@WebMvcTest`, 401/403) | 없음 |
+| 통합 테스트 | `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장) | Testcontainers PostgreSQL |
+
+- 통합 테스트는 `@Import(TestcontainersConfiguration.class)`를 붙이면 PostgreSQL 18 컨테이너가 뜨고 `@ServiceConnection`으로 자동 연결됨
+- 스키마는 Flyway가 생성하므로 마이그레이션 SQL과 `ddl-auto: validate`도 함께 검증됨
+- 같은 설정을 쓰는 테스트 클래스끼리는 컨테이너 1개를 공유하고, 테스트가 끝나면 컨테이너는 자동 삭제됨
 
 ## 4. 주요 기능
 ### 회원
@@ -360,7 +385,21 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 
 ## 6. 데이터베이스 / ERD
 - DB: PostgreSQL
-- 테이블은 JPA 엔티티를 기준으로 자동 생성 (`ddl-auto: update`)
+- 스키마는 **Flyway** 마이그레이션(`src/main/resources/db/migration`)으로 관리하고, Hibernate는 `ddl-auto: validate`로 엔티티와 테이블이 맞는지 검사만 함 (맞지 않으면 기동 실패)
+
+### 스키마 마이그레이션 (Flyway)
+
+| 파일 | 내용 |
+|---|---|
+| `V1__baseline.sql` | Flyway 도입 시점의 스키마 (`ddl-auto: update`로 만들어졌던 테이블·제약조건 이름 그대로) |
+| `V2__add_audit_columns_to_users_and_payments.sql` | `users`, `payments`에 `created_at`, `updated_at` 추가 (BaseEntity 상속 반영) |
+
+- **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
+- **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
+- 적용 이력은 `flyway_schema_history` 테이블에 기록됨
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V3__설명.sql`)을 함께 추가
+  - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
+  - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
 ![ERD](img.png)
 
@@ -378,6 +417,10 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 - **중복 결제 방지**: `payments.order_id`에 unique 제약을 걸어 같은 주문의 결제가 동시에 들어와도 DB에서 한 건만 저장됨
 
 - **생성·수정 시각 공통화**: `users`, `menus`, `orders`, `payments` 모두 `BaseEntity`(@MappedSuperclass)를 상속해 `created_at`, `updated_at`을 JPA Auditing으로 자동 기록
+- **시간대**: 모든 시각은 `timestamp`(시간대 정보 없음)로 저장되며 **Asia/Seoul 기준** 값임
+  - JVM 기본 시간대(`main`, 테스트는 `build.gradle`)와 DB 세션 시간대를 Asia/Seoul로 고정
+  - Hibernate `jdbc.time_zone`은 지정하지 않음 → JVM 시간대와 다르면 `LocalDateTime` 저장 시 값이 밀리기 때문 (`application.yml` 주석 참고)
+  - 현재 시각은 `LocalDateTime.now()` 대신 `Clock` 빈(`TimeConfig`)에서 얻음 → Auditing(`created_at`, `updated_at`)과 `paid_at`이 같은 기준을 쓰고, 테스트에서 `Clock.fixed`로 시각 고정 가능
 
 ### 테이블 상세
 
@@ -449,7 +492,7 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 `@ManyToOne`으로 전환할 때 할 일
 1. `Payment`에 결제 상태(예: `SUCCESS` / `FAILED` / `CANCELLED`) 추가
 2. `@OneToOne` → `@ManyToOne`, `order_id`의 UNIQUE 제거
-   - `ddl-auto: update`는 기존 제약을 지우지 않으므로 DB에서 직접 삭제해야 함
+   - 새 마이그레이션 파일에서 `ALTER TABLE payments DROP CONSTRAINT uk8vo36cen604as7etdfwmyjsxt;`로 삭제
 3. 중복 결제 방지 재설계 — 둘 중 하나
    - PostgreSQL 부분 유니크 인덱스: `CREATE UNIQUE INDEX ON payments(order_id) WHERE status = 'SUCCESS'`
    - 결제 시 주문 행에 비관적 락(`@Lock(PESSIMISTIC_WRITE)`)을 걸어 동시 결제를 순서대로 처리
