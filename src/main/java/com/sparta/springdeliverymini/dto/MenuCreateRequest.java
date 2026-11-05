@@ -12,7 +12,7 @@ public record MenuCreateRequest(
 
         @NotNull(message = "가격을 입력해야 합니다.")
         @Min(value = 1, message = "가격은 1원 이상이어야 합니다.")
-        Integer price,
+        Long price,
 
         @Size(max = 255, message = "설명은 255자 이하여야 합니다.")
         String description

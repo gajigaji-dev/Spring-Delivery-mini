@@ -106,6 +106,13 @@ class PaymentConcurrencyIntegrationTest {
         ).as("409로 응답되는 예외여야 함: %s", e).isTrue());
 
         assertThat(paymentRepository.count()).isEqualTo(1);
+
+        // 수수료 컬럼(V3)이 실제 DB에 저장·조회되는지 (36000원 × 5% = 1800원)
+        Payment saved = paymentRepository.findAll().get(0);
+        assertThat(saved.getFeeRate()).isEqualByComparingTo("0.05");
+        assertThat(saved.getFeeAmount()).isEqualTo(1800);
+        assertThat(saved.getSettlementAmount()).isEqualTo(34200);
+
         assertThat(orderRepository.findById(order.getId()).orElseThrow().getStatus())
                 .isEqualTo(OrderStatus.PAYMENT_COMPLETED);
     }

@@ -88,9 +88,9 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
 
 | 종류 | 대상 | DB |
 |---|---|---|
-| 단위 테스트 | `OrderTest`(상태 전이), `OrderServiceTest`, `PaymentServiceTest` | 없음 (Mockito) |
-| 웹 계층 테스트 | `OrderCancelSecurityTest` (`@WebMvcTest`, 401/403) | 없음 |
-| 통합 테스트 | `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장) | Testcontainers PostgreSQL |
+| 단위 테스트 | `OrderTest`(상태 전이), `PaymentFeeTest`(수수료 계산·반올림), `PaymentFeePropertiesTest`(수수료율 설정 검증), `OrderServiceTest`, `PaymentServiceTest` | 없음 (Mockito) |
+| 웹 계층 테스트 | `OrderCancelSecurityTest` (`@WebMvcTest`, 401/403), `AmountInputRangeTest`(가격·수량 범위 초과 400) | 없음 |
+| 통합 테스트 | `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장), `TimeZoneIntegrationTest`, `AmountMigrationTest`(기존 데이터가 있는 DB에 V3 적용) | Testcontainers PostgreSQL |
 
 - 통합 테스트는 `@Import(TestcontainersConfiguration.class)`를 붙이면 PostgreSQL 18 컨테이너가 뜨고 `@ServiceConnection`으로 자동 연결됨
 - 스키마는 Flyway가 생성하므로 마이그레이션 SQL과 `ddl-auto: validate`도 함께 검증됨
@@ -120,6 +120,7 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
 - CUSTOMER의 본인 주문 결제
 - 결제 수단 검증 (CARD만 허용)
 - 결제 금액은 요청으로 받지 않고 서버에서 주문 총액을 그대로 사용
+- 결제 시 플랫폼 수수료(기본 5%)와 사장님 정산액을 계산해 함께 저장 (아래 [금액 처리 정책](#금액-처리-정책) 참고)
 - 결제 완료에 따른 주문 상태 변경
 - 중복 결제 방지 및 결제 완료된 주문의 취소 방지
 
@@ -314,7 +315,7 @@ Response `201 Created`
 
 | 코드 | 상황 |
 |---|---|
-| 400 | 입력 값 검증 실패, 총액이 너무 큼(int 범위 초과) |
+| 400 | 입력 값 검증 실패, 총액이 너무 큼(long 범위 초과) |
 | 401 | 토큰 없음 |
 | 403 | OWNER가 요청 |
 | 404 | 메뉴가 없거나 삭제됨 |
@@ -393,11 +394,12 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 |---|---|
 | `V1__baseline.sql` | Flyway 도입 시점의 스키마 (`ddl-auto: update`로 만들어졌던 테이블·제약조건 이름 그대로) |
 | `V2__add_audit_columns_to_users_and_payments.sql` | `users`, `payments`에 `created_at`, `updated_at` 추가 (BaseEntity 상속 반영) |
+| `V3__widen_amount_columns_and_add_payment_fee.sql` | 금액 컬럼 `integer` → `bigint`, `payments`에 `fee_rate`, `fee_amount`, `settlement_amount` 추가 (기존 결제는 수수료 0으로 백필) |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V3__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V4__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -442,7 +444,7 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 | id | bigint | PK | |
 | owner_id | bigint | FK → users.id, NOT NULL | 메뉴를 등록한 OWNER |
 | name | varchar(50) | NOT NULL | 메뉴 이름 |
-| price | integer | NOT NULL | 가격 |
+| price | bigint | NOT NULL | 가격 (원) |
 | description | varchar(255) | | 설명 (선택) |
 | deleted | boolean | | 삭제 여부 (Soft Delete) |
 | created_at | timestamp | | 등록 시각 (BaseEntity, 이후 변경 불가) |
@@ -455,7 +457,7 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 | user_id | bigint | FK → users.id, NOT NULL | 주문한 CUSTOMER |
 | menu_id | bigint | FK → menus.id, NOT NULL | 주문한 메뉴 |
 | quantity | integer | NOT NULL | 수량 |
-| total_price | integer | NOT NULL | 주문 당시 총액 (메뉴 가격 × 수량, 서버 계산) |
+| total_price | bigint | NOT NULL | 주문 당시 총액 (메뉴 가격 × 수량, 서버 계산) |
 | delivery_address | varchar(255) | NOT NULL | 배송 주소 |
 | status | varchar(255) | NOT NULL | `ORDER_REQUEST` / `ORDER_CANCELLED` / `PAYMENT_COMPLETED` / `ORDER_ACCEPTED` / `DELIVERY_COMPLETED` |
 | created_at | timestamp | | 주문 시각 (BaseEntity, 이후 변경 불가) |
@@ -468,11 +470,39 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 |---|---|---|---|
 | id | bigint | PK | |
 | order_id | bigint | FK → orders.id, NOT NULL, UNIQUE | 결제한 주문 |
-| amount | integer | NOT NULL | 결제 금액 (주문의 `total_price`를 그대로 저장) |
+| amount | bigint | NOT NULL | 결제 금액 (주문의 `total_price`를 그대로 저장) |
+| fee_rate | numeric(5,4) | NOT NULL, 0 ~ 1 | 결제 시점의 수수료율 스냅샷 (예: `0.0500`) |
+| fee_amount | bigint | NOT NULL | 플랫폼 수수료 (`amount × fee_rate`, 원 단위 HALF_UP) |
+| settlement_amount | bigint | NOT NULL | 사장님 정산액 (`amount - fee_amount`) |
 | payment_method | varchar(255) | NOT NULL | `CARD` |
 | paid_at | timestamp(6) | NOT NULL | 결제 시각 |
 | created_at | timestamp | | 기록 생성 시각 (BaseEntity, 이후 변경 불가) |
 | updated_at | timestamp | | 기록 수정 시각 (BaseEntity) |
+
+> `fee_amount >= 0`, `settlement_amount >= 0`, `fee_amount + settlement_amount = amount`, `fee_rate` 0~1을 CHECK 제약으로 DB에서도 강제
+> 합계 비교는 `numeric`으로 올려서 계산 → bigint끼리 더할 때의 오버플로(`bigint out of range`) 없이 항상 CHECK 위반으로 거부됨
+
+#### 금액 처리 정책
+
+| 구분 | 타입 | 이유 |
+|---|---|---|
+| 원 단위 금액 (가격·총액·결제액·수수료·정산액) | `long` / `bigint` | 원화는 소수점이 없는 정수 금액. `int`(최대 약 21억 원)는 대량 주문 총액에서 넘칠 수 있어 `long` 사용 |
+| 수량 | `int` / `integer` | 금액이 아니므로 그대로 유지 |
+| 수수료율 | `BigDecimal` / `numeric(5,4)` | 소수점 비율. `double`은 0.05 같은 값을 정확히 표현하지 못해 오차가 생김 |
+
+- **계산**: 소수점이 생기는 계산(금액 × 수수료율)만 `BigDecimal`로 하고, 결과는 원 단위 `long`으로 저장 (`entity.PaymentFee`)
+- **반올림**: 수수료를 **원 단위 HALF_UP**(0.5원 이상 올림)으로 **한 번만** 반올림
+  - 예: 18,009원 × 5% = 900.45원 → 900원 / 18,010원 × 5% = 900.5원 → 901원
+- **정산액**: 따로 반올림하지 않고 `결제액 - 수수료`로 계산 → 수수료 + 정산액이 항상 결제액과 같음 (반올림 오차로 1원이 사라지거나 생기지 않음)
+- **수수료율 설정**: `application.yml`의 `payment.fee.rate` (기본 `"0.05"`, 실제 계약 요율이 아닌 임시 통일 값). 0 이상 1 이하, 소수점 4자리까지만 허용하고 벗어나면 기동 실패
+  - double을 거치지 않도록 문자열로 지정
+  - 결제마다 그 시점의 수수료율을 `fee_rate`에 저장 → 설정을 바꿔도 이전 결제의 계산 근거가 남음
+- **총액 계산**: `Math.multiplyExact`로 `long` 범위를 넘으면 400 응답 (잘못된 값이 저장되지 않도록)
+  - 요청 본문의 가격이 `long`, 수량이 `int` 범위를 넘으면 JSON 변환 단계에서 400
+  - 현재 주문은 메뉴 1개 단위라 항목별 합산이 없음 → 주문 항목(order_items)을 도입하면 합산도 `Math.addExact`로 계산할 것
+- **수수료 도입 전 결제**: V3 마이그레이션에서 수수료 0, 정산액 = 결제액으로 채움
+- 수수료·정산액은 사장님/플랫폼 내부 정보라서 CUSTOMER가 받는 결제 응답(`PaymentResponse`)에는 포함하지 않음 → 이후 사장님용 정산 조회 API를 별도 DTO로 분리해 제공
+- 참고: `long` 금액을 JSON 숫자로 내보내므로, 2^53(약 9천조 원)을 넘는 금액은 JavaScript 클라이언트에서 정밀도가 손실될 수 있음 (현재 요구 범위에서는 해당 없음)
 
 > `paid_at`과 `created_at`은 지금은 거의 같은 값이지만 의미가 다름. `created_at`은 DB에 기록된 시각(기술적 기록), `paid_at`은 결제가 승인된 시각(업무 데이터). PG 연동 시 승인 시각을 PG 응답값으로 받으면 두 값이 달라질 수 있어 별도로 유지
 

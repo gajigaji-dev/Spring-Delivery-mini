@@ -3,11 +3,14 @@ package com.sparta.springdeliverymini;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 import java.util.TimeZone;
 
 // JPA Auditing 설정은 config.JpaAuditingConfig, 시간대·Clock 설정은 config.TimeConfig
+// @ConfigurationPropertiesScan: @ConfigurationProperties 클래스(예: config.PaymentFeeProperties)를 빈으로 등록
 @SpringBootApplication
+@ConfigurationPropertiesScan
 public class SpringDeliveryMiniApplication {
 
     public static void main(String[] args) {
