@@ -28,23 +28,27 @@ src/main/java/com/sparta/springdeliverymini
 │   └── JwtAuthenticationFilter.java     # 요청마다 토큰을 확인해 인증 정보 등록
 ├── controller
 │   ├── UserController.java              # 회원가입, 로그인
+│   ├── StoreController.java             # 매장 생성·조회, 매장별 주문 조회
 │   ├── MenuController.java              # 메뉴 등록·조회·수정·삭제
 │   ├── OrderController.java             # 주문 생성·조회·취소·상태 변경
 │   └── PaymentController.java           # 결제
 ├── service
 │   ├── UserService.java
+│   ├── StoreService.java                # 매장 생성·조회, 매장 소유권 검증(getOwnedStore)
 │   ├── MenuService.java
 │   ├── OrderService.java
 │   └── PaymentService.java
 ├── repository
 │   ├── UserRepository.java
+│   ├── StoreRepository.java
 │   ├── MenuRepository.java
 │   ├── OrderRepository.java
 │   └── PaymentRepository.java
 ├── entity
 │   ├── BaseEntity.java                  # 생성·수정 시각 자동 기록 (@MappedSuperclass)
 │   ├── User.java / Role.java            # 회원, 역할(CUSTOMER / OWNER)
-│   ├── Menu.java                        # 메뉴 (Soft Delete)
+│   ├── Store.java                       # 매장 (OWNER 1 : N, 소유권 판단 isOwnedBy)
+│   ├── Menu.java                        # 메뉴 (매장에 속함, Soft Delete)
 │   ├── Order.java / OrderStatus.java    # 주문, 주문 상태
 │   └── Payment.java / PaymentMethod.java # 결제, 결제 수단(CARD)
 ├── dto                                  # 요청(Request) / 응답(Response) 객체
@@ -88,9 +92,9 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
 
 | 종류 | 대상 | DB |
 |---|---|---|
-| 단위 테스트 | `OrderTest`(상태 전이), `PaymentFeeTest`(수수료 계산·반올림), `PaymentFeePropertiesTest`(수수료율 설정 검증), `OrderServiceTest`, `PaymentServiceTest` | 없음 (Mockito) |
-| 웹 계층 테스트 | `OrderCancelSecurityTest` (`@WebMvcTest`, 401/403), `AmountInputRangeTest`(가격·수량 범위 초과 400) | 없음 |
-| 통합 테스트 | `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장), `TimeZoneIntegrationTest`, `AmountMigrationTest`(기존 데이터가 있는 DB에 V3 적용) | Testcontainers PostgreSQL |
+| 단위 테스트 | `OrderTest`(상태 전이), `PaymentFeeTest`(수수료 계산·반올림), `PaymentFeePropertiesTest`(수수료율 설정 검증), `StoreTest`(소유권 판단), `OrderServiceTest`, `MenuServiceTest`, `StoreServiceTest`, `PaymentServiceTest` | 없음 (Mockito) |
+| 웹 계층 테스트 | `OrderCancelSecurityTest` (`@WebMvcTest`, 401/403), `AmountInputRangeTest`(가격·수량 범위 초과 400), `StoreSecurityTest`(매장 API 401/403) | 없음 |
+| 통합 테스트 | `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장), `TimeZoneIntegrationTest`, `AmountMigrationTest`(기존 데이터가 있는 DB에 V3 적용), `StoreMigrationTest`(기존 메뉴·주문을 매장으로 백필하는 V4 적용), `StoreOrderIntegrationTest`(매장 → 메뉴 → 주문 흐름, 매장별 조회·소유권) | Testcontainers PostgreSQL |
 
 - 통합 테스트는 `@Import(TestcontainersConfiguration.class)`를 붙이면 PostgreSQL 18 컨테이너가 뜨고 `@ServiceConnection`으로 자동 연결됨
 - 스키마는 Flyway가 생성하므로 마이그레이션 SQL과 `ddl-auto: validate`도 함께 검증됨
@@ -103,18 +107,25 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
 - JWT 기반 인증 및 인가
 - CUSTOMER / OWNER 역할(Role)에 따른 접근 권한 분리
 
+### 매장
+- OWNER의 매장 생성 (한 OWNER가 여러 매장 보유 가능)
+- 매장 목록·상세 조회 (로그인 불필요)
+- 매장별 주문 조회 (본인 매장만, 다른 매장 → 403)
+- 소유권 판단은 `Store.isOwnedBy` 한곳에서 → 메뉴 등록·수정·삭제, 주문 처리, 매장별 주문 조회가 같은 규칙 사용
+
 ### 메뉴
-- OWNER의 메뉴 등록, 수정, 삭제
+- OWNER의 메뉴 등록(본인 매장에만), 수정, 삭제
 - 메뉴 조회 및 상세 조회
-- 메뉴 등록은 Spring Security에서 OWNER만 허용, 수정·삭제는 Service에서 본인 메뉴 여부 검증
+- 메뉴 등록은 Spring Security에서 OWNER만 허용, 등록할 매장·수정·삭제할 메뉴의 매장이 본인 매장인지 Service에서 검증
 - Soft Delete를 통한 메뉴 삭제 처리
 
 ### 주문
 - CUSTOMER의 메뉴 주문 (총액은 서버에서 `메뉴 가격 × 수량`으로 계산)
-- 주문 내역 조회 (CUSTOMER는 본인 주문, OWNER는 본인 메뉴에 들어온 주문)
+- 주문은 메뉴의 매장으로 자동 연결 (`orders.store_id`)
+- 주문 내역 조회 (CUSTOMER는 본인 주문, OWNER는 본인의 모든 매장에 들어온 주문)
 - 주문요청 상태에서만 주문 취소 가능
 - OWNER의 주문 상태 변경 (결제완료 → 주문수락 → 배달완료)
-- 주문자 / 메뉴 주인 본인 여부에 따른 접근 권한 검증
+- 주문자 / 매장 주인 본인 여부에 따른 접근 권한 검증
 
 ### 결제
 - CUSTOMER의 본인 주문 결제
@@ -125,7 +136,7 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
 - 중복 결제 방지 및 결제 완료된 주문의 취소 방지
 
 ### 데이터베이스 설계
-- User, Menu, Order, Payment 간의 관계 설계
+- User, Store, Menu, Order, Payment 간의 관계 설계
 - 엔티티 간 외래키 설정
 - 주문 및 결제 데이터의 연관관계 구성
 - JPA를 활용한 데이터 접근 및 관리
@@ -153,7 +164,7 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
   | 400 | 요청 값 검증 실패, JSON 형식 오류 |
   | 401 | 토큰이 없거나 유효하지 않음(만료·위조), 로그인 실패 |
   | 403 | 권한 없음 (역할이 다르거나 본인 데이터가 아님) |
-  | 404 | 대상(메뉴·주문)이 없음 |
+  | 404 | 대상(매장·메뉴·주문)이 없음 |
   | 409 | 중복(아이디, 결제) 또는 현재 상태에서 할 수 없는 요청 |
 
 ### API 목록
@@ -162,15 +173,19 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
 |---|---|---|---|---|---|
 | 회원가입 | POST | `/api/users/signup` | X | - | 201 |
 | 로그인 | POST | `/api/users/login` | X | - | 200 |
-| 메뉴 등록 | POST | `/api/menus` | O | OWNER | 201 |
+| 매장 생성 | POST | `/api/stores` | O | OWNER | 201 |
+| 매장 목록 조회 | GET | `/api/stores` | X | - | 200 |
+| 매장 단건 조회 | GET | `/api/stores/{id}` | X | - | 200 |
+| 매장별 주문 조회 | GET | `/api/stores/{id}/orders` | O | OWNER (본인 매장) | 200 |
+| 메뉴 등록 | POST | `/api/menus` | O | OWNER (본인 매장) | 201 |
 | 메뉴 목록 조회 | GET | `/api/menus` | X | - | 200 |
 | 메뉴 단건 조회 | GET | `/api/menus/{id}` | X | - | 200 |
-| 메뉴 수정 | PUT | `/api/menus/{id}` | O | OWNER (본인 메뉴) | 200 |
-| 메뉴 삭제 | DELETE | `/api/menus/{id}` | O | OWNER (본인 메뉴) | 204 |
+| 메뉴 수정 | PUT | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 200 |
+| 메뉴 삭제 | DELETE | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 204 |
 | 주문 생성 | POST | `/api/orders` | O | CUSTOMER | 201 |
 | 주문 목록 조회 | GET | `/api/orders` | O | CUSTOMER / OWNER | 200 |
 | 주문 취소 | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
-| 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 메뉴 주문) | 204 |
+| 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 매장 주문) | 204 |
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
 
 ### 주문 상태 흐름
@@ -231,21 +246,20 @@ Response `200 OK`
 
 ---
 
-### 메뉴
+### 매장
 
-#### 메뉴 등록 `POST /api/menus`
+#### 매장 생성 `POST /api/stores`
 Request
 ```json
-{ "name": "후라이드 치킨", "price": 18000, "description": "바삭한 치킨" }
+{ "name": "치킨집" }
 ```
 - `name`: 필수, 50자 이하
-- `price`: 필수, 1원 이상
-- `description`: 선택, 255자 이하
+- 점주는 요청 본문이 아니라 토큰의 회원으로 정해짐
 
 Response `201 Created`
 ```json
-{ "id": 1, "name": "후라이드 치킨", "price": 18000, "description": "바삭한 치킨",
-  "createdAt": "2026-10-08T14:00:00", "updatedAt": "2026-10-08T14:00:00" }
+{ "id": 1, "name": "치킨집", "ownerId": 1,
+  "createdAt": "2026-11-05T14:00:00", "updatedAt": "2026-11-05T14:00:00" }
 ```
 
 | 코드 | 상황 |
@@ -254,11 +268,54 @@ Response `201 Created`
 | 401 | 토큰 없음 |
 | 403 | CUSTOMER가 요청 |
 
+#### 매장 목록 조회 `GET /api/stores` / 단건 조회 `GET /api/stores/{id}`
+Response `200 OK` — 매장 생성 응답 형식 (목록은 배열)
+
+| 코드 | 상황 |
+|---|---|
+| 404 | 매장 없음 (단건 조회) |
+
+#### 매장별 주문 조회 `GET /api/stores/{id}/orders`
+Response `200 OK` — 주문 생성 응답 형식의 배열, 해당 매장에 들어온 주문만
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음 |
+| 403 | CUSTOMER가 요청, 본인 매장이 아님 |
+| 404 | 매장 없음 |
+
+---
+
+### 메뉴
+
+#### 메뉴 등록 `POST /api/menus`
+Request
+```json
+{ "storeId": 1, "name": "후라이드 치킨", "price": 18000, "description": "바삭한 치킨" }
+```
+- `storeId`: 필수, 본인 매장이어야 함
+- `name`: 필수, 50자 이하
+- `price`: 필수, 1원 이상
+- `description`: 선택, 255자 이하
+
+Response `201 Created`
+```json
+{ "id": 1, "storeId": 1, "name": "후라이드 치킨", "price": 18000, "description": "바삭한 치킨",
+  "createdAt": "2026-10-08T14:00:00", "updatedAt": "2026-10-08T14:00:00" }
+```
+
+| 코드 | 상황 |
+|---|---|
+| 400 | 입력 값 검증 실패 |
+| 401 | 토큰 없음 |
+| 403 | CUSTOMER가 요청, 본인 매장이 아님 |
+| 404 | 매장 없음 |
+
 #### 메뉴 목록 조회 `GET /api/menus`
 Response `200 OK` — 삭제되지 않은 메뉴만 반환
 ```json
 [
-  { "id": 1, "name": "후라이드 치킨", "price": 18000, "description": "바삭한 치킨",
+  { "id": 1, "storeId": 1, "name": "후라이드 치킨", "price": 18000, "description": "바삭한 치킨",
   "createdAt": "2026-10-08T14:00:00", "updatedAt": "2026-10-08T14:00:00" }
 ]
 ```
@@ -271,13 +328,15 @@ Response `200 OK` — 메뉴 등록 응답과 같은 형식
 | 404 | 메뉴가 없거나 삭제됨 |
 
 #### 메뉴 수정 `PUT /api/menus/{id}`
-Request / Response `200 OK` — 메뉴 등록과 같은 형식
+Request — 메뉴 등록에서 `storeId`를 뺀 형식 (매장은 변경 불가)
+
+Response `200 OK` — 메뉴 등록과 같은 형식
 
 | 코드 | 상황 |
 |---|---|
 | 400 | 입력 값 검증 실패 |
 | 401 | 토큰 없음 |
-| 403 | 본인 메뉴가 아님 (CUSTOMER 포함) |
+| 403 | 본인 매장의 메뉴가 아님 (CUSTOMER 포함) |
 | 404 | 메뉴가 없거나 삭제됨 |
 
 #### 메뉴 삭제 `DELETE /api/menus/{id}`
@@ -287,7 +346,7 @@ Response `204 No Content`
 | 코드 | 상황 |
 |---|---|
 | 401 | 토큰 없음 |
-| 403 | 본인 메뉴가 아님 (CUSTOMER 포함) |
+| 403 | 본인 매장의 메뉴가 아님 (CUSTOMER 포함) |
 | 404 | 메뉴가 없거나 이미 삭제됨 |
 
 ---
@@ -302,11 +361,13 @@ Request
 - `quantity`: 1 이상
 - `deliveryAddress`: 필수, 255자 이하
 - 총액은 요청으로 받지 않고 서버에서 `메뉴 가격 × 수량`으로 계산
+- 매장은 요청으로 받지 않고 메뉴의 매장으로 연결
 
 Response `201 Created`
 ```json
 {
-  "id": 1, "menuId": 1, "menuName": "후라이드 치킨",
+  "id": 1, "storeId": 1, "storeName": "치킨집",
+  "menuId": 1, "menuName": "후라이드 치킨",
   "quantity": 2, "totalPrice": 36000,
   "deliveryAddress": "서울시 강남구 ...", "status": "ORDER_REQUEST",
   "createdAt": "2026-10-08T14:03:00", "updatedAt": "2026-10-08T14:03:00"
@@ -323,7 +384,7 @@ Response `201 Created`
 #### 주문 목록 조회 `GET /api/orders`
 Response `200 OK` — 주문 생성 응답 형식의 배열
 - CUSTOMER: 본인이 한 주문만
-- OWNER: 본인 메뉴에 들어온 주문만
+- OWNER: 본인의 모든 매장에 들어온 주문만 (매장 하나만 보려면 `GET /api/stores/{id}/orders`)
 
 | 코드 | 상황 |
 |---|---|
@@ -352,7 +413,7 @@ Response `204 No Content`
 |---|---|
 | 400 | status 누락 또는 잘못된 값 |
 | 401 | 토큰 없음 |
-| 403 | CUSTOMER가 요청, 본인 메뉴에 들어온 주문이 아님 |
+| 403 | CUSTOMER가 요청, 본인 매장에 들어온 주문이 아님 |
 | 404 | 주문 없음 |
 | 409 | 허용되지 않는 변경 (결제 전 주문 수락, 단계 건너뛰기, 배달완료 이후 변경 등) |
 
@@ -395,11 +456,12 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 | `V1__baseline.sql` | Flyway 도입 시점의 스키마 (`ddl-auto: update`로 만들어졌던 테이블·제약조건 이름 그대로) |
 | `V2__add_audit_columns_to_users_and_payments.sql` | `users`, `payments`에 `created_at`, `updated_at` 추가 (BaseEntity 상속 반영) |
 | `V3__widen_amount_columns_and_add_payment_fee.sql` | 금액 컬럼 `integer` → `bigint`, `payments`에 `fee_rate`, `fee_amount`, `settlement_amount` 추가 (기존 결제는 수수료 0으로 백필) |
+| `V4__add_stores.sql` | `stores` 테이블 추가, `menus.store_id`·`orders.store_id` 추가 후 `menus.owner_id` 제거 (메뉴를 가진 점주마다 `{아이디}의 매장`을 1개 만들어 기존 메뉴·주문을 연결) |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V4__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V5__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -409,16 +471,19 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 
 | 관계 | 종류 | FK | 설명 |
 |---|---|---|---|
-| users ─ menus | 1 : N | `menus.owner_id` → `users.id` | OWNER 한 명이 여러 메뉴를 등록 |
+| users ─ stores | 1 : N | `stores.owner_id` → `users.id` | OWNER 한 명이 여러 매장을 보유 |
+| stores ─ menus | 1 : N | `menus.store_id` → `stores.id` | 한 매장에 여러 메뉴 |
+| stores ─ orders | 1 : N | `orders.store_id` → `stores.id` | 한 매장에 여러 주문이 들어옴 (메뉴의 매장과 항상 같음) |
 | users ─ orders | 1 : N | `orders.user_id` → `users.id` | CUSTOMER 한 명이 여러 주문을 생성 |
 | menus ─ orders | 1 : N | `orders.menu_id` → `menus.id` | 한 메뉴에 여러 주문이 들어옴 |
 | orders ─ payments | 1 : 1 | `payments.order_id` → `orders.id` (unique) | 주문 1건당 결제는 1건만 가능 |
 
-- **OWNER가 받은 주문 조회**: `orders → menus → users(owner)` 순서로 따라가 본인 메뉴에 들어온 주문만 찾음 (`findAllByMenuOwnerId`)
+- **OWNER가 받은 주문 조회**: `orders → stores → users(owner)`로 본인 매장에 들어온 주문만 찾음 (`findAllByStoreOwnerId`), 매장 하나는 `findAllByStoreId`
+- **`orders.store_id`를 따로 두는 이유**: 메뉴를 거치지 않고 매장별 주문 조회·소유권 검증 가능. `Order` 생성자에서 `menu.getStore()`로만 정해지므로 메뉴의 매장과 어긋날 수 없음
 - **메뉴는 Soft Delete**: 실제로 행을 지우면 그 메뉴를 참조하는 주문의 FK(`menu_id`)가 깨지므로, `deleted = true`로만 표시하고 조회에서 제외
 - **중복 결제 방지**: `payments.order_id`에 unique 제약을 걸어 같은 주문의 결제가 동시에 들어와도 DB에서 한 건만 저장됨
 
-- **생성·수정 시각 공통화**: `users`, `menus`, `orders`, `payments` 모두 `BaseEntity`(@MappedSuperclass)를 상속해 `created_at`, `updated_at`을 JPA Auditing으로 자동 기록
+- **생성·수정 시각 공통화**: `users`, `stores`, `menus`, `orders`, `payments` 모두 `BaseEntity`(@MappedSuperclass)를 상속해 `created_at`, `updated_at`을 JPA Auditing으로 자동 기록
 - **시간대**: 모든 시각은 `timestamp`(시간대 정보 없음)로 저장되며 **Asia/Seoul 기준** 값임
   - JVM 기본 시간대(`main`, 테스트는 `build.gradle`)와 DB 세션 시간대를 Asia/Seoul로 고정
   - Hibernate `jdbc.time_zone`은 지정하지 않음 → JVM 시간대와 다르면 `LocalDateTime` 저장 시 값이 밀리기 때문 (`application.yml` 주석 참고)
@@ -438,11 +503,20 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 
 > `user`는 PostgreSQL 예약어라 테이블명을 `users`로 지정
 
+#### stores — 매장
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| owner_id | bigint | FK → users.id, NOT NULL | 매장 주인(OWNER) |
+| name | varchar(50) | NOT NULL | 매장 이름 |
+| created_at | timestamp | | 생성 시각 (BaseEntity, V4 백필 매장은 NULL) |
+| updated_at | timestamp | | 마지막 수정 시각 (BaseEntity) |
+
 #### menus — 메뉴
 | 컬럼 | 타입 | 제약 | 설명 |
 |---|---|---|---|
 | id | bigint | PK | |
-| owner_id | bigint | FK → users.id, NOT NULL | 메뉴를 등록한 OWNER |
+| store_id | bigint | FK → stores.id, NOT NULL | 메뉴를 판매하는 매장 (주인은 `stores.owner_id`) |
 | name | varchar(50) | NOT NULL | 메뉴 이름 |
 | price | bigint | NOT NULL | 가격 (원) |
 | description | varchar(255) | | 설명 (선택) |
@@ -456,6 +530,7 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 | id | bigint | PK | |
 | user_id | bigint | FK → users.id, NOT NULL | 주문한 CUSTOMER |
 | menu_id | bigint | FK → menus.id, NOT NULL | 주문한 메뉴 |
+| store_id | bigint | FK → stores.id, NOT NULL | 주문이 들어간 매장 (메뉴의 매장) |
 | quantity | integer | NOT NULL | 수량 |
 | total_price | bigint | NOT NULL | 주문 당시 총액 (메뉴 가격 × 수량, 서버 계산) |
 | delivery_address | varchar(255) | NOT NULL | 배송 주소 |

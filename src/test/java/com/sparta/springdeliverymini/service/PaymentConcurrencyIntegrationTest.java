@@ -8,6 +8,7 @@ import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
+import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -40,6 +41,9 @@ class PaymentConcurrencyIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private StoreRepository storeRepository;
+
+    @Autowired
     private MenuRepository menuRepository;
 
     @Autowired
@@ -50,10 +54,11 @@ class PaymentConcurrencyIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        // FK 순서대로 삭제: payments → orders → menus → users
+        // FK 순서대로 삭제: payments → orders → menus → stores → users
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
+        storeRepository.deleteAllInBatch();
         userRepository.deleteAllInBatch();
     }
 
@@ -62,7 +67,8 @@ class PaymentConcurrencyIntegrationTest {
         // given: customer가 owner의 메뉴를 주문한 상태 (ORDER_REQUEST)
         User owner = userRepository.save(new User("owner1", "encoded-password", Role.OWNER));
         User customer = userRepository.save(new User("customer1", "encoded-password", Role.CUSTOMER));
-        Menu menu = menuRepository.save(new Menu("후라이드 치킨", 18000, "바삭한 치킨", owner));
+        Store store = storeRepository.save(new Store("치킨집", owner));
+        Menu menu = menuRepository.save(new Menu("후라이드 치킨", 18000, "바삭한 치킨", store));
         Order order = orderRepository.save(
                 new Order(menu, customer, 2, 36000, "서울시", OrderStatus.ORDER_REQUEST)
         );

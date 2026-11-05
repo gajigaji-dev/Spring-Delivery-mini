@@ -12,8 +12,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class OrderTest {
 
     private Order orderWith(OrderStatus status) {
-        // 상태 전이만 검증하므로 메뉴·회원은 필요 없음
-        return new Order(null, null, 1, 10000, "서울시", status);
+        // 상태 전이만 검증하므로 메뉴의 매장·회원은 필요 없음
+        // (Order 생성자가 menu.getStore()로 매장을 정하므로 메뉴 객체는 필요)
+        Menu menu = new Menu("후라이드 치킨", 10000, "바삭한 치킨", null);
+        return new Order(menu, null, 1, 10000, "서울시", status);
     }
 
     // ===== 정상 흐름 =====

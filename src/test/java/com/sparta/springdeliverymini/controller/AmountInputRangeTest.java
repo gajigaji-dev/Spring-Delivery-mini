@@ -49,7 +49,7 @@ class AmountInputRangeTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                { "name": "치킨", "price": 9223372036854775808, "description": "설명" }
+                                { "storeId": 1, "name": "치킨", "price": 9223372036854775808, "description": "설명" }
                                 """)) // Long.MAX_VALUE + 1
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(NOT_READABLE));
