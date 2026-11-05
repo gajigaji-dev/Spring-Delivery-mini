@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+import com.sparta.springdeliverymini.dto.OrderCreateRequest;
+import com.sparta.springdeliverymini.dto.OrderResponse;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
@@ -18,7 +20,10 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 // OrderService가 권한·본인 확인 후 Order의 상태 전이 메서드를 올바르게 호출하는지 검증
 // Repository는 Mock으로 대체 → DB 없이 실행
@@ -55,6 +60,83 @@ class OrderServiceTest {
         Order order = new Order(menu, customer, 1, 18000, "서울시", status);
         ReflectionTestUtils.setField(order, "id", 10L);
         return order;
+    }
+
+    // ===== 주문 생성 (총액 계산) =====
+
+    private void givenCustomerAndMenu(Menu menu) {
+        given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
+        given(menuRepository.findByIdAndDeletedFalse(1L)).willReturn(Optional.of(menu));
+    }
+
+    @Test
+    void 총액은_메뉴_가격_곱하기_수량으로_계산한다() {
+        givenCustomerAndMenu(new Menu("후라이드 치킨", 18000, "바삭한 치킨", owner));
+        given(orderRepository.save(any(Order.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        OrderResponse response = orderService.createOrder(new OrderCreateRequest(1L, 2, "서울시"), "customer1");
+
+        assertThat(response.totalPrice()).isEqualTo(36000);
+        assertThat(response.status()).isEqualTo(OrderStatus.ORDER_REQUEST);
+    }
+
+    @Test
+    void int_범위를_넘는_총액도_정확히_계산한다() {
+        // 1,000,000,000원 × 3 = 3,000,000,000원 → int였다면 넘쳐서 400이던 금액
+        givenCustomerAndMenu(new Menu("단체 주문", 1_000_000_000L, "대량 주문", owner));
+        given(orderRepository.save(any(Order.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        OrderResponse response = orderService.createOrder(new OrderCreateRequest(1L, 3, "서울시"), "customer1");
+
+        assertThat(response.totalPrice()).isEqualTo(3_000_000_000L);
+    }
+
+    // 수량 최대값(Integer.MAX_VALUE = 2^31 - 1)에서 long에 딱 들어가는 가격의 경계
+    //   (2^32 + 2) × (2^31 - 1) = 2^63 - 2          ≤ Long.MAX_VALUE → 성공
+    //   (2^32 + 3) × (2^31 - 1) = 2^63 + 2^31 - 3   > Long.MAX_VALUE → 400
+    @Test
+    void 최대_수량에서_long_최대값_직전까지는_계산된다() {
+        givenCustomerAndMenu(new Menu("경계 메뉴", 4_294_967_298L, "경계값", owner));
+        given(orderRepository.save(any(Order.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        OrderResponse response = orderService.createOrder(
+                new OrderCreateRequest(1L, Integer.MAX_VALUE, "서울시"), "customer1");
+
+        assertThat(response.totalPrice()).isEqualTo(Long.MAX_VALUE - 1);
+    }
+
+    @Test
+    void 최대_수량에서_long_최대값을_1원이라도_넘으면_400() {
+        givenCustomerAndMenu(new Menu("경계 메뉴", 4_294_967_299L, "경계값", owner));
+
+        assertThatThrownBy(() -> orderService.createOrder(
+                new OrderCreateRequest(1L, Integer.MAX_VALUE, "서울시"), "customer1"))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.BAD_REQUEST);
+        verify(orderRepository, never()).save(any());
+    }
+
+    @Test
+    void 가격이_long_최대값이면_수량_1까지만_주문된다() {
+        givenCustomerAndMenu(new Menu("경계 메뉴", Long.MAX_VALUE, "경계값", owner));
+        given(orderRepository.save(any(Order.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        assertThat(orderService.createOrder(new OrderCreateRequest(1L, 1, "서울시"), "customer1").totalPrice())
+                .isEqualTo(Long.MAX_VALUE);
+        assertThatThrownBy(() -> orderService.createOrder(new OrderCreateRequest(1L, 2, "서울시"), "customer1"))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void long_범위를_넘는_총액은_400() {
+        givenCustomerAndMenu(new Menu("단체 주문", Long.MAX_VALUE / 2 + 1, "대량 주문", owner));
+
+        assertThatThrownBy(() -> orderService.createOrder(new OrderCreateRequest(1L, 2, "서울시"), "customer1"))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("주문 금액이 너무 큽니다. 수량을 줄여주세요.")
+                .extracting("status").isEqualTo(HttpStatus.BAD_REQUEST);
+        verify(orderRepository, never()).save(any());
     }
 
     // ===== 주문 취소 =====

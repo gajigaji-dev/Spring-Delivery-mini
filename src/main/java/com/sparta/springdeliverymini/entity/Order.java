@@ -36,7 +36,7 @@ public class Order extends BaseEntity {
     // 주문 당시의 총 금액
     // 메뉴 가격 × 주문 수량으로 서버에서 계산
     @Column(nullable = false)
-    private int totalPrice;
+    private long totalPrice;
 
     // 배송 주소
     @Column(nullable = false)
@@ -51,7 +51,7 @@ public class Order extends BaseEntity {
             Menu menu,
             User user,
             int quantity,
-            int totalPrice,
+            long totalPrice,
             String deliveryAddress,
             OrderStatus status
     ) {

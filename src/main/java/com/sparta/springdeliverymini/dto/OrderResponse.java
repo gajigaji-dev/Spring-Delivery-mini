@@ -10,7 +10,7 @@ public record OrderResponse(
         Long menuId,
         String menuName,
         int quantity,
-        int totalPrice,
+        long totalPrice,
         String deliveryAddress,
         OrderStatus status,
         LocalDateTime createdAt,  // 주문 시각 (BaseEntity)

@@ -30,6 +30,13 @@ spring:
     baseline-on-migrate: true
     baseline-version: 1
 
+# 결제 플랫폼 수수료 — config.PaymentFeeProperties
+# rate: 0 이상 1 이하, 소수점 4자리까지 (0.05 = 5%, 실제 계약 요율이 아닌 임시 통일 값). 범위를 벗어나면 기동 실패
+# 계산·반올림 정책은 entity.PaymentFee 참고 (수수료 원 단위 HALF_UP, 정산액 = 결제액 - 수수료)
+payment:
+  fee:
+    rate: "0.05" # 문자열로 지정 → double을 거치지 않고 BigDecimal로 그대로 바인딩
+
 # JWT — secret은 Base64 인코딩된 256비트 이상 키. 운영에서는 JWT_SECRET 환경변수로 주입
 jwt:
   secret: ${JWT_SECRET:ZGV2LW9ubHktc2VjcmV0LWtleS1mb3Itc3ByaW5nLWRlbGl2ZXJ5LW1pbmktand0LTI1NmJpdA==}

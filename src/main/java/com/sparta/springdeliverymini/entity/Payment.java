@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import jakarta.persistence.*;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 // BaseEntity 상속 → created_at(기록 생성 시각), updated_at(기록 수정 시각) 자동 기록
@@ -31,7 +32,20 @@ public class Payment extends BaseEntity {
     // 결제 금액
     // 요청값이 아닌 주문 총액(Order.totalPrice)을 그대로 저장
     @Column(nullable = false)
-    private int amount;
+    private long amount;
+
+    // 플랫폼 수수료 (계산·반올림 정책은 PaymentFee 참고)
+    // 결제 시점의 수수료율을 함께 저장 → 설정값이 나중에 바뀌어도 이 결제의 계산 근거가 남음
+    @Column(nullable = false, precision = 5, scale = 4)
+    private BigDecimal feeRate;
+
+    // 수수료 = 결제 금액 × 수수료율 (원 단위 HALF_UP 반올림)
+    @Column(nullable = false)
+    private long feeAmount;
+
+    // 사장님 정산액 = 결제 금액 - 수수료 (수수료 + 정산액 = 결제 금액)
+    @Column(nullable = false)
+    private long settlementAmount;
 
     // 결제 수단 (현재는 CARD만 허용)
     @Enumerated(EnumType.STRING)
@@ -47,9 +61,14 @@ public class Payment extends BaseEntity {
 
     // paidAt은 호출하는 쪽(PaymentService)이 Clock 기준 현재 시각을 넘김
     // 엔티티 안에서 LocalDateTime.now()를 부르면 JVM 시간대에 의존하고 테스트에서 시각을 고정할 수 없음
-    public Payment(Order order, int amount, PaymentMethod paymentMethod, LocalDateTime paidAt) {
+    // 수수료·정산액은 밖에서 받지 않고 결제 금액과 수수료율로 여기서 계산 → 세 금액이 항상 서로 맞음
+    public Payment(Order order, long amount, BigDecimal feeRate, PaymentMethod paymentMethod, LocalDateTime paidAt) {
+        PaymentFee fee = PaymentFee.calculate(amount, feeRate);
         this.order = order;
         this.amount = amount;
+        this.feeRate = fee.rate();
+        this.feeAmount = fee.feeAmount();
+        this.settlementAmount = fee.settlementAmount();
         this.paymentMethod = paymentMethod;
         this.paidAt = paidAt;
     }

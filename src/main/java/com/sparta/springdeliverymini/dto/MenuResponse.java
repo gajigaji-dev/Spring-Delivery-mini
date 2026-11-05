@@ -7,7 +7,7 @@ import java.time.LocalDateTime;
 public record MenuResponse(
         Long id,
         String name,
-        int price,
+        long price,
         String description,
         LocalDateTime createdAt,  // 메뉴 등록 시각 (BaseEntity)
         LocalDateTime updatedAt) { // 마지막 수정 시각 (BaseEntity)

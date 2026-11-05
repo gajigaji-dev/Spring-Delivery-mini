@@ -68,10 +68,10 @@ public class OrderService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "메뉴가 없습니다."));
 
         // 3. 총액 = 메뉴 가격 × 수량 (서버에서 계산)
-        // int 범위를 넘으면 잘못된 값이 저장되지 않도록 400
-        int totalPrice;
+        // 금액은 long(원 단위 정수)으로 계산, long 범위를 넘으면 잘못된 값이 저장되지 않도록 400
+        long totalPrice;
         try {
-            totalPrice = Math.multiplyExact(menu.getPrice(), request.quantity());
+            totalPrice = Math.multiplyExact(menu.getPrice(), (long) request.quantity());
         } catch (ArithmeticException e) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "주문 금액이 너무 큽니다. 수량을 줄여주세요.");
         }
