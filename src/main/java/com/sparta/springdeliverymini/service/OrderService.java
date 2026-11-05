@@ -10,7 +10,6 @@ import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,6 +23,7 @@ public class OrderService {
     private final OrderRepository orderRepository;
     private final MenuRepository menuRepository;
     private final UserRepository userRepository;
+    private final StoreService storeService;
 
     public List<OrderResponse> getOrders(String username) {
         // 1. 현재 로그인한 사용자 찾기
@@ -43,15 +43,37 @@ public class OrderService {
                     .toList();
         }
 
-        // 3. OWNER는 본인의 메뉴에 들어온 주문만 조회
+        // 3. OWNER는 본인의 모든 매장에 들어온 주문만 조회
         if (currentUser.getRole() == Role.OWNER) {
-            return orderRepository.findAllByMenuOwnerId(currentUser.getId())
+            return orderRepository.findAllByStoreOwnerId(currentUser.getId())
                     .stream()
                     .map(OrderResponse::from)
                     .toList();
         }
 
         return List.of();
+    }
+
+    // 매장별 주문 조회 — 본인 매장의 주문만 조회 가능
+    public List<OrderResponse> getStoreOrders(Long storeId, String username) {
+        // 1. 현재 로그인한 사용자 찾기
+        // 토큰은 유효하지만 그 사이 회원이 삭제된 경우 → 401
+        User currentUser = userRepository.findByUsername(username)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "존재하지 않는 회원입니다."));
+
+        // 2. OWNER인지 확인 (SecurityConfig에서도 막지만, 토큰 발급 후 역할 변경에 대비해 한 번 더 확인)
+        if (currentUser.getRole() != Role.OWNER) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "OWNER만 매장 주문을 조회할 수 있습니다.");
+        }
+
+        // 3. 매장 소유권 확인 — 매장이 없으면 404, 다른 OWNER의 매장이면 403
+        Store store = storeService.getOwnedStore(storeId, currentUser);
+
+        // 4. 해당 매장에 들어온 주문 조회
+        return orderRepository.findAllByStoreId(store.getId())
+                .stream()
+                .map(OrderResponse::from)
+                .toList();
     }
 
     @Transactional
@@ -77,6 +99,7 @@ public class OrderService {
         }
 
         // 4. 처음 생성되는 주문은 항상 주문요청 상태
+        // 주문의 매장은 Order 생성자에서 메뉴의 매장으로 정해짐
         Order order = new Order(
                 menu,
                 customer,
@@ -170,12 +193,12 @@ public class OrderService {
                         )
                 );
 
-        // 4. 본인 메뉴에 들어온 주문인지 확인
-        // 다른 OWNER의 메뉴에 들어온 주문이면 → 403
-        if (!order.getMenu().getOwner().getId().equals(currentUser.getId())) {
+        // 4. 본인 매장에 들어온 주문인지 확인
+        // 다른 OWNER의 매장에 들어온 주문이면 → 403
+        if (!order.getStore().isOwnedBy(currentUser)) {
             throw new ApiException(
                     HttpStatus.FORBIDDEN,
-                    "본인 메뉴에 들어온 주문만 처리할 수 있습니다."
+                    "본인 매장에 들어온 주문만 처리할 수 있습니다."
             );
         }
 

@@ -64,6 +64,7 @@ class PaymentServiceTest {
     private final User customer = user(1L, "customer1", Role.CUSTOMER);
     private final User otherCustomer = user(2L, "customer2", Role.CUSTOMER);
     private final User owner = user(3L, "owner1", Role.OWNER);
+    private final Store store = new Store("치킨집", owner);
 
     // id는 DB가 생성하므로 테스트에서는 리플렉션으로 직접 지정
     private static User user(Long id, String username, Role role) {
@@ -74,7 +75,7 @@ class PaymentServiceTest {
 
     // customer가 owner의 메뉴를 2개 주문한 상태 (총액 36000원)
     private Order order(OrderStatus status) {
-        Menu menu = new Menu("후라이드 치킨", 18000, "바삭한 치킨", owner);
+        Menu menu = new Menu("후라이드 치킨", 18000, "바삭한 치킨", store);
         Order order = new Order(menu, customer, 2, 36000, "서울시", status);
         ReflectionTestUtils.setField(order, "id", 10L);
         return order;
@@ -120,7 +121,7 @@ class PaymentServiceTest {
     @Test
     void int_범위를_넘는_주문_총액도_그대로_결제된다() {
         // 3,000,000,000원 — int 최대값(2,147,483,647)을 넘는 금액
-        Menu menu = new Menu("단체 주문", 1_500_000_000L, "대량 주문", owner);
+        Menu menu = new Menu("단체 주문", 1_500_000_000L, "대량 주문", store);
         Order order = new Order(menu, customer, 2, 3_000_000_000L, "서울시", OrderStatus.ORDER_REQUEST);
         ReflectionTestUtils.setField(order, "id", 10L);
         givenCustomerAndOrder(order);

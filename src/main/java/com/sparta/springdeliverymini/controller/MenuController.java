@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.controller;
 import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.MenuCreateRequest;
 import com.sparta.springdeliverymini.dto.MenuResponse;
+import com.sparta.springdeliverymini.dto.MenuUpdateRequest;
 import com.sparta.springdeliverymini.service.MenuService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -26,6 +27,7 @@ public class MenuController {
             Authentication authentication) {
 
         // 현재 로그인한 OWNER의 정보를 Service에 전달하여 메뉴 생성
+        // 요청의 storeId가 본인 매장인지는 Service에서 확인
         MenuResponse menu = menuService.createMenu(
                 request,
                 authentication.getName()
@@ -49,11 +51,11 @@ public class MenuController {
     }
 
     // 메뉴 수정
-    // 요청 Body의 JSON을 MenuCreateRequest로 변환하고 유효성 검증
+    // 요청 Body의 JSON을 MenuUpdateRequest로 변환하고 유효성 검증 (매장은 변경 불가)
     @PutMapping("/menus/{id}")
     public ResponseEntity<MenuResponse> putMenu(
             @PathVariable Long id,
-            @Valid @RequestBody MenuCreateRequest request,
+            @Valid @RequestBody MenuUpdateRequest request,
             Authentication authentication) {
 
         // JWT 인증을 통해 현재 로그인한 사용자의 정보를 Service에 전달

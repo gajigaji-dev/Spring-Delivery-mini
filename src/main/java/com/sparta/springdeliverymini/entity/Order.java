@@ -29,6 +29,13 @@ public class Order extends BaseEntity {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    // 주문이 들어간 매장
+    // 메뉴의 매장과 같은 값이지만 직접 저장 → 매장별 주문 조회·소유권 검증을 메뉴를 거치지 않고 처리
+    // 생성자에서 menu.getStore()로만 정해지므로 메뉴와 다른 매장으로 주문이 들어갈 수 없음
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "store_id", nullable = false)
+    private Store store;
+
     // 주문 수량
     @Column(nullable = false)
     private int quantity;
@@ -56,6 +63,7 @@ public class Order extends BaseEntity {
             OrderStatus status
     ) {
         this.menu = menu;
+        this.store = menu.getStore();
         this.user = user;
         this.quantity = quantity;
         this.totalPrice = totalPrice;

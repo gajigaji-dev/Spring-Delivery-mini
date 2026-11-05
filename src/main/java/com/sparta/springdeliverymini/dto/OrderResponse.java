@@ -7,6 +7,8 @@ import java.time.LocalDateTime;
 
 public record OrderResponse(
         Long id,
+        Long storeId,             // 주문이 들어간 매장
+        String storeName,
         Long menuId,
         String menuName,
         int quantity,
@@ -19,6 +21,8 @@ public record OrderResponse(
     public static OrderResponse from(Order order) {
         return new OrderResponse(
                 order.getId(),
+                order.getStore().getId(),
+                order.getStore().getName(),
                 order.getMenu().getId(),
                 order.getMenu().getName(),
                 order.getQuantity(),
