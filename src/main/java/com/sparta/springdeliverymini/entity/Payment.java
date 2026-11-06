@@ -24,7 +24,7 @@ public class Payment extends BaseEntity {
     // 동시에 같은 주문을 결제하는 요청이 들어와도 DB에서 중복 저장을 막음
     // TODO(@ManyToOne 전환): 결제 실패 후 재결제·부분 취소 등 한 주문에 결제 기록이 여러 건 필요해지면
     //  @ManyToOne으로 바꾸고 unique 제거 + 결제 상태(SUCCESS/FAILED/CANCELLED) 필드 추가
-    //  (unique 제약은 새 Flyway 마이그레이션에서 DROP CONSTRAINT uk8vo36cen604as7etdfwmyjsxt로 삭제, README 6장 참고)
+    //  (unique 제약은 새 Flyway 마이그레이션에서 DROP CONSTRAINT uk8vo36cen604as7etdfwmyjsxt로 삭제, docs/database.md 참고)
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "order_id", nullable = false, unique = true)
     private Order order;
