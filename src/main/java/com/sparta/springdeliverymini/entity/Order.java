@@ -6,6 +6,10 @@ import lombok.NoArgsConstructor;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import jakarta.persistence.*;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 // BaseEntity 상속 → created_at(주문 시각), updated_at(상태 변경 시각) 자동 기록
 @Entity
 @Table(name = "orders")
@@ -17,12 +21,6 @@ public class Order extends BaseEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // 주문한 메뉴
-    // Menu가 삭제되어도 Order 기록은 남아있어야 하므로 실제 메뉴 Entity를 참조
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "menu_id", nullable = false)
-    private Menu menu;
-
     // 주문한 사용자
     // 주문 목록 조회 시 본인의 주문인지 확인하기 위해 사용자 정보 저장
     @ManyToOne(fetch = FetchType.LAZY)
@@ -30,18 +28,20 @@ public class Order extends BaseEntity {
     private User user;
 
     // 주문이 들어간 매장
-    // 메뉴의 매장과 같은 값이지만 직접 저장 → 매장별 주문 조회·소유권 검증을 메뉴를 거치지 않고 처리
-    // 생성자에서 menu.getStore()로만 정해지므로 메뉴와 다른 매장으로 주문이 들어갈 수 없음
+    // 주문 항목의 메뉴는 모두 이 매장의 메뉴여야 함 (addItem에서 검증)
+    // 매장별 주문 조회·소유권 검증을 항목·메뉴를 거치지 않고 처리하기 위해 직접 저장
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "store_id", nullable = false)
     private Store store;
 
-    // 주문 수량
-    @Column(nullable = false)
-    private int quantity;
+    // 주문 항목 (메뉴 1종 × 수량)
+    // 항목은 주문 없이 존재할 수 없음 → 주문 저장·삭제 시 함께 저장·삭제(cascade), 목록에서 빠지면 삭제(orphanRemoval)
+    // 외부에는 읽기 전용으로만 노출 → 항목 추가는 addItem()으로만
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<OrderItem> orderItems = new ArrayList<>();
 
     // 주문 당시의 총 금액
-    // 메뉴 가격 × 주문 수량으로 서버에서 계산
+    // 항목 금액(단가 × 수량)의 합, addItem()에서만 갱신
     @Column(nullable = false)
     private long totalPrice;
 
@@ -54,21 +54,60 @@ public class Order extends BaseEntity {
     @Column(nullable = false)
     private OrderStatus status;
 
+    // 항목 없이 생성 → addItem()으로 항목을 담음 (총액은 0원에서 시작)
     public Order(
-            Menu menu,
             User user,
-            int quantity,
-            long totalPrice,
+            Store store,
             String deliveryAddress,
             OrderStatus status
     ) {
-        this.menu = menu;
-        this.store = menu.getStore();
         this.user = user;
-        this.quantity = quantity;
-        this.totalPrice = totalPrice;
+        this.store = store;
         this.deliveryAddress = deliveryAddress;
         this.status = status;
+    }
+
+    // 주문 항목 추가 + 총액 갱신
+    // - 다른 매장의 메뉴, 이미 담긴 메뉴, 1개 미만 수량 → IllegalArgumentException
+    //   (Service가 먼저 검증해 400으로 응답하므로 여기까지 오면 프로그래밍 오류)
+    // - 총액이 long 범위를 넘으면 ArithmeticException, 이때 항목·총액은 바뀌지 않음
+    public void addItem(Menu menu, int quantity) {
+        if (quantity < 1) {
+            throw new IllegalArgumentException("수량은 1개 이상이어야 합니다.");
+        }
+        if (!isSameEntity(menu.getStore(), store)) {
+            throw new IllegalArgumentException("주문한 매장의 메뉴만 담을 수 있습니다.");
+        }
+        if (orderItems.stream().anyMatch(item -> isSameEntity(item.getMenu(), menu))) {
+            throw new IllegalArgumentException("이미 담긴 메뉴입니다.");
+        }
+
+        OrderItem item = new OrderItem(this, menu, quantity);
+        long newTotal = Math.addExact(totalPrice, item.getLinePrice()); // 넘치면 여기서 예외 → 아래 반영 안 됨
+        orderItems.add(item);
+        totalPrice = newTotal;
+    }
+
+    public List<OrderItem> getOrderItems() {
+        return Collections.unmodifiableList(orderItems);
+    }
+
+    // 같은 엔티티인지 — 저장된 엔티티는 id로, 저장 전(id 없음)이면 같은 객체인지로 판단
+    // (지연 로딩 프록시도 getId()는 초기화 없이 동작)
+    private static boolean isSameEntity(Object a, Object b) {
+        if (a == b) {
+            return true;
+        }
+        Long idA = idOf(a);
+        return idA != null && idA.equals(idOf(b));
+    }
+
+    private static Long idOf(Object entity) {
+        return switch (entity) {
+            case Store s -> s.getId();
+            case Menu m -> m.getId();
+            case null, default -> null;
+        };
     }
 
     // 상태 전이 규칙은 아래 메서드에만 둠

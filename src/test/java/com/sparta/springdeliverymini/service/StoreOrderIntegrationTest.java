@@ -21,6 +21,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.groups.Tuple.tuple;
 
 // 매장 → 메뉴 → 주문 흐름을 실제 PostgreSQL로 검증
 // (Mock 테스트로는 확인할 수 없는 매핑·FK·Query Method(findAllByStoreOwnerId 등)의 실제 동작 확인)
@@ -55,7 +56,7 @@ class StoreOrderIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        // FK 순서대로 삭제: orders → menus → stores → users
+        // FK 순서대로 삭제: orders(order_items는 ON DELETE CASCADE로 함께 삭제) → menus → stores → users
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
         storeRepository.deleteAllInBatch();
@@ -65,7 +66,49 @@ class StoreOrderIntegrationTest {
     private OrderResponse order(StoreResponse store, String menuName, String ownerName) {
         MenuResponse menu = menuService.createMenu(
                 new MenuCreateRequest(store.id(), menuName, 10000L, null), ownerName);
-        return orderService.createOrder(new OrderCreateRequest(menu.id(), 1, "서울시"), "customer1");
+        return orderService.createOrder(
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1");
+    }
+
+    @Test
+    void 여러_메뉴를_담은_주문은_항목별로_저장되고_메뉴가_바뀌어도_주문_당시_값이_유지된다() {
+        MenuResponse chicken = menuService.createMenu(
+                new MenuCreateRequest(chickenStore.id(), "후라이드 치킨", 18000L, null), "owner1");
+        MenuResponse coke = menuService.createMenu(
+                new MenuCreateRequest(chickenStore.id(), "콜라", 2000L, null), "owner1");
+
+        OrderResponse created = orderService.createOrder(new OrderCreateRequest(List.of(
+                new OrderItemRequest(chicken.id(), 2),
+                new OrderItemRequest(coke.id(), 3)), "서울시"), "customer1");
+
+        // 주문 후 메뉴 이름·가격 변경, 메뉴 삭제
+        menuService.putMenu(chicken.id(), new MenuUpdateRequest("크리스피 치킨", 20000L, null), "owner1");
+        menuService.deleteMenu(coke.id(), "owner1");
+
+        // DB에서 다시 읽어도 주문 당시 이름·단가와 총액 그대로
+        OrderResponse reloaded = orderService.getOrders("customer1").get(0);
+        assertThat(reloaded.id()).isEqualTo(created.id());
+        assertThat(reloaded.totalPrice()).isEqualTo(18000L * 2 + 2000L * 3);
+        assertThat(reloaded.items())
+                .extracting(OrderItemResponse::menuName, OrderItemResponse::unitPrice, OrderItemResponse::quantity)
+                .containsExactlyInAnyOrder(
+                        tuple("후라이드 치킨", 18000L, 2),
+                        tuple("콜라", 2000L, 3));
+    }
+
+    @Test
+    void 다른_매장의_메뉴를_함께_담으면_400이고_주문은_저장되지_않는다() {
+        MenuResponse chicken = menuService.createMenu(
+                new MenuCreateRequest(chickenStore.id(), "후라이드 치킨", 18000L, null), "owner1");
+        MenuResponse pizza = menuService.createMenu(
+                new MenuCreateRequest(pizzaStore.id(), "치즈 피자", 20000L, null), "owner1");
+
+        assertThatThrownBy(() -> orderService.createOrder(new OrderCreateRequest(List.of(
+                new OrderItemRequest(chicken.id(), 1),
+                new OrderItemRequest(pizza.id(), 1)), "서울시"), "customer1"))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(orderRepository.count()).isZero();
     }
 
     @Test
