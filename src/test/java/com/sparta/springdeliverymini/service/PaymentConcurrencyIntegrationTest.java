@@ -54,7 +54,7 @@ class PaymentConcurrencyIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        // FK 순서대로 삭제: payments → orders → menus → stores → users
+        // FK 순서대로 삭제: payments → orders(order_items는 ON DELETE CASCADE로 함께 삭제) → menus → stores → users
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -69,9 +69,9 @@ class PaymentConcurrencyIntegrationTest {
         User customer = userRepository.save(new User("customer1", "encoded-password", Role.CUSTOMER));
         Store store = storeRepository.save(new Store("치킨집", owner));
         Menu menu = menuRepository.save(new Menu("후라이드 치킨", 18000, "바삭한 치킨", store));
-        Order order = orderRepository.save(
-                new Order(menu, customer, 2, 36000, "서울시", OrderStatus.ORDER_REQUEST)
-        );
+        Order newOrder = new Order(customer, store, "서울시", OrderStatus.ORDER_REQUEST);
+        newOrder.addItem(menu, 2);
+        Order order = orderRepository.save(newOrder);
         PaymentRequest request = new PaymentRequest(order.getId(), PaymentMethod.CARD.name());
 
         // when: THREAD_COUNT개의 스레드가 준비되면 동시에 결제 요청

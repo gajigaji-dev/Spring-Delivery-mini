@@ -76,7 +76,8 @@ class PaymentServiceTest {
     // customer가 owner의 메뉴를 2개 주문한 상태 (총액 36000원)
     private Order order(OrderStatus status) {
         Menu menu = new Menu("후라이드 치킨", 18000, "바삭한 치킨", store);
-        Order order = new Order(menu, customer, 2, 36000, "서울시", status);
+        Order order = new Order(customer, store, "서울시", status);
+        order.addItem(menu, 2);
         ReflectionTestUtils.setField(order, "id", 10L);
         return order;
     }
@@ -122,7 +123,8 @@ class PaymentServiceTest {
     void int_범위를_넘는_주문_총액도_그대로_결제된다() {
         // 3,000,000,000원 — int 최대값(2,147,483,647)을 넘는 금액
         Menu menu = new Menu("단체 주문", 1_500_000_000L, "대량 주문", store);
-        Order order = new Order(menu, customer, 2, 3_000_000_000L, "서울시", OrderStatus.ORDER_REQUEST);
+        Order order = new Order(customer, store, "서울시", OrderStatus.ORDER_REQUEST);
+        order.addItem(menu, 2);
         ReflectionTestUtils.setField(order, "id", 10L);
         givenCustomerAndOrder(order);
         given(paymentRepository.existsByOrderId(10L)).willReturn(false);

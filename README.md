@@ -49,7 +49,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── User.java / Role.java            # 회원, 역할(CUSTOMER / OWNER)
 │   ├── Store.java                       # 매장 (OWNER 1 : N, 소유권 판단 isOwnedBy)
 │   ├── Menu.java                        # 메뉴 (매장에 속함, Soft Delete)
-│   ├── Order.java / OrderStatus.java    # 주문, 주문 상태
+│   ├── Order.java / OrderStatus.java    # 주문, 주문 상태 (항목 추가·총액 계산은 addItem)
+│   ├── OrderItem.java                   # 주문 항목 (메뉴 1종 × 수량, 주문 당시 이름·단가 스냅샷)
 │   └── Payment.java / PaymentMethod.java # 결제, 결제 수단(CARD)
 ├── dto                                  # 요청(Request) / 응답(Response) 객체
 └── exception
@@ -92,9 +93,9 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
 
 | 종류 | 대상 | DB |
 |---|---|---|
-| 단위 테스트 | `OrderTest`(상태 전이), `PaymentFeeTest`(수수료 계산·반올림), `PaymentFeePropertiesTest`(수수료율 설정 검증), `StoreTest`(소유권 판단), `OrderServiceTest`, `MenuServiceTest`, `StoreServiceTest`, `PaymentServiceTest` | 없음 (Mockito) |
+| 단위 테스트 | `OrderTest`(상태 전이, 항목 추가·총액 합산), `PaymentFeeTest`(수수료 계산·반올림), `PaymentFeePropertiesTest`(수수료율 설정 검증), `StoreTest`(소유권 판단), `OrderServiceTest`, `MenuServiceTest`, `StoreServiceTest`, `PaymentServiceTest` | 없음 (Mockito) |
 | 웹 계층 테스트 | `OrderCancelSecurityTest` (`@WebMvcTest`, 401/403), `AmountInputRangeTest`(가격·수량 범위 초과 400), `StoreSecurityTest`(매장 API 401/403) | 없음 |
-| 통합 테스트 | `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장), `TimeZoneIntegrationTest`, `AmountMigrationTest`(기존 데이터가 있는 DB에 V3 적용), `StoreMigrationTest`(기존 메뉴·주문을 매장으로 백필하는 V4 적용), `StoreOrderIntegrationTest`(매장 → 메뉴 → 주문 흐름, 매장별 조회·소유권) | Testcontainers PostgreSQL |
+| 통합 테스트 | `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장), `TimeZoneIntegrationTest`, `AmountMigrationTest`(기존 데이터가 있는 DB에 V3 적용), `StoreMigrationTest`(기존 메뉴·주문을 매장으로 백필하는 V4 적용), `OrderItemMigrationTest`(기존 주문을 주문 항목으로 백필하는 V5 적용), `StoreOrderIntegrationTest`(매장 → 메뉴 → 주문 흐름, 여러 메뉴 주문, 매장별 조회·소유권) | Testcontainers PostgreSQL |
 
 - 통합 테스트는 `@Import(TestcontainersConfiguration.class)`를 붙이면 PostgreSQL 18 컨테이너가 뜨고 `@ServiceConnection`으로 자동 연결됨
 - 스키마는 Flyway가 생성하므로 마이그레이션 SQL과 `ddl-auto: validate`도 함께 검증됨
@@ -120,8 +121,10 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
 - Soft Delete를 통한 메뉴 삭제 처리
 
 ### 주문
-- CUSTOMER의 메뉴 주문 (총액은 서버에서 `메뉴 가격 × 수량`으로 계산)
-- 주문은 메뉴의 매장으로 자동 연결 (`orders.store_id`)
+- CUSTOMER의 메뉴 주문 — 한 주문에 같은 매장의 메뉴 여러 개를 담을 수 있음 (주문 항목 `order_items`)
+- 총액은 서버에서 `항목별 메뉴 가격 × 수량의 합`으로 계산
+- 주문 당시 메뉴 이름·단가를 항목에 저장 → 이후 메뉴가 수정·삭제되어도 주문 내역은 그대로
+- 주문은 메뉴의 매장으로 자동 연결 (`orders.store_id`), 다른 매장 메뉴를 섞으면 400
 - 주문 내역 조회 (CUSTOMER는 본인 주문, OWNER는 본인의 모든 매장에 들어온 주문)
 - 주문요청 상태에서만 주문 취소 가능
 - OWNER의 주문 상태 변경 (결제완료 → 주문수락 → 배달완료)
@@ -136,7 +139,7 @@ Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─�
 - 중복 결제 방지 및 결제 완료된 주문의 취소 방지
 
 ### 데이터베이스 설계
-- User, Store, Menu, Order, Payment 간의 관계 설계
+- User, Store, Menu, Order, OrderItem, Payment 간의 관계 설계
 - 엔티티 간 외래키 설정
 - 주문 및 결제 데이터의 연관관계 구성
 - JPA를 활용한 데이터 접근 및 관리
@@ -356,30 +359,42 @@ Response `204 No Content`
 #### 주문 생성 `POST /api/orders`
 Request
 ```json
-{ "menuId": 1, "quantity": 2, "deliveryAddress": "서울시 강남구 ..." }
+{
+  "items": [
+    { "menuId": 1, "quantity": 2 },
+    { "menuId": 2, "quantity": 1 }
+  ],
+  "deliveryAddress": "서울시 강남구 ..."
+}
 ```
-- `quantity`: 1 이상
+- `items`: 필수, 1~50개. 모두 같은 매장의 메뉴여야 함
+  - `menuId`: 필수, 같은 메뉴는 한 항목으로 합쳐서 요청 (중복 시 400)
+  - `quantity`: 1 이상
 - `deliveryAddress`: 필수, 255자 이하
-- 총액은 요청으로 받지 않고 서버에서 `메뉴 가격 × 수량`으로 계산
+- 총액은 요청으로 받지 않고 서버에서 `항목별 메뉴 가격 × 수량의 합`으로 계산
 - 매장은 요청으로 받지 않고 메뉴의 매장으로 연결
 
 Response `201 Created`
 ```json
 {
   "id": 1, "storeId": 1, "storeName": "치킨집",
-  "menuId": 1, "menuName": "후라이드 치킨",
-  "quantity": 2, "totalPrice": 36000,
+  "items": [
+    { "menuId": 1, "menuName": "후라이드 치킨", "unitPrice": 18000, "quantity": 2, "linePrice": 36000 },
+    { "menuId": 2, "menuName": "콜라", "unitPrice": 2000, "quantity": 1, "linePrice": 2000 }
+  ],
+  "totalPrice": 38000,
   "deliveryAddress": "서울시 강남구 ...", "status": "ORDER_REQUEST",
   "createdAt": "2026-10-08T14:03:00", "updatedAt": "2026-10-08T14:03:00"
 }
 ```
+- `menuName`, `unitPrice`는 현재 메뉴가 아닌 주문 당시 값
 
 | 코드 | 상황 |
 |---|---|
-| 400 | 입력 값 검증 실패, 총액이 너무 큼(long 범위 초과) |
+| 400 | 입력 값 검증 실패, 같은 메뉴 중복, 다른 매장의 메뉴가 섞임, 총액이 너무 큼(long 범위 초과) |
 | 401 | 토큰 없음 |
 | 403 | OWNER가 요청 |
-| 404 | 메뉴가 없거나 삭제됨 |
+| 404 | 항목 중 하나라도 메뉴가 없거나 삭제됨 |
 
 #### 주문 목록 조회 `GET /api/orders`
 Response `200 OK` — 주문 생성 응답 형식의 배열
@@ -457,11 +472,12 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 | `V2__add_audit_columns_to_users_and_payments.sql` | `users`, `payments`에 `created_at`, `updated_at` 추가 (BaseEntity 상속 반영) |
 | `V3__widen_amount_columns_and_add_payment_fee.sql` | 금액 컬럼 `integer` → `bigint`, `payments`에 `fee_rate`, `fee_amount`, `settlement_amount` 추가 (기존 결제는 수수료 0으로 백필) |
 | `V4__add_stores.sql` | `stores` 테이블 추가, `menus.store_id`·`orders.store_id` 추가 후 `menus.owner_id` 제거 (메뉴를 가진 점주마다 `{아이디}의 매장`을 1개 만들어 기존 메뉴·주문을 연결) |
+| `V5__add_order_items.sql` | `order_items` 테이블 추가, 기존 주문마다 항목 1개로 백필(단가 = `total_price / quantity`) 후 `orders.menu_id`·`orders.quantity` 제거 |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V5__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V6__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -475,12 +491,13 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 | stores ─ menus | 1 : N | `menus.store_id` → `stores.id` | 한 매장에 여러 메뉴 |
 | stores ─ orders | 1 : N | `orders.store_id` → `stores.id` | 한 매장에 여러 주문이 들어옴 (메뉴의 매장과 항상 같음) |
 | users ─ orders | 1 : N | `orders.user_id` → `users.id` | CUSTOMER 한 명이 여러 주문을 생성 |
-| menus ─ orders | 1 : N | `orders.menu_id` → `menus.id` | 한 메뉴에 여러 주문이 들어옴 |
+| orders ─ order_items | 1 : N | `order_items.order_id` → `orders.id` (ON DELETE CASCADE) | 한 주문에 여러 항목, 주문이 지워지면 항목도 함께 삭제 |
+| menus ─ order_items | 1 : N | `order_items.menu_id` → `menus.id` | 한 메뉴가 여러 주문 항목에 담김 |
 | orders ─ payments | 1 : 1 | `payments.order_id` → `orders.id` (unique) | 주문 1건당 결제는 1건만 가능 |
 
 - **OWNER가 받은 주문 조회**: `orders → stores → users(owner)`로 본인 매장에 들어온 주문만 찾음 (`findAllByStoreOwnerId`), 매장 하나는 `findAllByStoreId`
-- **`orders.store_id`를 따로 두는 이유**: 메뉴를 거치지 않고 매장별 주문 조회·소유권 검증 가능. `Order` 생성자에서 `menu.getStore()`로만 정해지므로 메뉴의 매장과 어긋날 수 없음
-- **메뉴는 Soft Delete**: 실제로 행을 지우면 그 메뉴를 참조하는 주문의 FK(`menu_id`)가 깨지므로, `deleted = true`로만 표시하고 조회에서 제외
+- **`orders.store_id`를 따로 두는 이유**: 메뉴를 거치지 않고 매장별 주문 조회·소유권 검증 가능. `Order.addItem`이 다른 매장의 메뉴를 거부하므로 항목 메뉴의 매장과 어긋날 수 없음
+- **메뉴는 Soft Delete**: 실제로 행을 지우면 그 메뉴를 참조하는 주문 항목의 FK(`order_items.menu_id`)가 깨지므로, `deleted = true`로만 표시하고 조회에서 제외
 - **중복 결제 방지**: `payments.order_id`에 unique 제약을 걸어 같은 주문의 결제가 동시에 들어와도 DB에서 한 건만 저장됨
 
 - **생성·수정 시각 공통화**: `users`, `stores`, `menus`, `orders`, `payments` 모두 `BaseEntity`(@MappedSuperclass)를 상속해 `created_at`, `updated_at`을 JPA Auditing으로 자동 기록
@@ -529,16 +546,27 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 |---|---|---|---|
 | id | bigint | PK | |
 | user_id | bigint | FK → users.id, NOT NULL | 주문한 CUSTOMER |
-| menu_id | bigint | FK → menus.id, NOT NULL | 주문한 메뉴 |
-| store_id | bigint | FK → stores.id, NOT NULL | 주문이 들어간 매장 (메뉴의 매장) |
-| quantity | integer | NOT NULL | 수량 |
-| total_price | bigint | NOT NULL | 주문 당시 총액 (메뉴 가격 × 수량, 서버 계산) |
+| store_id | bigint | FK → stores.id, NOT NULL | 주문이 들어간 매장 (항목 메뉴들의 매장) |
+| total_price | bigint | NOT NULL | 주문 당시 총액 (항목 금액의 합, 서버 계산) |
 | delivery_address | varchar(255) | NOT NULL | 배송 주소 |
 | status | varchar(255) | NOT NULL | `ORDER_REQUEST` / `ORDER_CANCELLED` / `PAYMENT_COMPLETED` / `ORDER_ACCEPTED` / `DELIVERY_COMPLETED` |
 | created_at | timestamp | | 주문 시각 (BaseEntity, 이후 변경 불가) |
 | updated_at | timestamp | | 마지막 상태 변경 시각 (BaseEntity) |
 
 > 메뉴 가격이 나중에 바뀌어도 주문 금액이 변하지 않도록 `total_price`를 주문 시점에 따로 저장
+
+#### order_items — 주문 항목
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| order_id | bigint | FK → orders.id (ON DELETE CASCADE), NOT NULL | 항목이 속한 주문 |
+| menu_id | bigint | FK → menus.id, NOT NULL | 주문한 메뉴 |
+| menu_name | varchar(50) | NOT NULL | 주문 당시 메뉴 이름 (스냅샷) |
+| unit_price | bigint | NOT NULL, 0 이상 | 주문 당시 메뉴 단가 (스냅샷) |
+| quantity | integer | NOT NULL, 1 이상 | 수량 |
+
+> `(order_id, menu_id)` UNIQUE → 한 주문 안에서 같은 메뉴는 한 항목으로만 (수량으로 합침)
+> 이름·단가를 복사해 두므로 메뉴가 수정·삭제되어도 주문 내역은 주문 당시 그대로. V5 백필 항목의 이름은 당시 이름이 남아 있지 않아 마이그레이션 시점의 메뉴 이름
 
 #### payments — 결제
 | 컬럼 | 타입 | 제약 | 설명 |
@@ -572,9 +600,8 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 - **수수료율 설정**: `application.yml`의 `payment.fee.rate` (기본 `"0.05"`, 실제 계약 요율이 아닌 임시 통일 값). 0 이상 1 이하, 소수점 4자리까지만 허용하고 벗어나면 기동 실패
   - double을 거치지 않도록 문자열로 지정
   - 결제마다 그 시점의 수수료율을 `fee_rate`에 저장 → 설정을 바꿔도 이전 결제의 계산 근거가 남음
-- **총액 계산**: `Math.multiplyExact`로 `long` 범위를 넘으면 400 응답 (잘못된 값이 저장되지 않도록)
+- **총액 계산**: 항목 금액은 `Math.multiplyExact`, 합산은 `Math.addExact`로 계산해 `long` 범위를 넘으면 400 응답 (잘못된 값이 저장되지 않도록, `Order.addItem`)
   - 요청 본문의 가격이 `long`, 수량이 `int` 범위를 넘으면 JSON 변환 단계에서 400
-  - 현재 주문은 메뉴 1개 단위라 항목별 합산이 없음 → 주문 항목(order_items)을 도입하면 합산도 `Math.addExact`로 계산할 것
 - **수수료 도입 전 결제**: V3 마이그레이션에서 수수료 0, 정산액 = 결제액으로 채움
 - 수수료·정산액은 사장님/플랫폼 내부 정보라서 CUSTOMER가 받는 결제 응답(`PaymentResponse`)에는 포함하지 않음 → 이후 사장님용 정산 조회 API를 별도 DTO로 분리해 제공
 - 참고: `long` 금액을 JSON 숫자로 내보내므로, 2^53(약 9천조 원)을 넘는 금액은 JavaScript 클라이언트에서 정밀도가 손실될 수 있음 (현재 요구 범위에서는 해당 없음)
