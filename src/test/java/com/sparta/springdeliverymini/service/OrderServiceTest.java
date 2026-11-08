@@ -9,11 +9,16 @@ import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
+import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
+import com.sparta.springdeliverymini.exception.InvalidPaymentStatusException;
+import java.math.BigDecimal;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
@@ -49,6 +54,9 @@ class OrderServiceTest {
     @Mock
     private StoreService storeService;
 
+    @Mock
+    private PaymentRepository paymentRepository;
+
     // 배달완료 시각을 고정해 deliveredAt이 Clock 기준으로 기록되는지 확인
     private static final LocalDateTime FIXED_NOW = LocalDateTime.of(2026, 11, 5, 23, 59, 59);
     private final Clock fixedClock = Clock.fixed(FIXED_NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
@@ -58,7 +66,8 @@ class OrderServiceTest {
     // Clock은 Mock이 아니라 고정 값이므로 @InjectMocks 대신 직접 생성 (PaymentServiceTest와 같은 방식)
     @BeforeEach
     void setUp() {
-        orderService = new OrderService(orderRepository, menuRepository, userRepository, storeService, fixedClock);
+        orderService = new OrderService(orderRepository, menuRepository, userRepository, storeService,
+                paymentRepository, fixedClock);
     }
 
     private final User customer = user(1L, "customer1", Role.CUSTOMER);
@@ -255,30 +264,62 @@ class OrderServiceTest {
     void 본인의_주문요청_주문을_취소한다() {
         Order order = order(OrderStatus.ORDER_REQUEST);
         given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         orderService.cancelOrder(10L, "customer1");
 
         assertThat(order.getStatus()).isEqualTo(OrderStatus.ORDER_CANCELLED);
+        verify(paymentRepository, never()).findByOrderId(any()); // 결제 전 주문은 결제 조회 안 함
     }
 
     @Test
-    void 결제완료된_주문은_취소할_수_없다() {
+    void 결제완료_주문을_취소하면_결제도_함께_취소된다() {
         Order order = order(OrderStatus.PAYMENT_COMPLETED);
+        Payment payment = new Payment(order, 18000, new BigDecimal("0.05"), PaymentMethod.CARD, FIXED_NOW.minusHours(1));
         given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
+        given(paymentRepository.findByOrderId(10L)).willReturn(Optional.of(payment));
+
+        orderService.cancelOrder(10L, "customer1");
+
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.ORDER_CANCELLED);
+        assertThat(payment.getStatus()).isEqualTo(PaymentStatus.CANCELLED);
+        assertThat(payment.getCancelledAt()).isEqualTo(FIXED_NOW); // Clock 기준
+        assertThat(payment.getAmount()).isEqualTo(18000); // 금액은 그대로 (전액 취소)
+    }
+
+    @Test
+    void 이미_취소된_결제면_409() {
+        Order order = order(OrderStatus.PAYMENT_COMPLETED);
+        Payment payment = new Payment(order, 18000, new BigDecimal("0.05"), PaymentMethod.CARD, FIXED_NOW.minusHours(1));
+        payment.cancel(FIXED_NOW.minusMinutes(1));
+        given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
+        given(paymentRepository.findByOrderId(10L)).willReturn(Optional.of(payment));
+
+        assertThatThrownBy(() -> orderService.cancelOrder(10L, "customer1"))
+                .isInstanceOf(InvalidPaymentStatusException.class);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = OrderStatus.class, names = {"ORDER_ACCEPTED", "DELIVERY_COMPLETED", "ORDER_CANCELLED"})
+    void 주문수락_이후나_이미_취소된_주문은_취소할_수_없다(OrderStatus status) {
+        Order order = order(status);
+        given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         assertThatThrownBy(() -> orderService.cancelOrder(10L, "customer1"))
                 .isInstanceOf(InvalidOrderStatusException.class)
-                .hasMessage("주문요청 상태에서만 주문을 취소할 수 있습니다.");
-        assertThat(order.getStatus()).isEqualTo(OrderStatus.PAYMENT_COMPLETED);
+                .hasMessage("주문수락 전(주문요청·결제완료) 상태에서만 주문을 취소할 수 있습니다.");
+        assertThat(order.getStatus()).isEqualTo(status);
+        verify(paymentRepository, never()).findByOrderId(any());
     }
 
     @Test
     void 다른_고객의_주문은_취소할_수_없다() {
         Order order = order(OrderStatus.ORDER_REQUEST);
         given(userRepository.findByUsername("customer2")).willReturn(Optional.of(otherCustomer));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         assertThatThrownBy(() -> orderService.cancelOrder(10L, "customer2"))
                 .isInstanceOf(ApiException.class)
@@ -299,7 +340,7 @@ class OrderServiceTest {
     @Test
     void 없는_주문은_취소할_수_없다() {
         given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
-        given(orderRepository.findById(99L)).willReturn(Optional.empty());
+        given(orderRepository.findByIdForUpdate(99L)).willReturn(Optional.empty());
 
         assertThatThrownBy(() -> orderService.cancelOrder(99L, "customer1"))
                 .isInstanceOf(ApiException.class)
@@ -312,7 +353,7 @@ class OrderServiceTest {
     void 결제완료_주문을_수락한다() {
         Order order = order(OrderStatus.PAYMENT_COMPLETED);
         given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         orderService.statusOrder(10L, "owner1", OrderStatus.ORDER_ACCEPTED);
 
@@ -323,7 +364,7 @@ class OrderServiceTest {
     void 수락된_주문을_배달완료한다() {
         Order order = order(OrderStatus.ORDER_ACCEPTED);
         given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         orderService.statusOrder(10L, "owner1", OrderStatus.DELIVERY_COMPLETED);
 
@@ -335,7 +376,7 @@ class OrderServiceTest {
     void 결제_전_주문은_수락할_수_없다() {
         Order order = order(OrderStatus.ORDER_REQUEST);
         given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         assertThatThrownBy(() -> orderService.statusOrder(10L, "owner1", OrderStatus.ORDER_ACCEPTED))
                 .isInstanceOf(InvalidOrderStatusException.class);
@@ -347,7 +388,7 @@ class OrderServiceTest {
         // 주문취소·결제완료·주문요청은 OWNER의 상태 변경 API로 요청할 수 없음
         Order order = order(OrderStatus.PAYMENT_COMPLETED);
         given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         assertThatThrownBy(() -> orderService.statusOrder(10L, "owner1", OrderStatus.ORDER_CANCELLED))
                 .isInstanceOf(InvalidOrderStatusException.class)
@@ -359,7 +400,7 @@ class OrderServiceTest {
     void 다른_OWNER의_매장에_들어온_주문은_변경할_수_없다() {
         Order order = order(OrderStatus.PAYMENT_COMPLETED);
         given(userRepository.findByUsername("owner2")).willReturn(Optional.of(otherOwner));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         assertThatThrownBy(() -> orderService.statusOrder(10L, "owner2", OrderStatus.ORDER_ACCEPTED))
                 .isInstanceOf(ApiException.class)
@@ -374,7 +415,7 @@ class OrderServiceTest {
         Order order = new Order(customer, secondStore, "서울시", OrderStatus.PAYMENT_COMPLETED);
         order.addItem(menu(2L, "피자", 20000, secondStore), 1);
         given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         orderService.statusOrder(10L, "owner1", OrderStatus.ORDER_ACCEPTED);
 

@@ -53,8 +53,10 @@ public class SettlementService {
             throw new ApiException(HttpStatus.BAD_REQUEST, e.getMessage());
         }
 
-        // 5. 배달완료 시각이 [from 00:00, to+1 00:00)인 결제를 모아 합계 계산
-        List<Payment> payments = paymentRepository.findSettlementTargets(store.getId(), period.start(), period.end());
-        return StoreSettlementResponse.of(store, period, payments);
+        // 5. 판매: 배달완료 시각이 [from 00:00, to+1 00:00)인 결제 (나중에 환불돼도 포함 → 조회 금액 불변)
+        //    환불: 환불 시각이 같은 구간인 결제
+        List<Payment> sales = paymentRepository.findSettlementTargets(store.getId(), period.start(), period.end());
+        List<Payment> refunds = paymentRepository.findRefundsInPeriod(store.getId(), period.start(), period.end());
+        return StoreSettlementResponse.of(store, period, sales, refunds);
     }
 }

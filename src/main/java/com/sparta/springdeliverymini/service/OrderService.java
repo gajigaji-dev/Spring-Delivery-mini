@@ -9,6 +9,7 @@ import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
+import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -32,7 +33,8 @@ public class OrderService {
     private final MenuRepository menuRepository;
     private final UserRepository userRepository;
     private final StoreService storeService;
-    private final Clock clock; // 배달완료 시각 기준 (config.TimeConfig, Asia/Seoul)
+    private final PaymentRepository paymentRepository;
+    private final Clock clock; // 배달완료·결제 취소 시각 기준 (config.TimeConfig, Asia/Seoul)
 
     public List<OrderResponse> getOrders(String username) {
         // 1. 현재 로그인한 사용자 찾기
@@ -153,9 +155,10 @@ public class OrderService {
             );
         }
 
-        // 3. 주문 조회
+        // 3. 주문 조회 (행 잠금)
         // 주문이 존재하지 않으면 → 404
-        Order order = orderRepository.findById(id)
+        // 사장님 수락과 동시에 들어와도 한쪽은 앞 요청이 커밋된 뒤의 상태를 읽음 → 수락된 주문이 취소되는 일 없음
+        Order order = orderRepository.findByIdForUpdate(id)
                 .orElseThrow(() ->
                         new ApiException(
                                 HttpStatus.NOT_FOUND,
@@ -173,9 +176,19 @@ public class OrderService {
         }
 
         // 5. 주문 취소
-        // ORDER_REQUEST → ORDER_CANCELLED
-        // 결제완료된 주문 등 다른 상태라면 Order가 예외 → 409
+        // ORDER_REQUEST / PAYMENT_COMPLETED → ORDER_CANCELLED
+        // 주문수락 이후 등 다른 상태라면 Order가 예외 → 409
+        boolean paid = order.getStatus() == OrderStatus.PAYMENT_COMPLETED;
         order.cancel();
+
+        // 6. 결제완료 주문이면 결제도 함께 취소 (COMPLETED → CANCELLED, 고객 결제액 전액 취소)
+        // 배달 전이라 정산 대상이 된 적이 없으므로 정산에는 영향 없음
+        // 실패하면 트랜잭션 전체가 롤백되므로 주문 취소도 함께 취소됨
+        if (paid) {
+            Payment payment = paymentRepository.findByOrderId(order.getId())
+                    .orElseThrow(() -> new IllegalStateException("결제완료 주문에 결제 내역이 없습니다: " + order.getId()));
+            payment.cancel(LocalDateTime.now(clock));
+        }
     }
 
     @Transactional
@@ -203,9 +216,9 @@ public class OrderService {
             );
         }
 
-        // 3. 주문 조회
+        // 3. 주문 조회 (행 잠금 — 고객 취소와 동시에 들어와도 한쪽만 성공)
         // 주문이 존재하지 않으면 → 404
-        Order order = orderRepository.findById(id)
+        Order order = orderRepository.findByIdForUpdate(id)
                 .orElseThrow(() ->
                         new ApiException(
                                 HttpStatus.NOT_FOUND,

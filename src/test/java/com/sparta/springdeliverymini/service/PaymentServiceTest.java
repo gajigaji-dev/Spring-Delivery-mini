@@ -84,7 +84,7 @@ class PaymentServiceTest {
 
     private void givenCustomerAndOrder(Order order) {
         given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
     }
 
     @Test
@@ -203,7 +203,7 @@ class PaymentServiceTest {
     void 다른_고객의_주문은_결제할_수_없다() {
         Order order = order(OrderStatus.ORDER_REQUEST);
         given(userRepository.findByUsername("customer2")).willReturn(Optional.of(otherCustomer));
-        given(orderRepository.findById(10L)).willReturn(Optional.of(order));
+        given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));
 
         assertThatThrownBy(() -> paymentService.pay(new PaymentRequest(10L, "CARD"), "customer2"))
                 .isInstanceOf(ApiException.class)

@@ -126,9 +126,11 @@ class OrderTest {
         assertThat(order.getDeliveredAt()).isNull();
     }
 
-    @Test
-    void 주문요청_상태에서_취소할_수_있다() {
-        Order order = orderWith(OrderStatus.ORDER_REQUEST);
+    // 주문수락 전(주문요청·결제완료)이면 취소 가능 — 결제완료 주문의 결제 취소는 OrderService가 함께 처리
+    @ParameterizedTest
+    @EnumSource(value = OrderStatus.class, names = {"ORDER_REQUEST", "PAYMENT_COMPLETED"})
+    void 주문수락_전에는_취소할_수_있다(OrderStatus status) {
+        Order order = orderWith(status);
 
         order.cancel();
 
@@ -137,14 +139,15 @@ class OrderTest {
 
     // ===== 허용되지 않는 전이 =====
 
+    // 주문수락 이후(ORDER_ACCEPTED, DELIVERY_COMPLETED)와 이미 취소된 주문은 취소 불가
     @ParameterizedTest
-    @EnumSource(value = OrderStatus.class, names = "ORDER_REQUEST", mode = EnumSource.Mode.EXCLUDE)
-    void 주문요청이_아니면_취소할_수_없다(OrderStatus status) {
+    @EnumSource(value = OrderStatus.class, names = {"ORDER_REQUEST", "PAYMENT_COMPLETED"}, mode = EnumSource.Mode.EXCLUDE)
+    void 주문수락_이후에는_취소할_수_없다(OrderStatus status) {
         Order order = orderWith(status);
 
         assertThatThrownBy(order::cancel)
                 .isInstanceOf(InvalidOrderStatusException.class)
-                .hasMessage("주문요청 상태에서만 주문을 취소할 수 있습니다.");
+                .hasMessage("주문수락 전(주문요청·결제완료) 상태에서만 주문을 취소할 수 있습니다.");
         assertThat(order.getStatus()).isEqualTo(status); // 상태는 그대로
     }
 

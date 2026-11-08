@@ -17,11 +17,12 @@
 | `V6__add_delivered_at_to_orders.sql` | `orders.delivered_at` 추가, 기존 배달완료 주문은 `updated_at`(없으면 `created_at`)으로 백필, 배달완료 상태 ⇔ 시각 CHECK 제약, `(store_id, delivered_at)`, `(store_id, status)` 인덱스 |
 | `V7__add_settlements.sql` | `settlements` 테이블 추가 (매장별 일 정산 확정 기록), `(store_id, settlement_date)` UNIQUE, 상태·지급 시각·금액 CHECK 제약 |
 | `V8__add_settlement_pending_status_and_admin_role.sql` | 정산 상태에 `PENDING` 추가, `confirmed_at` NULL 허용 + `PENDING` ⇔ 확정 시각 없음 CHECK, `users.role`에 `ADMIN` 추가 (기존 행은 변경 없음) |
+| `V9__add_payment_status_and_settlement_refunds.sql` | `payments`에 `status`·`cancelled_at`·`refunded_at` 추가(기존 결제는 `COMPLETED`), `settlements`에 판매·환불·이월 컬럼 추가(기존 행은 환불·이월 0으로 백필) 및 금액 CHECK 분리, `settlement_refunds`·`settlement_carryovers` 테이블 추가 |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V9__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V10__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -39,6 +40,9 @@
 | menus ─ order_items | 1 : N | `order_items.menu_id` → `menus.id` | 한 메뉴가 여러 주문 항목에 담김 |
 | orders ─ payments | 1 : 1 | `payments.order_id` → `orders.id` (unique) | 주문 1건당 결제는 1건만 가능 |
 | stores ─ settlements | 1 : N | `settlements.store_id` → `stores.id` | 한 매장에 날짜별 정산 기록 (매장·날짜당 1건) |
+| settlements ─ settlement_refunds | 1 : N | `settlement_refunds.settlement_id` → `settlements.id` | 정산 1건에서 여러 환불을 차감 |
+| payments ─ settlement_refunds | 1 : 1 | `settlement_refunds.payment_id` → `payments.id` (unique) | 환불 1건은 정확히 한 정산에서만 차감 |
+| settlements ─ settlement_carryovers | 1 : 1 / 1 : N | `from_settlement_id` (unique), `to_settlement_id` → `settlements.id` | 한 정산의 이월분은 한 번만, 한 정산은 여러 이월분을 받을 수 있음 |
 
 - **OWNER가 받은 주문 조회**: `orders → stores → users(owner)`로 본인 매장에 들어온 주문만 찾음 (`findAllByStoreOwnerId`), 매장 하나는 `findAllByStoreId`
 - **`orders.store_id`를 따로 두는 이유**: 메뉴를 거치지 않고 매장별 주문 조회·소유권 검증 가능. `Order.addItem`이 다른 매장의 메뉴를 거부하므로 항목 메뉴의 매장과 어긋날 수 없음
@@ -131,6 +135,9 @@
 | settlement_amount | bigint | NOT NULL | 사장님 정산액 (`amount - fee_amount`) |
 | payment_method | varchar(255) | NOT NULL | `CARD` |
 | paid_at | timestamp(6) | NOT NULL | 결제 시각 |
+| status | varchar(20) | NOT NULL, `COMPLETED` / `CANCELLED` / `REFUNDED` | 결제 상태 (V9, 기존 결제는 `COMPLETED`) |
+| cancelled_at | timestamp(6) | `CANCELLED`일 때만 NOT NULL (CHECK) | 배달 전 취소 시각 |
+| refunded_at | timestamp(6) | `REFUNDED`일 때만 NOT NULL (CHECK), 부분 인덱스 `WHERE status = 'REFUNDED'` | 배달 후 환불 시각 |
 | created_at | timestamp | | 기록 생성 시각 (BaseEntity, 이후 변경 불가) |
 | updated_at | timestamp | | 기록 수정 시각 (BaseEntity) |
 
@@ -146,19 +153,47 @@
 | id | bigint | PK | |
 | store_id | bigint | FK → stores.id, NOT NULL | 정산 대상 매장 |
 | settlement_date | date | NOT NULL, (store_id, settlement_date) UNIQUE | 정산 날짜 — 배달완료 시각이 `[D 00:00, D+1 00:00)`(Asia/Seoul)인 결제 |
-| payment_count | integer | NOT NULL, 0 이상 | 정산 대상 결제 건수 |
-| total_amount | bigint | NOT NULL | 결제 총액 |
-| total_fee | bigint | NOT NULL, 0 이상 | 플랫폼 수수료 합계 |
-| settlement_amount | bigint | NOT NULL, 0 이상 | 사장님 정산액 합계 |
+| payment_count | integer | NOT NULL, 0 이상 | 판매 건수 (이날 배달완료된 결제) |
+| total_amount | bigint | NOT NULL | 판매 결제 총액 |
+| total_fee | bigint | NOT NULL, 0 이상 | 판매 플랫폼 수수료 합계 |
+| sales_settlement_amount | bigint | NOT NULL, 0 이상 | 판매 정산액 합계 (V9) |
+| refund_count, refund_amount, refund_fee, refund_settlement_amount | integer / bigint | NOT NULL, 0 이상 | 이 정산에서 차감한 환불 합계 (V9, `settlement_refunds`의 합과 같음) |
+| carried_in_amount | bigint | NOT NULL, 0 이상 | 이전 정산에서 이월받아 차감한 금액 (V9, `settlement_carryovers`의 합과 같음) |
+| carried_out_amount | bigint | NOT NULL, 0 이상 | 다음 정산으로 넘긴 금액 (V9) |
+| settlement_amount | bigint | NOT NULL, 0 이상 | **실제 지급액** (V9 이전 행은 판매 정산액과 같음) |
 | status | varchar(20) | NOT NULL, `PENDING` / `CONFIRMED` / `PAID` | 정산 상태 (확정 대기 → 확정 → 지급완료) |
 | confirmed_at | timestamp(6) | `PENDING`이면 NULL, 그 외 NOT NULL (CHECK) | 관리자 확정 시각 |
 | paid_at | timestamp(6) | `PAID`일 때만 NOT NULL (CHECK) | 지급 시각 |
 | created_at | timestamp(6) | | 집계 시각 (BaseEntity) |
 | updated_at | timestamp(6) | | 마지막 상태 변경 시각 (BaseEntity) |
 
-> `total_fee + settlement_amount = total_amount`를 payments와 같은 방식(`numeric`으로 올려 비교)의 CHECK 제약으로 강제
+> 금액 규칙을 payments와 같은 방식(`numeric`으로 올려 비교)의 CHECK 제약으로 강제 (V9)
+> - 판매: `total_fee + sales_settlement_amount = total_amount` / 환불: `refund_fee + refund_settlement_amount = refund_amount`
+> - 지급: `settlement_amount = 0 OR carried_out_amount = 0`
+> - 순액: `settlement_amount - carried_out_amount = sales_settlement_amount - refund_settlement_amount - carried_in_amount`
 > 정산 대상이 없는 매장·날짜는 행을 만들지 않음 (빈 기록이 매장 수 × 날짜 수만큼 쌓이지 않도록)
 > 집계·확정·지급과 스케줄러 동작은 [정산 기준 · 정산 집계·확정·지급](settlement-policy.md#8-정산-집계확정지급--settlements) 참고
+
+### settlement_refunds — 환불 차감 기록 (V9)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| settlement_id | bigint | FK → settlements.id, NOT NULL, 인덱스 | 환불을 차감한 정산 |
+| payment_id | bigint | FK → payments.id, NOT NULL, **UNIQUE** | 환불된 결제 — 한 번만 차감 |
+| amount, fee_amount, settlement_amount | bigint | NOT NULL, `fee_amount + settlement_amount = amount` | 환불 금액 스냅샷 |
+| created_at, updated_at | timestamp(6) | | BaseEntity |
+
+### settlement_carryovers — 이월 차감 기록 (V9)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| from_settlement_id | bigint | FK → settlements.id, NOT NULL, **UNIQUE** | 이월분을 넘긴 정산 — 한 번만 차감 |
+| to_settlement_id | bigint | FK → settlements.id, NOT NULL, 인덱스 | 이월분을 차감한 정산 |
+| amount | bigint | NOT NULL, `> 0` | 차감한 금액 (= 넘긴 정산의 `carried_out_amount`) |
+| created_at, updated_at | timestamp(6) | | BaseEntity |
+
+> `from_settlement_id <> to_settlement_id` CHECK. "더 뒤 날짜로만 이월"은 행 간 비교라 애플리케이션(`SettlementCarryover`)에서 검증
+> 미차감 = 이 테이블들에 기록이 없는 환불·이월분 → 다음 집계가 가져감 ([정산 기준 9장](settlement-policy.md#9-결제-취소환불과-차기-정산-반영))
 
 ## 결제 연관관계: `@OneToOne` vs `@ManyToOne`
 

@@ -45,8 +45,8 @@ class SettlementStatusMigrationTest {
                         + "(2, 1, '2026-11-06', 1, 10000, 500, 9500, 'PAID', ?, ?)",
                 CONFIRMED_AT, CONFIRMED_AT, PAID_AT);
 
-        // 3. 최신 버전까지 적용
-        flyway(dataSource, "latest").migrate();
+        // 3. V8까지 적용 (V9 이후 변경은 PaymentRefundMigrationTest에서 검증)
+        flyway(dataSource, "8").migrate();
     }
 
     @AfterAll
