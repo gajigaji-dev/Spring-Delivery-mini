@@ -30,7 +30,8 @@ spring:
     baseline-on-migrate: true
     baseline-version: 1
 
-# 결제 플랫폼 수수료 — config.PaymentFeeProperties
+# 결제 플랫폼 수수료 (공통 수수료율) — config.PaymentFeeProperties
+# 매장별 수수료율(stores.fee_rate, 관리자 API로 설정)이 없는 매장에 적용. 결제 시점 값이 payments.fee_rate에 저장됨
 # rate: 0 이상 1 이하, 소수점 4자리까지 (0.05 = 5%, 실제 계약 요율이 아닌 임시 통일 값). 범위를 벗어나면 기동 실패
 # 계산·반올림 정책은 entity.PaymentFee 참고 (수수료 원 단위 HALF_UP, 정산액 = 결제액 - 수수료)
 payment:

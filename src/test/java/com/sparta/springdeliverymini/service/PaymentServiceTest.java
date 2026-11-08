@@ -103,7 +103,7 @@ class PaymentServiceTest {
     }
 
     @Test
-    void 결제하면_설정된_수수료율로_수수료와_정산액을_계산해_저장한다() {
+    void 매장_수수료율이_없으면_공통_수수료율로_수수료와_정산액을_계산해_저장한다() {
         Order order = order(OrderStatus.ORDER_REQUEST);
         givenCustomerAndOrder(order);
         given(paymentRepository.existsByOrderId(10L)).willReturn(false);
@@ -117,6 +117,39 @@ class PaymentServiceTest {
         assertThat(saved.getFeeRate()).isEqualByComparingTo("0.05");
         assertThat(saved.getFeeAmount()).isEqualTo(1800);         // 36000 × 0.05
         assertThat(saved.getSettlementAmount()).isEqualTo(34200); // 36000 - 1800
+    }
+
+    @Test
+    void 매장_수수료율이_있으면_공통_수수료율_대신_매장_수수료율로_계산한다() {
+        store.changeFeeRate(new BigDecimal("0.03"));
+        Order order = order(OrderStatus.ORDER_REQUEST);
+        givenCustomerAndOrder(order);
+        given(paymentRepository.existsByOrderId(10L)).willReturn(false);
+
+        paymentService.pay(new PaymentRequest(10L, "CARD"), "customer1");
+
+        ArgumentCaptor<Payment> captor = ArgumentCaptor.forClass(Payment.class);
+        verify(paymentRepository).saveAndFlush(captor.capture());
+        Payment saved = captor.getValue();
+        assertThat(saved.getFeeRate()).isEqualTo(new BigDecimal("0.0300"));
+        assertThat(saved.getFeeAmount()).isEqualTo(1080);         // 36000 × 0.03
+        assertThat(saved.getSettlementAmount()).isEqualTo(34920); // 36000 - 1080
+    }
+
+    @Test
+    void 매장_수수료율이_0이면_수수료_없이_결제된다() {
+        store.changeFeeRate(BigDecimal.ZERO);
+        Order order = order(OrderStatus.ORDER_REQUEST);
+        givenCustomerAndOrder(order);
+        given(paymentRepository.existsByOrderId(10L)).willReturn(false);
+
+        paymentService.pay(new PaymentRequest(10L, "CARD"), "customer1");
+
+        ArgumentCaptor<Payment> captor = ArgumentCaptor.forClass(Payment.class);
+        verify(paymentRepository).saveAndFlush(captor.capture());
+        assertThat(captor.getValue().getFeeRate()).isEqualByComparingTo("0");
+        assertThat(captor.getValue().getFeeAmount()).isZero();
+        assertThat(captor.getValue().getSettlementAmount()).isEqualTo(36000);
     }
 
     @Test
