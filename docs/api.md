@@ -19,8 +19,8 @@
   | 400 | 요청 값 검증 실패, JSON 형식 오류, 필수 쿼리 파라미터 누락, 경로·쿼리 파라미터 형식 오류 |
   | 401 | 토큰이 없거나 유효하지 않음(만료·위조), 로그인 실패 |
   | 403 | 권한 없음 (역할이 다르거나 본인 데이터가 아님) |
-  | 404 | 대상(매장·메뉴·주문)이 없음 |
-  | 409 | 중복(아이디, 결제) 또는 현재 상태에서 할 수 없는 요청 |
+  | 404 | 대상(매장·메뉴·주문·정산)이 없음 |
+  | 409 | 중복(아이디, 결제) 또는 현재 상태에서 할 수 없는 요청 (주문·정산 상태 전이) |
 
 ## API 목록
 
@@ -43,6 +43,9 @@
 | 주문 취소 | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
 | 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 매장 주문) | 204 |
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
+| 정산 목록 조회 (관리자) | GET | `/api/admin/settlements?date=&status=` | O | ADMIN | 200 |
+| 정산 확정 (관리자) | PATCH | `/api/admin/settlements/{id}/confirm` | O | ADMIN | 200 |
+| 정산 지급 (관리자) | PATCH | `/api/admin/settlements/{id}/pay` | O | ADMIN | 200 |
 
 ## 주문 상태 흐름
 
@@ -72,7 +75,7 @@ Request
 ```
 - `username`: 4~20자
 - `password`: 8~72자 (BCrypt로 암호화해 저장)
-- `role`: `CUSTOMER` 또는 `OWNER`
+- `role`: `CUSTOMER` 또는 `OWNER` (`ADMIN`은 가입 불가 → 400, 관리자는 DB에서 직접 지정)
 
 Response `201 Created`
 ```json
@@ -81,7 +84,7 @@ Response `201 Created`
 
 | 코드 | 상황 |
 |---|---|
-| 400 | 입력 값 검증 실패, role이 CUSTOMER/OWNER가 아님 |
+| 400 | 입력 값 검증 실패, role이 CUSTOMER/OWNER가 아님 (`ADMIN` 포함) |
 | 409 | 이미 사용 중인 아이디 |
 
 ### 로그인 `POST /api/users/login`
@@ -353,3 +356,65 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 | 403 | OWNER가 요청, 본인 주문이 아님 |
 | 404 | 주문 없음 |
 | 409 | 주문요청 상태가 아님 (이미 결제됨·취소됨), 중복 결제 |
+
+---
+
+## 관리자 — 정산
+
+일 정산은 스케줄러가 매일 01:10에 전날분을 매장별로 집계해 `PENDING`으로 만들고, 관리자가 확정·지급한다 ([정산 기준 · 정산 집계·확정·지급](settlement-policy.md#8-정산-집계확정지급--settlements)).
+
+```
+PENDING(확정 대기) ── PATCH .../confirm ──▶ CONFIRMED(확정) ── PATCH .../pay ──▶ PAID(지급완료)
+```
+
+- 모든 관리자 API는 `ADMIN`만 (토큰 없음 401, CUSTOMER·OWNER 403)
+- 정산 응답 형식 (`SettlementResponse`)
+  ```json
+  { "id": 1, "storeId": 1, "storeName": "치킨집", "settlementDate": "2026-11-05",
+    "paymentCount": 2, "totalAmount": 38009, "totalFee": 1900, "settlementAmount": 36109,
+    "status": "CONFIRMED",
+    "aggregatedAt": "2026-11-06T01:10:00", "confirmedAt": "2026-11-06T09:00:00", "paidAt": null }
+  ```
+  - `aggregatedAt`: 스케줄러 집계 시각, `confirmedAt`: 확정 시각(`PENDING`이면 `null`), `paidAt`: 지급 시각(`PAID`가 아니면 `null`)
+
+### 정산 목록 조회 `GET /api/admin/settlements`
+Request — 쿼리 파라미터
+```
+GET /api/admin/settlements?date=2026-11-05&status=PENDING
+```
+- `date`: 필수, `yyyy-MM-dd` — 정산 날짜
+- `status`: 선택, `PENDING` / `CONFIRMED` / `PAID` — 없으면 전체
+
+Response `200 OK` — 정산 응답 배열 (id 순), 없으면 빈 배열
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `date` 누락·형식 오류, `status`가 정의되지 않은 값 |
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+
+### 정산 확정 `PATCH /api/admin/settlements/{id}/confirm`
+`PENDING` → `CONFIRMED`, 확정 시각(`confirmedAt`)을 서버 시각으로 기록. 요청 본문 없음
+
+Response `200 OK` — 확정된 정산
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | 정산 없음 |
+| 409 | `PENDING`이 아님 (이미 확정·지급됨) |
+
+### 정산 지급 `PATCH /api/admin/settlements/{id}/pay`
+`CONFIRMED` → `PAID`, 지급 시각(`paidAt`)을 서버 시각으로 기록. 요청 본문 없음
+
+Response `200 OK` — 지급된 정산
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | 정산 없음 |
+| 409 | `CONFIRMED`가 아님 — 확정 전(`PENDING`)이거나 이미 지급됨(`PAID`, 지급 시각은 처음 값 유지) |
+
+- 같은 정산에 지급 요청이 동시에 들어와도 행 잠금으로 한 번만 성공, 나머지는 409

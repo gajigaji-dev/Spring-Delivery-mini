@@ -5,7 +5,7 @@ import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.SettlementRepository;
 import com.sparta.springdeliverymini.repository.StoreRepository;
-import com.sparta.springdeliverymini.service.SettlementConfirmService.DailyResult;
+import com.sparta.springdeliverymini.service.SettlementAggregationService.DailyResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,16 +29,16 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 
-// SettlementConfirmService의 확정·중복 방지·오류 격리 흐름 검증 (DB 없이)
+// SettlementAggregationService의 집계·중복 방지·오류 격리 흐름 검증 (DB 없이)
 @ExtendWith(MockitoExtension.class)
-class SettlementConfirmServiceTest {
+class SettlementAggregationServiceTest {
 
     @Mock private PaymentRepository paymentRepository;
     @Mock private SettlementRepository settlementRepository;
     @Mock private StoreRepository storeRepository;
     @Mock private PlatformTransactionManager transactionManager;
 
-    // 11/6 01:10 → 11/5까지 확정 가능
+    // 11/6 01:10 → 11/5까지 집계 가능
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 11, 6, 1, 10);
     private static final LocalDate NOV_5 = LocalDate.of(2026, 11, 5);
     private static final LocalDateTime START = LocalDateTime.of(2026, 11, 5, 0, 0);
@@ -46,13 +46,13 @@ class SettlementConfirmServiceTest {
 
     private final Store store = new Store("치킨집", new User("owner1", "pw", Role.OWNER));
 
-    private SettlementConfirmService service;
+    private SettlementAggregationService service;
 
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
         // Mock 트랜잭션 매니저로 TransactionTemplate을 만들어 콜백만 실행
-        service = new SettlementConfirmService(paymentRepository, settlementRepository, storeRepository,
+        service = new SettlementAggregationService(paymentRepository, settlementRepository, storeRepository,
                 new TransactionTemplate(transactionManager), clock);
     }
 
@@ -61,14 +61,14 @@ class SettlementConfirmServiceTest {
     }
 
     @Test
-    void 정산_대상이_있는_매장마다_하루치를_확정한다() {
+    void 정산_대상이_있는_매장마다_하루치를_PENDING으로_집계한다() {
         given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(10L));
         given(settlementRepository.existsByStoreIdAndSettlementDate(10L, NOV_5)).willReturn(false);
         given(paymentRepository.findSettlementTargets(10L, START, END))
                 .willReturn(List.of(payment(18009), payment(20000)));
         given(storeRepository.getReferenceById(10L)).willReturn(store);
 
-        DailyResult result = service.confirmDaily(NOV_5);
+        DailyResult result = service.aggregateDaily(NOV_5);
 
         assertThat(result).isEqualTo(new DailyResult(NOV_5, 1, 0, 0));
         ArgumentCaptor<Settlement> captor = ArgumentCaptor.forClass(Settlement.class);
@@ -80,16 +80,17 @@ class SettlementConfirmServiceTest {
         assertThat(saved.getTotalAmount()).isEqualTo(38009L);
         assertThat(saved.getTotalFee()).isEqualTo(1900L);
         assertThat(saved.getSettlementAmount()).isEqualTo(36109L);
-        assertThat(saved.getStatus()).isEqualTo(SettlementStatus.CONFIRMED);
-        assertThat(saved.getConfirmedAt()).isEqualTo(NOW);
+        assertThat(saved.getStatus()).isEqualTo(SettlementStatus.PENDING);
+        assertThat(saved.getConfirmedAt()).isNull(); // 확정은 관리자가
+        assertThat(saved.getPaidAt()).isNull();
     }
 
     @Test
-    void 이미_확정된_매장은_건너뛴다() {
+    void 이미_정산이_있는_매장은_건너뛴다() {
         given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(10L));
         given(settlementRepository.existsByStoreIdAndSettlementDate(10L, NOV_5)).willReturn(true);
 
-        DailyResult result = service.confirmDaily(NOV_5);
+        DailyResult result = service.aggregateDaily(NOV_5);
 
         assertThat(result).isEqualTo(new DailyResult(NOV_5, 0, 1, 0));
         verify(paymentRepository, never()).findSettlementTargets(anyLong(), any(), any());
@@ -97,15 +98,15 @@ class SettlementConfirmServiceTest {
     }
 
     @Test
-    void 동시에_먼저_확정된_경우_UNIQUE_위반은_중복으로_보고_건너뛴다() {
+    void 동시에_먼저_집계된_경우_UNIQUE_위반은_중복으로_보고_건너뛴다() {
         given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(10L));
-        // 확정 전 확인: 아직 없음 → 저장 시 UNIQUE 위반 → 다시 확인: 다른 실행이 저장해 둠
+        // 집계 전 확인: 아직 없음 → 저장 시 UNIQUE 위반 → 다시 확인: 다른 실행이 저장해 둠
         given(settlementRepository.existsByStoreIdAndSettlementDate(10L, NOV_5)).willReturn(false, true);
         given(paymentRepository.findSettlementTargets(10L, START, END)).willReturn(List.of(payment(10000)));
         given(storeRepository.getReferenceById(10L)).willReturn(store);
         given(settlementRepository.saveAndFlush(any())).willThrow(new DataIntegrityViolationException("uk_settlements_store_date"));
 
-        DailyResult result = service.confirmDaily(NOV_5);
+        DailyResult result = service.aggregateDaily(NOV_5);
 
         assertThat(result).isEqualTo(new DailyResult(NOV_5, 0, 1, 0));
     }
@@ -118,20 +119,20 @@ class SettlementConfirmServiceTest {
         given(storeRepository.getReferenceById(10L)).willReturn(store);
         given(settlementRepository.saveAndFlush(any())).willThrow(new DataIntegrityViolationException("settlements_amount_check"));
 
-        DailyResult result = service.confirmDaily(NOV_5);
+        DailyResult result = service.aggregateDaily(NOV_5);
 
         assertThat(result).isEqualTo(new DailyResult(NOV_5, 0, 0, 1));
     }
 
     @Test
-    void 한_매장이_실패해도_다른_매장은_확정한다() {
+    void 한_매장이_실패해도_다른_매장은_집계한다() {
         given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(10L, 20L));
         given(settlementRepository.existsByStoreIdAndSettlementDate(anyLong(), any())).willReturn(false);
         given(paymentRepository.findSettlementTargets(10L, START, END)).willThrow(new IllegalStateException("DB 오류"));
         given(paymentRepository.findSettlementTargets(20L, START, END)).willReturn(List.of(payment(10000)));
         given(storeRepository.getReferenceById(20L)).willReturn(store);
 
-        DailyResult result = service.confirmDaily(NOV_5);
+        DailyResult result = service.aggregateDaily(NOV_5);
 
         assertThat(result).isEqualTo(new DailyResult(NOV_5, 1, 0, 1));
         verify(settlementRepository, times(1)).saveAndFlush(any());
@@ -139,9 +140,9 @@ class SettlementConfirmServiceTest {
     }
 
     @Test
-    void 확정_시각_전인_날짜는_확정하지_않는다() {
-        // 11/6 01:10 기준 11/6은 아직 확정 불가 (11/7 01:00부터)
-        assertThatThrownBy(() -> service.confirmDaily(LocalDate.of(2026, 11, 6)))
+    void 집계_가능_시각_전인_날짜는_집계하지_않는다() {
+        // 11/6 01:10 기준 11/6은 아직 집계 불가 (11/7 01:00부터)
+        assertThatThrownBy(() -> service.aggregateDaily(LocalDate.of(2026, 11, 6)))
                 .isInstanceOf(IllegalArgumentException.class);
         verifyNoInteractions(paymentRepository, settlementRepository);
     }
@@ -150,7 +151,7 @@ class SettlementConfirmServiceTest {
     void 정산_대상이_없는_날은_아무것도_저장하지_않는다() {
         given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of());
 
-        DailyResult result = service.confirmDaily(NOV_5);
+        DailyResult result = service.aggregateDaily(NOV_5);
 
         assertThat(result).isEqualTo(new DailyResult(NOV_5, 0, 0, 0));
         verifyNoInteractions(settlementRepository);

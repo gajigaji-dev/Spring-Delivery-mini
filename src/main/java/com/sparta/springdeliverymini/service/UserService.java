@@ -5,6 +5,7 @@ import com.sparta.springdeliverymini.dto.LoginRequest;
 import com.sparta.springdeliverymini.dto.LoginResponse;
 import com.sparta.springdeliverymini.dto.SignupRequest;
 import com.sparta.springdeliverymini.dto.UserResponse;
+import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
@@ -26,6 +27,12 @@ public class UserService {
 
     @Transactional
     public UserResponse signup(SignupRequest request) {
+
+        // 0. 관리자 계정은 가입으로 만들 수 없음 → 400 (관리자는 운영자가 DB에서 직접 지정)
+        //    막지 않으면 누구나 role: ADMIN으로 가입해 정산 확정·지급 권한을 얻게 됨
+        if (request.role() == Role.ADMIN) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "role은 CUSTOMER 또는 OWNER만 가입할 수 있습니다.");
+        }
 
         // 1. 아이디 중복 확인
         // 이미 같은 아이디가 있으면 → 409

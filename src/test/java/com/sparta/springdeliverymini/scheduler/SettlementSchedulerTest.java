@@ -1,8 +1,8 @@
 package com.sparta.springdeliverymini.scheduler;
 
 import com.sparta.springdeliverymini.config.TimeConfig;
-import com.sparta.springdeliverymini.service.SettlementConfirmService;
-import com.sparta.springdeliverymini.service.SettlementConfirmService.DailyResult;
+import com.sparta.springdeliverymini.service.SettlementAggregationService;
+import com.sparta.springdeliverymini.service.SettlementAggregationService.DailyResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
@@ -18,16 +18,16 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 
-// 스케줄러가 확정 가능한 날짜를 골라 최근 N일을 오래된 순으로 확정하는지 검증 (DB 없이)
+// 스케줄러가 집계 가능한 날짜를 골라 최근 N일을 오래된 순으로 집계하는지 검증 (DB 없이)
 @ExtendWith(MockitoExtension.class)
 class SettlementSchedulerTest {
 
     @Mock
-    private SettlementConfirmService confirmService;
+    private SettlementAggregationService aggregationService;
 
     private SettlementScheduler scheduler(LocalDateTime now, int catchUpDays) {
         Clock clock = Clock.fixed(now.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
-        return new SettlementScheduler(confirmService, clock, catchUpDays);
+        return new SettlementScheduler(aggregationService, clock, catchUpDays);
     }
 
     private static DailyResult empty(LocalDate date) {
@@ -35,37 +35,37 @@ class SettlementSchedulerTest {
     }
 
     @Test
-    void 새벽_1시_이후_실행하면_어제까지_최근_N일을_오래된_순으로_확정한다() {
-        given(confirmService.confirmDaily(any())).willAnswer(inv -> empty(inv.getArgument(0)));
+    void 새벽_1시_이후_실행하면_어제까지_최근_N일을_오래된_순으로_집계한다() {
+        given(aggregationService.aggregateDaily(any())).willAnswer(inv -> empty(inv.getArgument(0)));
 
-        scheduler(LocalDateTime.of(2026, 11, 6, 1, 10), 3).confirmDailySettlements();
+        scheduler(LocalDateTime.of(2026, 11, 6, 1, 10), 3).aggregateDailySettlements();
 
-        InOrder inOrder = inOrder(confirmService);
-        inOrder.verify(confirmService).confirmDaily(LocalDate.of(2026, 11, 3));
-        inOrder.verify(confirmService).confirmDaily(LocalDate.of(2026, 11, 4));
-        inOrder.verify(confirmService).confirmDaily(LocalDate.of(2026, 11, 5));
-        verifyNoMoreInteractions(confirmService);
+        InOrder inOrder = inOrder(aggregationService);
+        inOrder.verify(aggregationService).aggregateDaily(LocalDate.of(2026, 11, 3));
+        inOrder.verify(aggregationService).aggregateDaily(LocalDate.of(2026, 11, 4));
+        inOrder.verify(aggregationService).aggregateDaily(LocalDate.of(2026, 11, 5));
+        verifyNoMoreInteractions(aggregationService);
     }
 
     @Test
-    void 새벽_1시_전에_실행되면_그저께까지만_확정한다() {
-        given(confirmService.confirmDaily(any())).willAnswer(inv -> empty(inv.getArgument(0)));
+    void 새벽_1시_전에_실행되면_그저께까지만_집계한다() {
+        given(aggregationService.aggregateDaily(any())).willAnswer(inv -> empty(inv.getArgument(0)));
 
-        // 11/6 00:30 → 11/5는 아직 확정 전
-        scheduler(LocalDateTime.of(2026, 11, 6, 0, 30), 1).confirmDailySettlements();
+        // 11/6 00:30 → 11/5는 아직 집계 전
+        scheduler(LocalDateTime.of(2026, 11, 6, 0, 30), 1).aggregateDailySettlements();
 
-        verify(confirmService).confirmDaily(LocalDate.of(2026, 11, 4));
-        verifyNoMoreInteractions(confirmService);
+        verify(aggregationService).aggregateDaily(LocalDate.of(2026, 11, 4));
+        verifyNoMoreInteractions(aggregationService);
     }
 
     @Test
-    void 한_날짜가_실패해도_나머지_날짜는_확정한다() {
-        given(confirmService.confirmDaily(LocalDate.of(2026, 11, 4))).willThrow(new IllegalStateException("DB 오류"));
-        given(confirmService.confirmDaily(LocalDate.of(2026, 11, 5))).willReturn(empty(LocalDate.of(2026, 11, 5)));
+    void 한_날짜가_실패해도_나머지_날짜는_집계한다() {
+        given(aggregationService.aggregateDaily(LocalDate.of(2026, 11, 4))).willThrow(new IllegalStateException("DB 오류"));
+        given(aggregationService.aggregateDaily(LocalDate.of(2026, 11, 5))).willReturn(empty(LocalDate.of(2026, 11, 5)));
 
-        scheduler(LocalDateTime.of(2026, 11, 6, 1, 10), 2).confirmDailySettlements();
+        scheduler(LocalDateTime.of(2026, 11, 6, 1, 10), 2).aggregateDailySettlements();
 
-        verify(confirmService).confirmDaily(LocalDate.of(2026, 11, 5));
+        verify(aggregationService).aggregateDaily(LocalDate.of(2026, 11, 5));
     }
 
     @Test

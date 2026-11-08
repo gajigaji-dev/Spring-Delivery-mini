@@ -71,6 +71,9 @@ public class SecurityConfig {
                         // 결제는 CUSTOMER만 가능 (OWNER → 403)
                         .requestMatchers(HttpMethod.POST, "/api/payments/**").hasRole("CUSTOMER")
 
+                        // 관리자 API(정산 확정·지급 등)는 ADMIN만 가능 (CUSTOMER·OWNER → 403)
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(exception -> exception
