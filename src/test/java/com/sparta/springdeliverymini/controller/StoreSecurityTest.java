@@ -3,7 +3,9 @@ package com.sparta.springdeliverymini.controller;
 import com.sparta.springdeliverymini.config.SecurityConfig;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
+import com.sparta.springdeliverymini.entity.SettlementStatus;
 import com.sparta.springdeliverymini.service.OrderService;
+import com.sparta.springdeliverymini.service.OwnerSettlementService;
 import com.sparta.springdeliverymini.service.SettlementService;
 import com.sparta.springdeliverymini.service.StoreService;
 import org.junit.jupiter.api.Test;
@@ -46,6 +48,9 @@ class StoreSecurityTest {
 
     @MockitoBean
     private SettlementService settlementService;
+
+    @MockitoBean
+    private OwnerSettlementService ownerSettlementService;
 
     private String bearer(String username, Role role) {
         return "Bearer " + jwtProvider.createToken(username, role);
@@ -171,5 +176,54 @@ class StoreSecurityTest {
                 .andExpect(jsonPath("$.message").value("from: 형식이 올바르지 않습니다."));
 
         verify(settlementService, never()).getStoreSettlement(anyLong(), any(), any(), any());
+    }
+
+    // ===== 일 정산 기록 조회 =====
+
+    @Test
+    void OWNER는_일_정산_목록과_상세를_조회할_수_있다() throws Exception {
+        mockMvc.perform(get("/api/stores/1/daily-settlements")
+                        .param("from", "2026-11-01").param("to", "2026-11-05").param("status", "PAID")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/stores/1/daily-settlements/7")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
+                .andExpect(status().isOk());
+
+        verify(ownerSettlementService).getDailySettlements(
+                1L, LocalDate.of(2026, 11, 1), LocalDate.of(2026, 11, 5), SettlementStatus.PAID, "owner1");
+        verify(ownerSettlementService).getDailySettlement(1L, 7L, "owner1");
+    }
+
+    @Test
+    void 일_정산_조회는_CUSTOMER와_ADMIN이면_403_토큰이_없으면_401() throws Exception {
+        for (Role role : new Role[]{Role.CUSTOMER, Role.ADMIN}) {
+            mockMvc.perform(get("/api/stores/1/daily-settlements")
+                            .param("from", "2026-11-01").param("to", "2026-11-05")
+                            .header(HttpHeaders.AUTHORIZATION, bearer("user1", role)))
+                    .andExpect(status().isForbidden());
+            mockMvc.perform(get("/api/stores/1/daily-settlements/7")
+                            .header(HttpHeaders.AUTHORIZATION, bearer("user1", role)))
+                    .andExpect(status().isForbidden());
+        }
+        mockMvc.perform(get("/api/stores/1/daily-settlements/7"))
+                .andExpect(status().isUnauthorized());
+
+        org.mockito.Mockito.verifyNoInteractions(ownerSettlementService);
+    }
+
+    @Test
+    void 일_정산_목록의_기간_누락이나_잘못된_상태는_400() throws Exception {
+        mockMvc.perform(get("/api/stores/1/daily-settlements")
+                        .param("from", "2026-11-01")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("to: 필수 값입니다."));
+        mockMvc.perform(get("/api/stores/1/daily-settlements")
+                        .param("from", "2026-11-01").param("to", "2026-11-05").param("status", "DONE")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
+                .andExpect(status().isBadRequest());
+
+        org.mockito.Mockito.verifyNoInteractions(ownerSettlementService);
     }
 }

@@ -20,16 +20,23 @@ public record SettlementPeriod(LocalDate from, LocalDate to) {
 
     // 규칙에 맞지 않으면 IllegalArgumentException (Service가 400으로 변환)
     public static SettlementPeriod of(LocalDate from, LocalDate to, LocalDateTime now) {
+        SettlementPeriod period = range(from, to);
+        LocalDate lastConfirmed = lastConfirmedDate(now);
+        if (to.isAfter(lastConfirmed)) {
+            throw new IllegalArgumentException(
+                    "아직 확정되지 않은 날짜가 포함되어 있습니다. " + lastConfirmed + "까지 조회할 수 있습니다.");
+        }
+        return period;
+    }
+
+    // 시작일 ≤ 종료일, 최대 31일만 검사 (확정 여부는 보지 않음)
+    // 일 정산 기록 조회용 — 기록은 집계가 끝난 날짜에만 있으므로 확정 전 날짜는 결과가 비어 있을 뿐
+    public static SettlementPeriod range(LocalDate from, LocalDate to) {
         if (from.isAfter(to)) {
             throw new IllegalArgumentException("시작일은 종료일보다 늦을 수 없습니다.");
         }
         if (ChronoUnit.DAYS.between(from, to) + 1 > MAX_DAYS) {
             throw new IllegalArgumentException("정산 조회 기간은 최대 " + MAX_DAYS + "일입니다.");
-        }
-        LocalDate lastConfirmed = lastConfirmedDate(now);
-        if (to.isAfter(lastConfirmed)) {
-            throw new IllegalArgumentException(
-                    "아직 확정되지 않은 날짜가 포함되어 있습니다. " + lastConfirmed + "까지 조회할 수 있습니다.");
         }
         return new SettlementPeriod(from, to);
     }

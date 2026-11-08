@@ -17,7 +17,7 @@ public record SignupRequest(
         @Size(min = 8, max = 72, message = "비밀번호는 8~72자여야 합니다.")
         String password,
 
-        // CUSTOMER(고객) 또는 OWNER(사장님)
+        // CUSTOMER(고객) 또는 OWNER(사장님) — ADMIN은 enum에는 있지만 가입 불가 (UserService에서 400)
         // 그 외 문자열은 JSON → enum 변환에 실패해 HttpMessageNotReadableException → 400
         @NotNull(message = "role은 CUSTOMER 또는 OWNER를 입력해야 합니다.")
         Role role

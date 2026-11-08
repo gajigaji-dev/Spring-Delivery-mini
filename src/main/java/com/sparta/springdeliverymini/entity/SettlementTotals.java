@@ -9,7 +9,10 @@ import java.util.List;
 // - 결제마다 저장된 금액을 더하기만 함 (다시 반올림하지 않음)
 //   → 건별로 수수료 + 정산액 = 결제액이므로 합계에서도 totalFee + settlementAmount = totalAmount
 // - long 범위를 넘으면 잘못된 합계를 내보내지 않도록 ArithmeticException
+// - 판매 합계와 환불 합계에 같은 계산을 사용 (환불 차감액 = 환불된 결제에 저장된 금액 그대로)
 public record SettlementTotals(int paymentCount, long totalAmount, long totalFee, long settlementAmount) {
+
+    public static final SettlementTotals EMPTY = new SettlementTotals(0, 0, 0, 0);
 
     public static SettlementTotals of(List<Payment> payments) {
         long totalAmount = 0;

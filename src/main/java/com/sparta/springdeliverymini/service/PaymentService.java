@@ -26,7 +26,7 @@ public class PaymentService {
     private final OrderRepository orderRepository;
     private final UserRepository userRepository;
     private final Clock clock; // 결제 시각 기준 (config.TimeConfig, Asia/Seoul)
-    private final PaymentFeeProperties feeProperties; // 플랫폼 수수료율 (application.yml payment.fee.rate)
+    private final PaymentFeeProperties feeProperties; // 공통 수수료율 (application.yml payment.fee.rate, 매장 수수료율이 없을 때 사용)
 
     @Transactional
     public PaymentResponse pay(PaymentRequest request, String username) {
@@ -59,9 +59,10 @@ public class PaymentService {
             );
         }
 
-        // 4. 결제할 주문 조회
+        // 4. 결제할 주문 조회 (행 잠금)
         // 주문이 존재하지 않으면 → 404
-        Order order = orderRepository.findById(request.orderId())
+        // 같은 주문의 결제·취소가 동시에 들어와도 한 번에 하나씩 → 취소된 주문에 결제가 저장되는 일 없음
+        Order order = orderRepository.findByIdForUpdate(request.orderId())
                 .orElseThrow(() ->
                         new ApiException(
                                 HttpStatus.NOT_FOUND,
@@ -94,10 +95,11 @@ public class PaymentService {
 
         // 8. 결제 내역 저장
         // 결제 금액은 요청값이 아닌 주문 총액을 그대로 사용, 수수료·정산액은 Payment가 수수료율로 계산
+        // 수수료율: 주문 매장의 수수료율 → 없으면 공통 수수료율 (결제 시점 값이 Payment.feeRate에 스냅샷으로 남음)
         Payment payment = new Payment(
                 order,
                 order.getTotalPrice(),
-                feeProperties.rate(),
+                order.getStore().effectiveFeeRate(feeProperties.rate()),
                 PaymentMethod.CARD,
                 LocalDateTime.now(clock)
         );

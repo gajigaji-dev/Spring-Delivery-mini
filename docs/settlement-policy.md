@@ -27,7 +27,8 @@
 | **배달완료 (선택)** | 서비스 제공이 끝난 시점 → 이후 상태 변경이 없음(최종 상태) | 배달완료 시각을 저장하는 컬럼이 따로 필요 → V6에서 추가 |
 
 - `DELIVERY_COMPLETED`는 최종 상태라 이후 어떤 전이도 불가 (`Order.validateNotDelivered`) → 한 번 정산 대상이 되면 빠지지 않음
-- `ORDER_CANCELLED`는 결제 전에만 가능하므로 결제가 있는 주문이 취소되는 경우는 현재 없음
+- `ORDER_CANCELLED`는 주문수락 전에만 가능 → 취소된 주문은 배달완료된 적이 없어 정산 대상이 된 적이 없음 (결제완료 주문을 취소하면 결제는 `CANCELLED`)
+- 배달완료 후 환불(`REFUNDED`)은 판매분에서 빼지 않고, 환불 이후 집계되는 정산에서 따로 차감 ([9장](#9-결제-취소환불과-차기-정산-반영))
 - `PAYMENT_COMPLETED`, `ORDER_ACCEPTED` 상태 결제는 **미확정** → 배달완료되는 날의 정산에 포함
 
 ### 배달완료 시각을 따로 저장하는 이유
@@ -111,11 +112,12 @@ ORDER BY o.delivered_at, p.id;
 
 | 상황 | 영향 |
 |---|---|
-| 배달완료 이후 환불·부분 취소 도입 | 이미 확정된 기간을 고치지 않고, **환불이 발생한 날의 정산에서 차감**(음수 항목)하는 방식으로 처리 |
+| 배달완료 이후 환불 | **구현됨 (9장)** — 이미 만들어진 정산은 고치지 않고 환불 이후 처음 집계되는 정산에서 차감, 모자라면 다음 정산으로 이월 |
+| 부분 취소 | 미지원 (전액만). 도입 시 결제 `@ManyToOne` 전환 또는 환불 금액 컬럼 필요 |
 | 결제 `@ManyToOne` 전환 ([데이터베이스 · 결제 연관관계](database.md#결제-연관관계-onetoone-vs-manytoone)) | 집계 조건에 `p.status = 'SUCCESS'` 추가 (`findSettlementTargets`, `findSettlementStoreIds`) |
 | 매장이 많아져 전체 매장 대상 조회가 느려짐 | `findSettlementStoreIds`는 매장 조건 없이 `delivered_at` 구간으로 찾으므로 필요하면 `orders(delivered_at)` 인덱스 추가 검토 |
 | 주간·월간 지급 | 일 정산 확정 결과를 합산. 주 시작 요일(월요일 등)은 지급 정책을 정할 때 결정 |
-| 매장별 수수료율 | 결제 시점 `fee_rate` 스냅샷을 쓰므로 정산 기준 변경 없음 |
+| 매장별 수수료율 | **구현됨 (V10, #32)** — 결제 시점의 매장 수수료율(없으면 공통)이 `fee_rate` 스냅샷으로 저장되므로 정산 기준 변경 없음. 결제 후 배달완료 전에 바뀌어도 결제 시점 수수료율 적용 ([금액 처리 정책](money-policy.md)) |
 
 ## 7. 구현 위치
 
@@ -127,63 +129,172 @@ ORDER BY o.delivered_at, p.id;
 | 정산 대상 결제 조회 | `PaymentRepository.findSettlementTargets` |
 | 합계 계산 | `StoreSettlementResponse.of` |
 | DB 컬럼·제약·인덱스 | `V6__add_delivered_at_to_orders.sql` |
-| 합계 계산 (조회·확정 공통) | `entity.SettlementTotals` |
-| 일 정산 확정 기록·상태 전이 | `entity.Settlement`, `entity.SettlementStatus` |
-| 매장별 확정, 중복 확정 방지 | `SettlementConfirmService.confirmDaily` |
+| 합계 계산 (조회·집계 공통) | `entity.SettlementTotals` |
+| 일 정산 기록·상태 전이 (PENDING → CONFIRMED → PAID) | `entity.Settlement`, `entity.SettlementStatus` |
+| 매장별 집계, 중복 정산 방지 | `SettlementAggregationService.aggregateDaily` |
 | 정산 대상 매장 조회 | `PaymentRepository.findSettlementStoreIds` |
-| 자동 실행 | `scheduler.SettlementScheduler` (활성화: `config.SchedulingConfig`) |
-| 확정 테이블·제약 | `V7__add_settlements.sql` |
+| 자동 집계 | `scheduler.SettlementScheduler` (활성화: `config.SchedulingConfig`) |
+| 관리자 확정·지급, 관리자 확인, 행 잠금 | `AdminSettlementService` ← `AdminSettlementController` |
+| 관리자 URL 권한 | `SecurityConfig` (`/api/admin/**`) |
+| 정산 테이블·제약 | `V7__add_settlements.sql`, `V8__add_settlement_pending_status_and_admin_role.sql` |
 
-## 8. 정산 확정 — settlements
+## 8. 정산 집계·확정·지급 — settlements
 
-조회 API는 요청할 때마다 결제를 다시 합산하지만, 사장님에게 지급할 금액은 **한 번 확정해 기록으로 남겨야** 지급·대사의 근거가 됨.
-매일 스케줄러가 전날(D) 정산을 매장별로 확정해 `settlements`에 저장한다.
-
-### 확정 규칙
-
-| 항목 | 기준 |
-|---|---|
-| 단위 | 매장 1곳 × 하루(D) = 1건 (`settlement_date`) |
-| 확정 가능 시점 | D+1 01:00 이후 (조회 API의 확정 시각과 같은 규칙, `SettlementPeriod`) — 이전이면 거부 |
-| 대상 | 조회 API와 같은 쿼리(`findSettlementTargets`)로 가져온 결제 |
-| 금액 | 조회 API와 같은 합계 계산(`SettlementTotals`) → 확정 금액과 조회 금액이 항상 같음 |
-| 대상 없는 매장 | 기록을 만들지 않음 |
-| 확정 후 | 금액 변경 불가. 확정 이후 해당 날짜에 새 건이 들어오지 않으므로(3장 확정 시각) 다시 집계할 일이 없음 |
+조회 API는 요청할 때마다 결제를 다시 합산하지만, 사장님에게 지급할 금액은 **기록으로 남기고 관리자가 확인한 뒤 지급**해야 지급·대사의 근거가 됨.
+매일 스케줄러가 전날(D) 정산을 매장별로 집계해 `settlements`에 **확정 대기(PENDING)** 로 저장하고, 관리자가 확정·지급한다.
 
 ### 상태
 
 ```
-CONFIRMED(확정) ── markPaid(paidAt) ──▶ PAID(지급완료)
+PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) ── markPaid(paidAt) ──▶ PAID(지급완료)
+  스케줄러 집계              관리자 PATCH .../confirm             관리자 PATCH .../pay
 ```
 
-- `CONFIRMED`: 집계해 금액을 고정한 상태. 생성과 동시에 이 상태
-- `PAID`: 지급까지 끝난 최종 상태. `CONFIRMED`에서만 전이 가능 (이미 지급된 정산을 다시 지급하지 않음)
-- 상태 전이는 `Settlement` 메서드에서만 판단하고, DB에서도 "`PAID` ⇔ `paid_at` 있음"을 CHECK 제약으로 강제
-- 지급 처리를 호출하는 API·배치는 아직 없음 (지급 방식이 정해지면 추가)
+| 상태 | 의미 | `confirmed_at` | `paid_at` |
+|---|---|---|---|
+| `PENDING` | 스케줄러가 집계해 금액을 고정, 관리자 확인 대기 | 없음 | 없음 |
+| `CONFIRMED` | 관리자가 금액을 확인해 확정, 지급 대상 | 있음 | 없음 |
+| `PAID` | 지급까지 끝난 최종 상태 | 있음 | 있음 |
 
-### 중복 확정 방지
+- 전이는 위 두 개뿐. 단계 건너뛰기(`PENDING → PAID`), 되돌리기, 같은 전이 반복은 모두 거부 → `InvalidSettlementStatusException` (409)
+  - 이미 지급된 정산을 다시 지급하면 409, 지급 시각은 처음 값 그대로 유지 (중복 지급 방지)
+- 전이 규칙은 `Settlement.confirm()`, `Settlement.markPaid()`에서만 판단 (주문의 `Order` 상태 전이와 같은 방식)
+- 확정·지급 시각은 서버 `Clock`(Asia/Seoul) 기준 현재 시각. 요청으로 받지 않음
+  - 지급 시각이 확정 시각보다 앞서면 거부
+- DB에서도 CHECK 제약으로 상태와 시각이 어긋난 행을 거부
+  - `settlements_confirmed_at_check`: `PENDING` ⇔ `confirmed_at` 없음 (V8)
+  - `settlements_paid_at_check`: `PAID` ⇔ `paid_at` 있음 (V7)
+- 집계 금액은 상태가 바뀌어도 변하지 않음. 사장님 정산 조회 API(`GET /api/stores/{id}/settlements`)는 `settlements`를 쓰지 않고 결제를 직접 합산하므로 상태 변경과 무관
+
+### 관리자 권한
 
 | 단계 | 방법 |
 |---|---|
-| 1. 애플리케이션 | 확정 전에 `(store_id, settlement_date)`가 이미 있는지 확인 → 있으면 건너뜀 |
-| 2. DB | `UNIQUE (store_id, settlement_date)` — 두 실행이 동시에 1을 통과해도 두 번째 INSERT는 거부 → 이미 확정된 것을 확인하고 건너뜀 |
+| 1. URL | `SecurityConfig` — `/api/admin/**`은 `ADMIN`만 (토큰 없음 401, CUSTOMER·OWNER 403) |
+| 2. Service | `AdminSettlementService` — 토큰 발급 후 역할이 바뀐 경우에 대비해 DB의 현재 역할로 한 번 더 확인 (403) |
+
+- `ADMIN`은 회원가입으로 만들 수 없음 (`role: ADMIN` 가입 요청은 400) → 누구나 관리자로 가입해 지급 권한을 얻는 것을 막음
+- 관리자 지정은 운영자가 DB에서 직접: `UPDATE users SET role = 'ADMIN' WHERE username = '...';` (역할은 토큰에도 담기므로 다시 로그인해야 반영)
+
+### 동시 요청 — 중복 지급 방지
+
+- 확정·지급할 정산은 행 잠금(`SELECT ... FOR UPDATE`, `SettlementRepository.findByIdForUpdate`)으로 조회
+- 같은 정산에 지급 요청이 동시에 여러 번 들어와도 뒤 요청은 앞 요청이 커밋될 때까지 기다린 뒤 `PAID` 상태를 읽고 409 → 지급은 한 번만 성공 (`AdminSettlementIntegrationTest`로 확인)
+- 잠금 없이 조회하면 두 요청이 모두 `CONFIRMED`를 읽고 통과해 지급 시각이 덮어써질 수 있음
+
+### 집계 규칙
+
+| 항목 | 기준 |
+|---|---|
+| 단위 | 매장 1곳 × 하루(D) = 1건 (`settlement_date`) |
+| 집계 가능 시점 | D+1 01:00 이후 (조회 API의 확정 시각과 같은 규칙, `SettlementPeriod`) — 이전이면 거부 |
+| 대상 | 조회 API와 같은 쿼리(`findSettlementTargets`)로 가져온 결제 |
+| 금액 | 조회 API와 같은 합계 계산(`SettlementTotals`) → 집계 금액과 조회 금액이 항상 같음 |
+| 대상 없는 매장 | 기록을 만들지 않음 |
+| 집계 후 | 금액 변경 불가. 집계 이후 해당 날짜에 새 건이 들어오지 않으므로(3장 확정 시각) 다시 집계할 일이 없음 |
+
+### 중복 정산 방지
+
+| 단계 | 방법 |
+|---|---|
+| 1. 애플리케이션 | 집계 전에 `(store_id, settlement_date)`가 이미 있는지 확인 → 있으면 상태와 관계없이 건너뜀 (확정·지급된 정산도 다시 만들지 않음) |
+| 2. DB | `UNIQUE (store_id, settlement_date)` — 두 실행이 동시에 1을 통과해도 두 번째 INSERT는 거부 → 이미 있는 것을 확인하고 건너뜀 |
 
 - 2의 UNIQUE 위반이 아닌 다른 제약 위반(금액 CHECK 등)은 건너뛰지 않고 실패로 기록
 - 여러 서버에서 스케줄러가 함께 돌아도 결과는 같음 (분산 락 없이 DB 제약으로 보장)
 
 ### 트랜잭션
 
-- 매장 1곳 = 트랜잭션 1개 → 한 매장에서 실패해도 다른 매장의 확정은 커밋됨
-- 실패한 매장은 기록이 남지 않으므로 다음 실행에서 다시 확정 시도
+- 집계: 매장 1곳 = 트랜잭션 1개 → 한 매장에서 실패해도 다른 매장의 집계는 커밋됨. 실패한 매장은 기록이 남지 않으므로 다음 실행에서 다시 시도
+- 확정·지급: 요청 1건 = 트랜잭션 1개 (행 잠금은 커밋 시 해제)
 
 ### 스케줄러
 
 | 설정 (`application.yml`) | 기본값 | 의미 |
 |---|---|---|
 | `settlement.scheduler.enabled` | `true` | `false`면 스케줄 실행 안 함 |
-| `settlement.scheduler.cron` | `0 10 1 * * *` | 매일 01:10 (Asia/Seoul) — 확정 시각 01:00에 10분 여유 |
-| `settlement.scheduler.catch-up-days` | `7` | 실행마다 최근 N일을 오래된 날짜부터 확정 |
+| `settlement.scheduler.cron` | `0 10 1 * * *` | 매일 01:10 (Asia/Seoul) — 집계 가능 시각 01:00에 10분 여유 |
+| `settlement.scheduler.catch-up-days` | `7` | 실행마다 최근 N일을 오래된 날짜부터 집계 |
 
-- 실행할 때마다 마지막 확정 가능 날짜부터 거슬러 N일을 확정 → 서버가 내려가 실행을 놓친 날도 N일 안이면 다음 실행에서 채워짐
-- 이미 확정된 매장·날짜는 건너뛰므로 같은 날짜를 여러 번 처리해도 결과가 같음
+- 실행할 때마다 마지막 집계 가능 날짜부터 거슬러 N일을 집계 → 서버가 내려가 실행을 놓친 날도 N일 안이면 다음 실행에서 채워짐
+- 이미 정산이 있는 매장·날짜는 건너뛰므로 같은 날짜를 여러 번 처리해도 결과가 같음
 - 한 날짜·한 매장의 오류는 로그만 남기고 나머지를 계속 처리
+
+### 기존 데이터 (V7 → V8)
+
+- V7 시점에 스케줄러가 만든 정산은 이미 `CONFIRMED`(`confirmed_at` = 집계 시각)로 저장되어 있음 → V8은 그대로 두고 새 제약도 만족
+- V8 이후 집계되는 정산부터 `PENDING`으로 시작
+
+## 9. 결제 취소·환불과 차기 정산 반영
+
+### 정책
+
+| 시점 | 처리 | 주체 | 정산 영향 |
+|---|---|---|---|
+| 주문요청 (`ORDER_REQUEST`) | 주문만 취소 | CUSTOMER | 없음 |
+| 결제완료 (`PAYMENT_COMPLETED`) | 주문 `ORDER_CANCELLED` + 결제 `CANCELLED` (전액 취소) | CUSTOMER | 없음 (배달 전) |
+| 주문수락 (`ORDER_ACCEPTED`) 이후, 배달 전 | **취소 불가** (409) | - | - |
+| 배달완료 (`DELIVERY_COMPLETED`) | 결제 `REFUNDED` (전액 환불), 주문 상태는 그대로 | **ADMIN만** | 다음에 집계되는 정산에서 차감 |
+
+- 환불 시 고객 결제액·플랫폼 수수료·매장 정산액을 모두 취소 → 결제에 저장된 `amount`, `fee_amount`, `settlement_amount`를 그대로 차감
+- 상태 전이 규칙은 `Payment.cancel()`, `Payment.refund()`에서만 판단 → 위반 시 `InvalidPaymentStatusException` (409)
+
+### 정산 1건의 구성
+
+```
+차감 전 정산액 = 판매 정산액 − 환불 정산액 − 이월받은 금액
+지급액(settlement_amount)        = max(차감 전 정산액, 0)
+다음 이월액(carried_out_amount)  = max(−차감 전 정산액, 0)
+```
+
+| 구성 | 대상 | 연결 기록 |
+|---|---|---|
+| 판매 | D일에 배달완료된 결제 (나중에 환불돼도 포함 → 이미 조회·집계된 금액이 바뀌지 않음) | - |
+| 환불 | `refunded_at < D+1 00:00`이고 **아직 어떤 정산에서도 차감되지 않은** 환불 | `settlement_refunds` (payment_id UNIQUE) |
+| 이월 | **D보다 앞 날짜** 정산에서 넘어왔고 아직 차감되지 않은 이월분 | `settlement_carryovers` (from_settlement_id UNIQUE) |
+
+### 지키는 규칙
+
+| 규칙 | 보장 방법 |
+|---|---|
+| **이미 만들어진 정산은 바뀌지 않음** (PENDING·CONFIRMED·PAID 모두) | 집계는 새 정산과 연결 기록을 INSERT만 함. 기존 정산 행은 UPDATE하지 않음 |
+| **환불일 정산이 이미 있으면 다음 정산에서 차감** | 미차감 환불을 날짜 구간이 아니라 "연결 기록이 없는지"로 찾음 → 늦게 커밋된 환불, catch-up 기간을 넘긴 환불도 누락되지 않음 |
+| 판매가 없어도 차감 | 미차감 환불이 있는 매장은 집계 대상에 포함 → 판매 0건 정산을 만들어 차감 (보통 다음 날 정산) |
+| **중복 차감 없음** | ① 매장 행 잠금으로 같은 매장 집계를 직렬화 ② `settlement_refunds.payment_id`, `settlement_carryovers.from_settlement_id` UNIQUE → 잠금이 빠져도 DB가 거부하고 매장 트랜잭션 전체 롤백 |
+| **차감은 원인보다 같거나 늦은 날짜에서만** | 환불: `refunded_at < 정산일+1`, 이월: `from.settlement_date < to.settlement_date` (`SettlementRefund`, `SettlementCarryover` 생성 시 검증) |
+| 날짜 역순 집계 (D-1을 D보다 늦게 집계) | D-1은 D의 이월분을 가져가지 않음 → D+1 이후 정산에서 차감. 총 지급액은 집계 순서와 무관 |
+| 정산 행 ↔ 연결 기록 일치 | 같은 트랜잭션에서 저장 → 함께 커밋되거나 함께 롤백 |
+
+- 이월분만 남고 판매·환불이 없으면 정산을 만들지 않고, 다음 판매·환불이 생기는 날의 정산에서 차감
+- 지급액 0원 정산도 기존과 같이 PENDING → CONFIRMED → PAID를 거침
+- 수수료는 사장님 지급액이 아니므로 이월하지 않음 (판매 수수료·환불 수수료를 각각 기록)
+- 회계 항등식: `Σ지급액 = Σ판매 정산액 − Σ환불 정산액 + 아직 차감되지 않은 이월분` (`PaymentRefundIntegrationTest`로 검증)
+
+### 집계 순서 (매장 1곳, 날짜 D, 트랜잭션 1개)
+
+```
+1. stores 행 잠금 (SELECT ... FOR UPDATE)
+2. (store, D) 정산이 이미 있으면 건너뜀
+3. 판매 = findSettlementTargets(store, [D, D+1)),  환불 = findUnsettledRefunds(store, D+1)
+4. 판매·환불이 모두 없으면 건너뜀
+5. 이월 = findUnsettledCarryovers(store, D)
+6. Settlement.aggregate(...) → INSERT
+7. settlement_refunds, settlement_carryovers INSERT
+8. 오류 → 이 매장 트랜잭션 전체 롤백, 다음 실행에서 재시도
+```
+
+집계 대상 매장 = D일 판매가 있는 매장 ∪ `refunded_at < D+1`인 미차감 환불이 있는 매장
+
+### 동시 요청
+
+| 경합 | 처리 |
+|---|---|
+| 같은 결제 동시 환불 | 결제 행 잠금(`PaymentRepository.findByIdForUpdate`) → 한 번만 성공, 나머지 409 |
+| 고객 취소 ↔ 사장님 수락 | 주문 행 잠금(`OrderRepository.findByIdForUpdate`, 결제·취소·상태 변경 공통) → 한쪽만 성공, 주문·결제 상태 일치 |
+| 같은 매장의 여러 날짜 동시 집계 | 매장 행 잠금 + 연결 기록 UNIQUE |
+
+### 사장님 조회 API와의 관계
+
+- 사장님 기간 조회(`/settlements`)는 판매를 배달완료 시각, 환불을 **환불 시각** 기준으로 보여줌 (`netSettlementAmount` = 판매 − 환불, 음수 가능) — 발생 기준
+- 사장님 일 정산 기록 조회(`/daily-settlements`, `OwnerSettlementService`)는 저장된 정산 기준 — 실제 지급액·이월·상태, 어느 환불이 어느 정산에서 차감됐는지(`settlement_refunds`), 이월분이 어디서 차감됐는지(`settlement_carryovers`)를 보여줌. 관리자 정산과 같은 행을 읽으므로 금액이 항상 같음
+  - 예) 11/5 23시 환불이 11/5 정산 집계 뒤에 반영되면 기간 조회에서는 11/5 환불, 일 정산 기록에서는 11/6 정산의 차감으로 보임
