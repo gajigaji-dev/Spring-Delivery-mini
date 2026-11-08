@@ -33,6 +33,8 @@
 | 매장 단건 조회 | GET | `/api/stores/{id}` | X | - | 200 |
 | 매장별 주문 조회 | GET | `/api/stores/{id}/orders` | O | OWNER (본인 매장) | 200 |
 | 매장별 정산 조회 | GET | `/api/stores/{id}/settlements?from=&to=` | O | OWNER (본인 매장) | 200 |
+| 매장별 일 정산 기록 목록 | GET | `/api/stores/{id}/daily-settlements?from=&to=&status=` | O | OWNER (본인 매장) | 200 |
+| 매장별 일 정산 기록 상세 | GET | `/api/stores/{id}/daily-settlements/{settlementId}` | O | OWNER (본인 매장) | 200 |
 | 메뉴 등록 | POST | `/api/menus` | O | OWNER (본인 매장) | 201 |
 | 메뉴 목록 조회 | GET | `/api/menus` | X | - | 200 |
 | 메뉴 단건 조회 | GET | `/api/menus/{id}` | X | - | 200 |
@@ -191,6 +193,73 @@ Response `200 OK`
 | 401 | 토큰 없음 |
 | 403 | CUSTOMER가 요청, 본인 매장이 아님 |
 | 404 | 매장 없음 |
+
+---
+
+### 매장별 일 정산 기록 조회 `GET /api/stores/{id}/daily-settlements`
+저장된 **일 정산 기록**(실제 지급액·이월·상태) 목록. 위의 기간 정산 조회는 결제로 다시 계산한 "발생 기준" 내역이고, 이 API는 "지급 기준" 기록
+
+| | 기간 정산 조회 (`/settlements`) | 일 정산 기록 (`/daily-settlements`) |
+|---|---|---|
+| 환불 | 환불 시각 기준 날짜 | 실제로 차감된 정산 기준 (늦게 반영된 환불은 다음 정산) |
+| 금액 | 순 정산액 (음수 가능) | 실제 지급액(≥ 0) + 이월 |
+| 상태 | 없음 | `PENDING` / `CONFIRMED` / `PAID`, 확정·지급 시각 |
+
+Request — 쿼리 파라미터
+```
+GET /api/stores/1/daily-settlements?from=2026-11-01&to=2026-11-30&status=PAID
+```
+- `from`, `to`: 필수, `yyyy-MM-dd`, `from ≤ to`, 최대 31일. 확정 전 날짜가 포함돼도 됨 (집계 전 날짜는 기록이 없을 뿐)
+- `status`: 선택, `PENDING` / `CONFIRMED` / `PAID` — 없으면 전체 (확정 대기 포함, 금액은 집계 후 바뀌지 않음)
+
+Response `200 OK` — 정산일 순, 기록이 없으면 빈 배열
+```json
+{
+  "storeId": 1, "storeName": "치킨집", "from": "2026-11-01", "to": "2026-11-30",
+  "settlements": [
+    { "id": 3, "settlementDate": "2026-11-05",
+      "paymentCount": 2, "totalAmount": 20000, "totalFee": 1000, "salesSettlementAmount": 19000,
+      "refundCount": 0, "refundAmount": 0, "refundFee": 0, "refundSettlementAmount": 0,
+      "carriedInAmount": 0, "carriedOutAmount": 0, "settlementAmount": 19000,
+      "status": "PAID", "aggregatedAt": "2026-11-06T01:10:00",
+      "confirmedAt": "2026-11-06T09:00:00", "paidAt": "2026-11-06T10:00:00" }
+  ]
+}
+```
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `from`/`to` 누락·형식 오류, 시작일 > 종료일, 31일 초과, `status`가 정의되지 않은 값 |
+| 401 | 토큰 없음 |
+| 403 | OWNER가 아님(CUSTOMER·ADMIN), 본인 매장이 아님 |
+| 404 | 매장 없음 |
+
+### 매장별 일 정산 기록 상세 `GET /api/stores/{id}/daily-settlements/{settlementId}`
+정산 1건이 어떤 판매·환불·이월로 구성됐는지
+
+Response `200 OK`
+```json
+{
+  "storeId": 1, "storeName": "치킨집",
+  "settlement": { "id": 4, "settlementDate": "2026-11-06", "settlementAmount": 0, "carriedOutAmount": 9500, "status": "PENDING", "...": "목록 항목과 같음" },
+  "sales": [ { "paymentId": 5, "orderId": 7, "amount": 10000, "feeRate": 0.0500, "feeAmount": 500, "settlementAmount": 9500,
+               "paidAt": "2026-11-06T11:00:00", "deliveredAt": "2026-11-06T12:00:00" } ],
+  "refundDeductions": [ { "paymentId": 1, "orderId": 1, "amount": 10000, "feeAmount": 500, "settlementAmount": 9500,
+                          "deliveredAt": "2026-11-05T12:00:00", "refundedAt": "2026-11-06T14:00:00" } ],
+  "carriedIn": [],
+  "carriedOut": { "amount": 9500, "deducted": false, "toSettlementId": null, "toSettlementDate": null }
+}
+```
+- `sales`: 그날 배달완료된 결제 (나중에 환불돼도 포함 → 정산의 판매 합계와 항상 같음), 배달완료 시각 순
+- `refundDeductions`: 이 정산에서 **실제로 차감한** 환불 (금액은 차감 기록 스냅샷), 환불 시각 순
+- `carriedIn`: 이전 정산에서 넘어와 이 정산에서 차감한 이월분 (`fromSettlementId`, `fromSettlementDate`, `amount`)
+- `carriedOut`: 이 정산이 넘긴 이월분, 없으면 `null`. `deducted: false`면 아직 다음 판매·환불이 없어 차감 전
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음 |
+| 403 | OWNER가 아님, 본인 매장이 아님 |
+| 404 | 매장 없음, 정산이 없거나 **다른 매장의 정산** (다른 매장에 그 정산이 있는지 드러내지 않음) |
 
 ---
 

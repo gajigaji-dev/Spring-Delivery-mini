@@ -47,6 +47,10 @@ public class SecurityConfig {
                         // 매장별 정산 조회는 OWNER만 가능 (CUSTOMER → 403, 본인 매장 여부는 Service에서 확인)
                         .requestMatchers(HttpMethod.GET, "/api/stores/*/settlements").hasRole("OWNER")
 
+                        // 매장별 일 정산 기록 조회(목록·상세)는 OWNER만 가능 (본인 매장 여부는 Service에서 확인)
+                        .requestMatchers(HttpMethod.GET,
+                                "/api/stores/*/daily-settlements", "/api/stores/*/daily-settlements/*").hasRole("OWNER")
+
                         // 매장 조회는 로그인하지 않아도 가능
                         .requestMatchers(HttpMethod.GET, "/api/stores", "/api/stores/*").permitAll()
 
