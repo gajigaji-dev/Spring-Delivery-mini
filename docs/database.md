@@ -14,7 +14,7 @@
 | `V3__widen_amount_columns_and_add_payment_fee.sql` | 금액 컬럼 `integer` → `bigint`, `payments`에 `fee_rate`, `fee_amount`, `settlement_amount` 추가 (기존 결제는 수수료 0으로 백필) |
 | `V4__add_stores.sql` | `stores` 테이블 추가, `menus.store_id`·`orders.store_id` 추가 후 `menus.owner_id` 제거 (메뉴를 가진 점주마다 `{아이디}의 매장`을 1개 만들어 기존 메뉴·주문을 연결) |
 | `V5__add_order_items.sql` | `order_items` 테이블 추가, 기존 주문마다 항목 1개로 백필(단가 = `total_price / quantity`) 후 `orders.menu_id`·`orders.quantity` 제거 |
-| `V6__add_delivered_at_to_orders.sql` | `orders.delivered_at` 추가, 기존 배달완료 주문은 `updated_at`(없으면 `created_at`)으로 백필, 배달완료 상태 ⇔ 시각 CHECK 제약, `(store_id, delivered_at)` 인덱스 |
+| `V6__add_delivered_at_to_orders.sql` | `orders.delivered_at` 추가, 기존 배달완료 주문은 `updated_at`(없으면 `created_at`)으로 백필, 배달완료 상태 ⇔ 시각 CHECK 제약, `(store_id, delivered_at)`, `(store_id, status)` 인덱스 |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
@@ -99,7 +99,7 @@
 | delivered_at | timestamp(6) | 배달완료 상태일 때만 NOT NULL (CHECK) | 배달완료 시각 — 정산 기간 기준 ([정산 기준](settlement-policy.md)) |
 
 > `delivered_at`을 `updated_at`과 따로 두는 이유: `updated_at`은 이후 다른 값이 바뀌면 움직여 이미 정산한 주문의 기간이 달라질 수 있음
-> `(store_id, delivered_at)` 인덱스로 매장별 정산 기간 조회
+> `(store_id, delivered_at)` 인덱스로 매장별 정산 기간 조회, `(store_id, status)` 인덱스로 매장별 상태 조회
 
 > 메뉴 가격이 나중에 바뀌어도 주문 금액이 변하지 않도록 `total_price`를 주문 시점에 따로 저장
 

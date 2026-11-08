@@ -40,7 +40,7 @@
 
 - **기록**: `Order.complete(deliveredAt)`에서 `Clock` 기준 현재 시각으로 한 번만 기록, 이후 변경 불가. 배달완료 전 주문은 NULL
 - **DB 제약**: "배달완료 상태 ⇔ `delivered_at` 있음"을 CHECK 제약(`orders_delivered_at_check`)으로 강제 → 상태와 시각이 어긋난 행이 정산에 섞이지 않음
-- **인덱스**: `(store_id, delivered_at)` — 매장별 기간 조회용
+- **인덱스**: `(store_id, delivered_at)` — 매장별 기간 조회용 (같은 V6에 매장별 상태 조회용 `(store_id, status)`도 추가)
 - **기존 데이터 백필**: 마이그레이션 시점에 이미 `DELIVERY_COMPLETED`인 주문은 `updated_at`으로 채움 (배달완료 이후 상태 변경이 불가능해 `updated_at`이 곧 배달완료 시각). `updated_at`이 비어 있는 오래된 행은 `created_at`으로 대신 채움
 
 ## 3. 정산 주기 — 일 정산 (D+1)

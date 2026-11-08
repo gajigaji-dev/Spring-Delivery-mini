@@ -20,3 +20,7 @@ ALTER TABLE orders ADD CONSTRAINT orders_delivered_at_check
 -- 4. 정산 조회용 인덱스 — 매장별 + 배달완료 시각 구간 조회
 --    (store_id로 시작하므로 매장별 주문 조회에도 사용 가능, 기존 idx_orders_store_id는 V4 그대로 둠)
 CREATE INDEX idx_orders_store_delivered_at ON orders (store_id, delivered_at);
+
+-- 5. 매장별 + 주문 상태 조회용 인덱스
+--    매장의 특정 상태 주문만 거르는 조회 (예: 배달완료 주문, 처리 대기 주문)
+CREATE INDEX idx_orders_store_status ON orders (store_id, status);
