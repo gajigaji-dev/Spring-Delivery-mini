@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 public record PaymentResponse(
         Long id,
         Long orderId,
-        long amount,
+        int amount,
         PaymentMethod paymentMethod,
         OrderStatus orderStatus, // 결제 후 주문 상태 (PAYMENT_COMPLETED)
         LocalDateTime paidAt) {

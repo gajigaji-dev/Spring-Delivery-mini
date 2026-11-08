@@ -20,24 +20,22 @@ public class Menu extends BaseEntity {
     private String name;
 
     @Column(nullable = false)
-    private long price;
+    private int price;
 
     @Column(length = 255)
     private String description;
 
     private boolean deleted = false;
 
-    // 메뉴를 판매하는 매장
-    // 메뉴의 주인(점주)은 store.owner로 판단 (V4에서 menus.owner_id 제거)
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "store_id", nullable = false)
-    private Store store;
+    @JoinColumn(name = "owner_id", nullable = false)
+    private User owner;
 
-    public Menu(String name, long price, String description, Store store) {
+    public Menu(String name, int price, String description, User owner) {
         this.name = name;
         this.price = price;
         this.description = description;
-        this.store = store;
+        this.owner = owner;
     }
 
     // 소프트 삭제 처리 메서드
@@ -46,8 +44,8 @@ public class Menu extends BaseEntity {
     }
 
     // 메뉴 정보 수정 메서드
-    // 요청 값 검증은 Controller의 @Valid(MenuUpdateRequest)에서 이미 끝난 상태로 호출됨
-    public void update(String name, long price, String description) {
+    // 요청 값 검증은 Controller의 @Valid(MenuCreateRequest)에서 이미 끝난 상태로 호출됨
+    public void update(String name, int price, String description) {
         this.name = name;
         this.price = price;
         this.description = description;

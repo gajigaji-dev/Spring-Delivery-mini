@@ -6,10 +6,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
-import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.Map;
 
@@ -47,20 +45,6 @@ public class GlobalExceptionHandler {
                 .findFirst()
                 .orElse("잘못된 요청입니다.");
         return ResponseEntity.badRequest().body(Map.of("message", message));
-    }
-
-    // 필수 쿼리 파라미터 누락 (예: 정산 조회의 from, to) → 400
-    @ExceptionHandler(MissingServletRequestParameterException.class)
-    public ResponseEntity<Map<String, String>> handleMissingParameter(MissingServletRequestParameterException e) {
-        return ResponseEntity.badRequest()
-                .body(Map.of("message", e.getParameterName() + ": 필수 값입니다."));
-    }
-
-    // 경로·쿼리 파라미터의 형식이 맞지 않음 (예: 날짜에 "2026-13-01", id에 문자열) → 400
-    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-    public ResponseEntity<Map<String, String>> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
-        return ResponseEntity.badRequest()
-                .body(Map.of("message", e.getName() + ": 형식이 올바르지 않습니다."));
     }
 
     // JSON 문법 오류, 타입 불일치, enum에 없는 값이 들어오는 등 본문을 읽을 수 없는 경우

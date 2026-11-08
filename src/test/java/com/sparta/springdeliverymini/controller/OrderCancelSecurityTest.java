@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.jpa.mapping.JpaMetamodelMappingContext;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -34,6 +35,11 @@ class OrderCancelSecurityTest {
 
     @MockitoBean
     private OrderService orderService;
+
+    // 메인 클래스의 @EnableJpaAuditing이 JPA 메타모델을 요구하는데,
+    // @WebMvcTest는 JPA를 띄우지 않으므로 Mock으로 대체
+    @MockitoBean
+    private JpaMetamodelMappingContext jpaMetamodelMappingContext;
 
     @Test
     void CUSTOMER는_주문을_취소할_수_있다() throws Exception {
