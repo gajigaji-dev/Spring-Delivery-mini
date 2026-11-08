@@ -37,6 +37,16 @@ payment:
   fee:
     rate: "0.05" # 문자열로 지정 → double을 거치지 않고 BigDecimal로 그대로 바인딩
 
+# 일 정산 자동 확정 — scheduler.SettlementScheduler
+# enabled: false면 스케줄 실행 안 함 (config.SchedulingConfig)
+# cron: 초 분 시 일 월 요일, Asia/Seoul 기준. D일은 D+1 01:00에 확정 가능 → 10분 여유를 두고 01:10
+# catch-up-days: 실행할 때마다 최근 N일을 확정 (실행을 놓친 날 보충, 이미 확정된 날은 건너뜀)
+settlement:
+  scheduler:
+    enabled: true
+    cron: "0 10 1 * * *"
+    catch-up-days: 7
+
 # JWT — secret은 Base64 인코딩된 256비트 이상 키. 운영에서는 JWT_SECRET 환경변수로 주입
 jwt:
   secret: ${JWT_SECRET:ZGV2LW9ubHktc2VjcmV0LWtleS1mb3Itc3ByaW5nLWRlbGl2ZXJ5LW1pbmktand0LTI1NmJpdA==}

@@ -15,11 +15,13 @@
 | `V4__add_stores.sql` | `stores` 테이블 추가, `menus.store_id`·`orders.store_id` 추가 후 `menus.owner_id` 제거 (메뉴를 가진 점주마다 `{아이디}의 매장`을 1개 만들어 기존 메뉴·주문을 연결) |
 | `V5__add_order_items.sql` | `order_items` 테이블 추가, 기존 주문마다 항목 1개로 백필(단가 = `total_price / quantity`) 후 `orders.menu_id`·`orders.quantity` 제거 |
 | `V6__add_delivered_at_to_orders.sql` | `orders.delivered_at` 추가, 기존 배달완료 주문은 `updated_at`(없으면 `created_at`)으로 백필, 배달완료 상태 ⇔ 시각 CHECK 제약, `(store_id, delivered_at)`, `(store_id, status)` 인덱스 |
+| `V7__add_settlements.sql` | `settlements` 테이블 추가 (매장별 일 정산 확정 기록), `(store_id, settlement_date)` UNIQUE, 상태·지급 시각·금액 CHECK 제약 |
+| `V8__add_settlement_pending_status_and_admin_role.sql` | 정산 상태에 `PENDING` 추가, `confirmed_at` NULL 허용 + `PENDING` ⇔ 확정 시각 없음 CHECK, `users.role`에 `ADMIN` 추가 (기존 행은 변경 없음) |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V7__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V9__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -36,15 +38,17 @@
 | orders ─ order_items | 1 : N | `order_items.order_id` → `orders.id` (ON DELETE CASCADE) | 한 주문에 여러 항목, 주문이 지워지면 항목도 함께 삭제 |
 | menus ─ order_items | 1 : N | `order_items.menu_id` → `menus.id` | 한 메뉴가 여러 주문 항목에 담김 |
 | orders ─ payments | 1 : 1 | `payments.order_id` → `orders.id` (unique) | 주문 1건당 결제는 1건만 가능 |
+| stores ─ settlements | 1 : N | `settlements.store_id` → `stores.id` | 한 매장에 날짜별 정산 기록 (매장·날짜당 1건) |
 
 - **OWNER가 받은 주문 조회**: `orders → stores → users(owner)`로 본인 매장에 들어온 주문만 찾음 (`findAllByStoreOwnerId`), 매장 하나는 `findAllByStoreId`
 - **`orders.store_id`를 따로 두는 이유**: 메뉴를 거치지 않고 매장별 주문 조회·소유권 검증 가능. `Order.addItem`이 다른 매장의 메뉴를 거부하므로 항목 메뉴의 매장과 어긋날 수 없음
 - **메뉴는 Soft Delete**: 실제로 행을 지우면 그 메뉴를 참조하는 주문 항목의 FK(`order_items.menu_id`)가 깨지므로, `deleted = true`로만 표시하고 조회에서 제외
 - **중복 결제 방지**: `payments.order_id`에 unique 제약을 걸어 같은 주문의 결제가 동시에 들어와도 DB에서 한 건만 저장됨
+- **중복 정산 방지**: `settlements (store_id, settlement_date)`에 unique 제약을 걸어 스케줄러가 여러 번·동시에 실행돼도 매장·날짜당 한 건만 저장됨
 
 ## 생성·수정 시각과 시간대
 
-- **생성·수정 시각 공통화**: `users`, `stores`, `menus`, `orders`, `payments` 모두 `BaseEntity`(@MappedSuperclass)를 상속해 `created_at`, `updated_at`을 JPA Auditing으로 자동 기록
+- **생성·수정 시각 공통화**: `users`, `stores`, `menus`, `orders`, `payments`, `settlements` 모두 `BaseEntity`(@MappedSuperclass)를 상속해 `created_at`, `updated_at`을 JPA Auditing으로 자동 기록
 - **시간대** <a id="시간대"></a>: 모든 시각은 `timestamp`(시간대 정보 없음)로 저장되며 **Asia/Seoul 기준** 값임
   - JVM 기본 시간대(`main`, 테스트는 `build.gradle`)와 DB 세션 시간대를 Asia/Seoul로 고정
   - Hibernate `jdbc.time_zone`은 지정하지 않음 → JVM 시간대와 다르면 `LocalDateTime` 저장 시 값이 밀리기 때문 (`application.yml` 주석 참고)
@@ -58,7 +62,7 @@
 | id | bigint | PK | |
 | username | varchar(20) | NOT NULL, UNIQUE | 로그인 아이디 |
 | password | varchar(255) | NOT NULL | BCrypt 해시값 |
-| role | varchar(255) | NOT NULL | `CUSTOMER` / `OWNER` |
+| role | varchar(255) | NOT NULL | `CUSTOMER` / `OWNER` / `ADMIN` (`ADMIN`은 가입 불가, DB에서 직접 지정) |
 | created_at | timestamp | | 가입 시각 (BaseEntity, 이후 변경 불가) |
 | updated_at | timestamp | | 마지막 정보 수정 시각 (BaseEntity) |
 
@@ -135,6 +139,26 @@
 > 금액 타입·반올림·수수료율 설정은 [금액 처리 정책](money-policy.md), 기간별 정산 집계 기준은 [정산 기준](settlement-policy.md) 참고
 
 > `paid_at`과 `created_at`은 지금은 거의 같은 값이지만 의미가 다름. `created_at`은 DB에 기록된 시각(기술적 기록), `paid_at`은 결제가 승인된 시각(업무 데이터). PG 연동 시 승인 시각을 PG 응답값으로 받으면 두 값이 달라질 수 있어 별도로 유지
+
+### settlements — 일 정산
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| store_id | bigint | FK → stores.id, NOT NULL | 정산 대상 매장 |
+| settlement_date | date | NOT NULL, (store_id, settlement_date) UNIQUE | 정산 날짜 — 배달완료 시각이 `[D 00:00, D+1 00:00)`(Asia/Seoul)인 결제 |
+| payment_count | integer | NOT NULL, 0 이상 | 정산 대상 결제 건수 |
+| total_amount | bigint | NOT NULL | 결제 총액 |
+| total_fee | bigint | NOT NULL, 0 이상 | 플랫폼 수수료 합계 |
+| settlement_amount | bigint | NOT NULL, 0 이상 | 사장님 정산액 합계 |
+| status | varchar(20) | NOT NULL, `PENDING` / `CONFIRMED` / `PAID` | 정산 상태 (확정 대기 → 확정 → 지급완료) |
+| confirmed_at | timestamp(6) | `PENDING`이면 NULL, 그 외 NOT NULL (CHECK) | 관리자 확정 시각 |
+| paid_at | timestamp(6) | `PAID`일 때만 NOT NULL (CHECK) | 지급 시각 |
+| created_at | timestamp(6) | | 집계 시각 (BaseEntity) |
+| updated_at | timestamp(6) | | 마지막 상태 변경 시각 (BaseEntity) |
+
+> `total_fee + settlement_amount = total_amount`를 payments와 같은 방식(`numeric`으로 올려 비교)의 CHECK 제약으로 강제
+> 정산 대상이 없는 매장·날짜는 행을 만들지 않음 (빈 기록이 매장 수 × 날짜 수만큼 쌓이지 않도록)
+> 집계·확정·지급과 스케줄러 동작은 [정산 기준 · 정산 집계·확정·지급](settlement-policy.md#8-정산-집계확정지급--settlements) 참고
 
 ## 결제 연관관계: `@OneToOne` vs `@ManyToOne`
 

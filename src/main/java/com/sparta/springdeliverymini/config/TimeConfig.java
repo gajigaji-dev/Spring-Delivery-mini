@@ -15,7 +15,9 @@ import java.time.ZoneId;
 @Configuration
 public class TimeConfig {
 
-    public static final ZoneId ZONE = ZoneId.of("Asia/Seoul");
+    // 문자열 상수는 애노테이션 속성(@Scheduled(zone = ...))에서 쓰기 위함 — 애노테이션에는 ZoneId 객체를 넣을 수 없음
+    public static final String ZONE_ID = "Asia/Seoul";
+    public static final ZoneId ZONE = ZoneId.of(ZONE_ID);
 
     @Bean
     public Clock clock() {

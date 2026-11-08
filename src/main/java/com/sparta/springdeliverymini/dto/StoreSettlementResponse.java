@@ -2,6 +2,7 @@ package com.sparta.springdeliverymini.dto;
 
 import com.sparta.springdeliverymini.entity.Payment;
 import com.sparta.springdeliverymini.entity.SettlementPeriod;
+import com.sparta.springdeliverymini.entity.SettlementTotals;
 import com.sparta.springdeliverymini.entity.Store;
 
 import java.time.LocalDate;
@@ -19,28 +20,19 @@ public record StoreSettlementResponse(
         long settlementAmount,    // 사장님 정산액 합계 (= totalAmount - totalFee)
         List<SettlementItemResponse> items) { // 배달완료 시각 순
 
-    // 합계는 결제마다 저장된 금액을 더하기만 함 (다시 반올림하지 않음)
-    // → 건별로 수수료 + 정산액 = 결제액이므로 합계에서도 totalFee + settlementAmount = totalAmount
-    // long 범위를 넘으면 잘못된 합계를 내보내지 않도록 ArithmeticException
+    // 합계 계산은 SettlementTotals — 정산 확정(Settlement)과 같은 계산을 사용
     public static StoreSettlementResponse of(Store store, SettlementPeriod period, List<Payment> payments) {
-        long totalAmount = 0;
-        long totalFee = 0;
-        long settlementAmount = 0;
-        for (Payment payment : payments) {
-            totalAmount = Math.addExact(totalAmount, payment.getAmount());
-            totalFee = Math.addExact(totalFee, payment.getFeeAmount());
-            settlementAmount = Math.addExact(settlementAmount, payment.getSettlementAmount());
-        }
+        SettlementTotals totals = SettlementTotals.of(payments);
 
         return new StoreSettlementResponse(
                 store.getId(),
                 store.getName(),
                 period.from(),
                 period.to(),
-                payments.size(),
-                totalAmount,
-                totalFee,
-                settlementAmount,
+                totals.paymentCount(),
+                totals.totalAmount(),
+                totals.totalFee(),
+                totals.settlementAmount(),
                 payments.stream().map(SettlementItemResponse::from).toList()
         );
     }
