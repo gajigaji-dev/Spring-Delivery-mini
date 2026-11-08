@@ -8,21 +8,15 @@ import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
-import com.sparta.springdeliverymini.config.PaymentFeeProperties;
-import com.sparta.springdeliverymini.config.TimeConfig;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import java.math.BigDecimal;
-import java.time.Clock;
-import java.time.LocalDateTime;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,25 +40,12 @@ class PaymentServiceTest {
     @Mock
     private UserRepository userRepository;
 
-    // 결제 시각을 고정해 paidAt이 Clock 기준으로 기록되는지 확인 (Asia/Seoul 기준 자정 직전)
-    private static final LocalDateTime FIXED_NOW = LocalDateTime.of(2026, 11, 5, 23, 59, 59);
-    private final Clock fixedClock = Clock.fixed(FIXED_NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
-
-    // 수수료율 5% (application.yml 기본값과 같음)
-    private final PaymentFeeProperties feeProperties = new PaymentFeeProperties(new BigDecimal("0.05"));
-
+    @InjectMocks
     private PaymentService paymentService;
-
-    // Clock·수수료율은 Mock이 아니라 고정 값이므로 @InjectMocks 대신 직접 생성
-    @BeforeEach
-    void setUp() {
-        paymentService = new PaymentService(paymentRepository, orderRepository, userRepository, fixedClock, feeProperties);
-    }
 
     private final User customer = user(1L, "customer1", Role.CUSTOMER);
     private final User otherCustomer = user(2L, "customer2", Role.CUSTOMER);
     private final User owner = user(3L, "owner1", Role.OWNER);
-    private final Store store = new Store("치킨집", owner);
 
     // id는 DB가 생성하므로 테스트에서는 리플렉션으로 직접 지정
     private static User user(Long id, String username, Role role) {
@@ -75,9 +56,8 @@ class PaymentServiceTest {
 
     // customer가 owner의 메뉴를 2개 주문한 상태 (총액 36000원)
     private Order order(OrderStatus status) {
-        Menu menu = new Menu("후라이드 치킨", 18000, "바삭한 치킨", store);
-        Order order = new Order(customer, store, "서울시", status);
-        order.addItem(menu, 2);
+        Menu menu = new Menu("후라이드 치킨", 18000, "바삭한 치킨", owner);
+        Order order = new Order(menu, customer, 2, 36000, "서울시", status);
         ReflectionTestUtils.setField(order, "id", 10L);
         return order;
     }
@@ -98,44 +78,7 @@ class PaymentServiceTest {
         assertThat(order.getStatus()).isEqualTo(OrderStatus.PAYMENT_COMPLETED);
         assertThat(response.orderStatus()).isEqualTo(OrderStatus.PAYMENT_COMPLETED);
         assertThat(response.amount()).isEqualTo(36000); // 요청값이 아닌 주문 총액
-        assertThat(response.paidAt()).isEqualTo(FIXED_NOW); // JVM 시간대가 아닌 Clock(Asia/Seoul) 기준
         verify(paymentRepository).saveAndFlush(any(Payment.class));
-    }
-
-    @Test
-    void 결제하면_설정된_수수료율로_수수료와_정산액을_계산해_저장한다() {
-        Order order = order(OrderStatus.ORDER_REQUEST);
-        givenCustomerAndOrder(order);
-        given(paymentRepository.existsByOrderId(10L)).willReturn(false);
-
-        paymentService.pay(new PaymentRequest(10L, "CARD"), "customer1");
-
-        ArgumentCaptor<Payment> captor = ArgumentCaptor.forClass(Payment.class);
-        verify(paymentRepository).saveAndFlush(captor.capture());
-        Payment saved = captor.getValue();
-        assertThat(saved.getAmount()).isEqualTo(36000);
-        assertThat(saved.getFeeRate()).isEqualByComparingTo("0.05");
-        assertThat(saved.getFeeAmount()).isEqualTo(1800);         // 36000 × 0.05
-        assertThat(saved.getSettlementAmount()).isEqualTo(34200); // 36000 - 1800
-    }
-
-    @Test
-    void int_범위를_넘는_주문_총액도_그대로_결제된다() {
-        // 3,000,000,000원 — int 최대값(2,147,483,647)을 넘는 금액
-        Menu menu = new Menu("단체 주문", 1_500_000_000L, "대량 주문", store);
-        Order order = new Order(customer, store, "서울시", OrderStatus.ORDER_REQUEST);
-        order.addItem(menu, 2);
-        ReflectionTestUtils.setField(order, "id", 10L);
-        givenCustomerAndOrder(order);
-        given(paymentRepository.existsByOrderId(10L)).willReturn(false);
-
-        PaymentResponse response = paymentService.pay(new PaymentRequest(10L, "CARD"), "customer1");
-
-        assertThat(response.amount()).isEqualTo(3_000_000_000L);
-        ArgumentCaptor<Payment> captor = ArgumentCaptor.forClass(Payment.class);
-        verify(paymentRepository).saveAndFlush(captor.capture());
-        assertThat(captor.getValue().getFeeAmount()).isEqualTo(150_000_000L);
-        assertThat(captor.getValue().getSettlementAmount()).isEqualTo(2_850_000_000L);
     }
 
     @Test

@@ -1,7 +1,6 @@
 package com.sparta.springdeliverymini.service;
 
 import lombok.RequiredArgsConstructor;
-import com.sparta.springdeliverymini.config.PaymentFeeProperties;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
@@ -14,9 +13,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Clock;
-import java.time.LocalDateTime;
-
 @Service
 @Transactional(readOnly = true)
 @RequiredArgsConstructor // final 필드를 받는 생성자 자동 생성 (생성자 주입)
@@ -25,8 +21,6 @@ public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final OrderRepository orderRepository;
     private final UserRepository userRepository;
-    private final Clock clock; // 결제 시각 기준 (config.TimeConfig, Asia/Seoul)
-    private final PaymentFeeProperties feeProperties; // 플랫폼 수수료율 (application.yml payment.fee.rate)
 
     @Transactional
     public PaymentResponse pay(PaymentRequest request, String username) {
@@ -93,14 +87,8 @@ public class PaymentService {
         }
 
         // 8. 결제 내역 저장
-        // 결제 금액은 요청값이 아닌 주문 총액을 그대로 사용, 수수료·정산액은 Payment가 수수료율로 계산
-        Payment payment = new Payment(
-                order,
-                order.getTotalPrice(),
-                feeProperties.rate(),
-                PaymentMethod.CARD,
-                LocalDateTime.now(clock)
-        );
+        // 결제 금액은 요청값이 아닌 주문 총액을 그대로 사용
+        Payment payment = new Payment(order, order.getTotalPrice(), PaymentMethod.CARD);
         try {
             // 같은 주문을 동시에 결제하면 6·7번 검사를 둘 다 통과할 수 있음
             // saveAndFlush로 INSERT를 즉시 실행해 order_id unique 제약 위반을 여기서 잡아 409로 변환
