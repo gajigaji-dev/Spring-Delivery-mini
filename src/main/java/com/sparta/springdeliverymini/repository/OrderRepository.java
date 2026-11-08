@@ -10,6 +10,9 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     // CUSTOMER가 본인의 주문만 조회
     List<Order> findAllByUserId(Long userId);
 
-    // OWNER가 본인의 메뉴에 들어온 주문만 조회
-    List<Order> findAllByMenuOwnerId(Long ownerId);
+    // OWNER가 본인의 모든 매장에 들어온 주문 조회 (orders.store_id → stores.owner_id)
+    List<Order> findAllByStoreOwnerId(Long ownerId);
+
+    // 특정 매장에 들어온 주문 조회 (소유권 검증은 Service에서 먼저 처리)
+    List<Order> findAllByStoreId(Long storeId);
 }

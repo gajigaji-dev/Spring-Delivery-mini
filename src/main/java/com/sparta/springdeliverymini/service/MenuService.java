@@ -3,7 +3,9 @@ package com.sparta.springdeliverymini.service;
 import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.MenuCreateRequest;
 import com.sparta.springdeliverymini.dto.MenuResponse;
+import com.sparta.springdeliverymini.dto.MenuUpdateRequest;
 import com.sparta.springdeliverymini.entity.Menu;
+import com.sparta.springdeliverymini.entity.Store;
 import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
@@ -21,6 +23,7 @@ public class MenuService {
 
     private final MenuRepository menuRepository;
     private final UserRepository userRepository;
+    private final StoreService storeService;
 
     @Transactional
     public MenuResponse createMenu(MenuCreateRequest request, String username) {
@@ -35,15 +38,19 @@ public class MenuService {
                         )
                 );
 
-        // 2. 요청받은 정보와 현재 사용자를 이용해 메뉴 생성
+        // 2. 메뉴를 등록할 매장 찾기 + 본인 매장인지 확인
+        // 매장이 없으면 → 404, 다른 OWNER의 매장이면 → 403
+        Store store = storeService.getOwnedStore(request.storeId(), owner);
+
+        // 3. 요청받은 정보로 해당 매장의 메뉴 생성
         Menu menu = new Menu(
                 request.name(),
                 request.price(),
                 request.description(),
-                owner
+                store
         );
 
-        // 3. 생성한 메뉴를 DB에 저장하고 응답 DTO로 변환
+        // 4. 생성한 메뉴를 DB에 저장하고 응답 DTO로 변환
         return MenuResponse.from(menuRepository.save(menu));
     }
 
@@ -75,7 +82,7 @@ public class MenuService {
     @Transactional
     public MenuResponse putMenu(
             Long id,
-            MenuCreateRequest request,
+            MenuUpdateRequest request,
             String username
     ) {
 
@@ -98,9 +105,9 @@ public class MenuService {
                         )
                 );
 
-        // 3. 현재 사용자가 메뉴의 OWNER인지 확인
+        // 3. 현재 사용자가 메뉴를 판매하는 매장의 OWNER인지 확인
         // 다른 OWNER의 메뉴라면 수정할 수 없음 → 403
-        if (!menu.getOwner().getId().equals(currentUser.getId())) {
+        if (!menu.getStore().isOwnedBy(currentUser)) {
             throw new ApiException(
                     HttpStatus.FORBIDDEN,
                     "다른 사장님의 메뉴입니다."
@@ -146,9 +153,9 @@ public class MenuService {
                         )
                 );
 
-        // 3. 현재 사용자가 메뉴의 OWNER인지 확인
+        // 3. 현재 사용자가 메뉴를 판매하는 매장의 OWNER인지 확인
         // 다른 OWNER의 메뉴라면 삭제할 수 없음 → 403
-        if (!menu.getOwner().getId().equals(currentUser.getId())) {
+        if (!menu.getStore().isOwnedBy(currentUser)) {
             throw new ApiException(
                     HttpStatus.FORBIDDEN,
                     "다른 사장님의 메뉴입니다."
