@@ -27,6 +27,16 @@ public interface SettlementRepository extends JpaRepository<Settlement, Long> {
     @EntityGraph(attributePaths = "store")
     List<Settlement> findAllBySettlementDateAndStatusOrderById(LocalDate settlementDate, SettlementStatus status);
 
+    // 사장님 일 정산 기록 목록 — UNIQUE (store_id, settlement_date) 인덱스 사용
+    List<Settlement> findAllByStoreIdAndSettlementDateBetweenOrderBySettlementDate(
+            Long storeId, LocalDate from, LocalDate to);
+
+    List<Settlement> findAllByStoreIdAndSettlementDateBetweenAndStatusOrderBySettlementDate(
+            Long storeId, LocalDate from, LocalDate to, SettlementStatus status);
+
+    // 사장님 일 정산 상세 — 다른 매장의 정산이면 비어 있음 (Service가 404)
+    Optional<Settlement> findByIdAndStoreId(Long id, Long storeId);
+
     // 상태 변경(확정·지급)용 조회 — 행 잠금(SELECT ... FOR UPDATE)
     // 같은 정산을 동시에 확정·지급하면 뒤 요청은 앞 요청이 커밋될 때까지 기다린 뒤 바뀐 상태를 읽음
     // → 상태 검사를 둘 다 통과해 두 번 지급되거나 지급 시각이 덮어써지는 일을 막음

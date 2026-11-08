@@ -81,4 +81,17 @@ class SettlementPeriodTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("정산 조회 기간은 최대 31일입니다.");
     }
+
+    @Test
+    void range는_확정_여부를_보지_않고_기간_규칙만_검사한다() {
+        // 오늘·미래 날짜도 허용 (일 정산 기록 조회용)
+        LocalDate today = LocalDate.of(2026, 11, 6);
+        SettlementPeriod period = SettlementPeriod.range(today, today.plusDays(30));
+        assertThat(period.from()).isEqualTo(today);
+
+        assertThatThrownBy(() -> SettlementPeriod.range(today, today.minusDays(1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SettlementPeriod.range(today, today.plusDays(31)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

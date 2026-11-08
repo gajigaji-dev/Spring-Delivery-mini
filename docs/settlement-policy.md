@@ -295,5 +295,6 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 
 ### 사장님 조회 API와의 관계
 
-- 사장님 기간 조회는 판매를 배달완료 시각, 환불을 **환불 시각** 기준으로 보여줌 (`netSettlementAmount` = 판매 − 환불, 음수 가능)
-- 실제 어느 정산에서 차감됐는지, 이월·실제 지급액은 관리자 정산 API(`settlements`) 기준
+- 사장님 기간 조회(`/settlements`)는 판매를 배달완료 시각, 환불을 **환불 시각** 기준으로 보여줌 (`netSettlementAmount` = 판매 − 환불, 음수 가능) — 발생 기준
+- 사장님 일 정산 기록 조회(`/daily-settlements`, `OwnerSettlementService`)는 저장된 정산 기준 — 실제 지급액·이월·상태, 어느 환불이 어느 정산에서 차감됐는지(`settlement_refunds`), 이월분이 어디서 차감됐는지(`settlement_carryovers`)를 보여줌. 관리자 정산과 같은 행을 읽으므로 금액이 항상 같음
+  - 예) 11/5 23시 환불이 11/5 정산 집계 뒤에 반영되면 기간 조회에서는 11/5 환불, 일 정산 기록에서는 11/6 정산의 차감으로 보임
