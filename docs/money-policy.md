@@ -4,7 +4,6 @@
 
 원 단위 금액의 타입, 결제 건별 수수료·정산액 계산 규칙. 기간별 정산 집계는 [정산 기준](settlement-policy.md) 참고
 
-
 | 구분 | 타입 | 이유 |
 |---|---|---|
 | 원 단위 금액 (가격·총액·결제액·수수료·정산액) | `long` / `bigint` | 원화는 소수점이 없는 정수 금액. `int`(최대 약 21억 원)는 대량 주문 총액에서 넘칠 수 있어 `long` 사용 |
@@ -21,5 +20,5 @@
 - **총액 계산**: 항목 금액은 `Math.multiplyExact`, 합산은 `Math.addExact`로 계산해 `long` 범위를 넘으면 400 응답 (잘못된 값이 저장되지 않도록, `Order.addItem`)
   - 요청 본문의 가격이 `long`, 수량이 `int` 범위를 넘으면 JSON 변환 단계에서 400
 - **수수료 도입 전 결제**: V3 마이그레이션에서 수수료 0, 정산액 = 결제액으로 채움
-- 수수료·정산액은 사장님/플랫폼 내부 정보라서 CUSTOMER가 받는 결제 응답(`PaymentResponse`)에는 포함하지 않음 → 이후 사장님용 정산 조회 API를 별도 DTO로 분리해 제공
+- 수수료·정산액은 사장님/플랫폼 내부 정보라서 CUSTOMER가 받는 결제 응답(`PaymentResponse`)에는 포함하지 않음 → 사장님용 정산 조회 API(`GET /api/stores/{id}/settlements`)의 별도 DTO(`StoreSettlementResponse`, `SettlementItemResponse`)로만 제공
 - 참고: `long` 금액을 JSON 숫자로 내보내므로, 2^53(약 9천조 원)을 넘는 금액은 JavaScript 클라이언트에서 정밀도가 손실될 수 있음 (현재 요구 범위에서는 해당 없음)

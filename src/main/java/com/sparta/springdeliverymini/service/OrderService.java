@@ -14,6 +14,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +32,7 @@ public class OrderService {
     private final MenuRepository menuRepository;
     private final UserRepository userRepository;
     private final StoreService storeService;
+    private final Clock clock; // 배달완료 시각 기준 (config.TimeConfig, Asia/Seoul)
 
     public List<OrderResponse> getOrders(String username) {
         // 1. 현재 로그인한 사용자 찾기
@@ -223,7 +226,7 @@ public class OrderService {
         // 현재 상태에서 허용되는지는 Order가 확인 (예: 결제 전 주문 수락, 배달완료 주문 변경 → 409)
         switch (newStatus) {
             case ORDER_ACCEPTED -> order.accept();         // PAYMENT_COMPLETED → ORDER_ACCEPTED
-            case DELIVERY_COMPLETED -> order.complete();   // ORDER_ACCEPTED → DELIVERY_COMPLETED
+            case DELIVERY_COMPLETED -> order.complete(LocalDateTime.now(clock)); // ORDER_ACCEPTED → DELIVERY_COMPLETED, 배달완료 시각 기록
             // OWNER가 요청할 수 없는 상태(주문요청·주문취소·결제완료) → 409
             default -> throw new InvalidOrderStatusException("허용되지 않는 주문 상태 변경입니다.");
         }
