@@ -2,6 +2,65 @@
 
 [← README](../README.md)
 
+## 아키텍처
+
+```mermaid
+flowchart LR
+    client([Client<br/>CUSTOMER · OWNER · ADMIN])
+
+    subgraph app[Spring Boot 애플리케이션]
+        direction LR
+        subgraph sec[Spring Security]
+            jwt[JwtAuthenticationFilter<br/>토큰 검증]
+            rule[SecurityConfig<br/>URL별 역할 검사]
+        end
+        ctrl[Controller<br/>요청 검증 @Valid]
+        svc[Service<br/>DB 기준 권한 재확인 · 트랜잭션]
+        ent[Entity<br/>상태 전이 · 수수료 계산 규칙]
+        repo[Repository<br/>Spring Data JPA]
+        sch[SettlementScheduler<br/>매일 01:10]
+        clock[[Clock<br/>Asia/Seoul]]
+        err[GlobalExceptionHandler]
+    end
+
+    db[(PostgreSQL 18)]
+    fly[Flyway<br/>V1 ~ V10]
+
+    client -->|Bearer JWT| jwt --> rule --> ctrl --> svc
+    svc --> ent
+    svc --> repo --> db
+    sch -->|일 정산 집계| svc
+    clock -.현재 시각.-> svc
+    clock -.-> sch
+    svc -.ApiException · Invalid*StatusException.-> err
+    rule -.401 / 403.-> client
+    err -.4xx JSON.-> client
+    fly -.기동 시 마이그레이션.-> db
+```
+
+- 스키마는 Flyway가 만들고 Hibernate는 `ddl-auto: validate`로 검사만 함 → [데이터베이스](database.md), 테이블 관계는 [ERD](erd.md)
+- 권한은 두 겹: `SecurityConfig`가 URL별 역할을, Service가 DB 기준 역할·본인 데이터 여부를 다시 확인 (토큰 발급 후 역할이 바뀌는 경우 대비)
+- 현재 시각은 모두 주입된 `Clock`에서 얻음 → 테스트에서 시각을 고정해 정산 날짜 경계 검증
+
+### 주문 → 결제 → 정산 흐름
+
+```mermaid
+flowchart LR
+    o[주문 생성<br/>ORDER_REQUEST] -->|결제| p[결제 완료<br/>수수료 스냅샷]
+    p -->|사장님 수락| a[주문 수락]
+    a -->|배달| d[배달 완료<br/>delivered_at 기록]
+    d -->|다음 날 01:10 집계| s1[일 정산<br/>PENDING]
+    s1 -->|관리자 확정| s2[CONFIRMED]
+    s2 -->|관리자 지급| s3[PAID]
+    o -.취소.-> c[주문·결제 취소]
+    p -.수락 전 취소.-> c
+    d -.관리자 환불.-> r[REFUNDED<br/>다음 정산에서 차감·이월]
+```
+
+- 상태별 규칙은 [API · 주문 상태 흐름](api.md#주문-상태-흐름), 정산·환불·이월은 [정산 기준](settlement-policy.md)
+
+## 패키지 구조
+
 ```
 src/main/java/com/sparta/springdeliverymini
 ├── SpringDeliveryMiniApplication.java   # 실행 진입점 (JVM 기본 시간대 Asia/Seoul 고정)
@@ -82,11 +141,33 @@ src/main/resources
 
 ## 요청 처리 흐름
 
-```
-Client ─▶ JwtAuthenticationFilter ─▶ SecurityConfig(역할 검사) ─▶ Controller ─▶ Service ─▶ Repository ─▶ DB
-                                              │                                    │
-                                              └─ 401 / 403                         └─ ApiException ─▶ GlobalExceptionHandler
-                                                                                      InvalidOrderStatusException(Order 엔티티) ─▶ 〃 (409)
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant F as JwtAuthenticationFilter
+    participant S as SecurityConfig
+    participant Ctl as Controller
+    participant Svc as Service
+    participant E as Entity
+    participant R as Repository / DB
+    participant H as GlobalExceptionHandler
+
+    C->>F: 요청 + Authorization: Bearer {token}
+    F->>S: 인증 정보(아이디, ROLE_*) 등록
+    alt 토큰 없음·위조 / 역할 불일치
+        S-->>C: 401 / 403
+    end
+    S->>Ctl: 통과
+    Ctl->>Svc: @Valid 통과한 요청 + 아이디
+    Svc->>R: 사용자·대상 조회 (DB 기준 역할·소유권 재확인)
+    Svc->>E: 상태 전이 메서드 호출 (pay, accept, confirm ...)
+    alt 규칙 위반
+        E-->>H: Invalid*StatusException
+        Svc-->>H: ApiException (400 / 403 / 404 / 409)
+        H-->>C: {"message": "..."}
+    end
+    Svc->>R: 저장 (트랜잭션 커밋)
+    Ctl-->>C: 200 / 201 / 204
 ```
 
 ## 테스트

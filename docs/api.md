@@ -28,6 +28,7 @@
 |---|---|---|---|---|---|
 | 회원가입 | POST | `/api/users/signup` | X | - | 201 |
 | 로그인 | POST | `/api/users/login` | X | - | 200 |
+| 내 토큰 정보 조회 | GET | `/api/users/me` | O | 로그인 사용자 | 200 |
 | 매장 생성 | POST | `/api/stores` | O | OWNER | 201 |
 | 매장 목록 조회 | GET | `/api/stores` | X | - | 200 |
 | 매장 단건 조회 | GET | `/api/stores/{id}` | X | - | 200 |
@@ -109,6 +110,17 @@ Response `200 OK`
 |---|---|
 | 400 | 아이디/비밀번호 누락 |
 | 401 | 아이디 또는 비밀번호 불일치 (어느 쪽이 틀렸는지 구분하지 않음) |
+
+### 내 토큰 정보 조회 `GET /api/users/me`
+Response `200 OK`
+```json
+{ "username": "user1", "authorities": ["ROLE_CUSTOMER"] }
+```
+- 토큰 인증 확인용. DB를 조회하지 않고 **토큰에 담긴** 아이디·역할을 그대로 돌려줌 → 역할이 DB에서 바뀌어도 토큰이 만료되기 전까지는 이전 역할이 보임 (실제 권한 판단은 각 Service가 DB 기준으로 다시 확인)
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음·만료·위조 |
 
 ---
 
