@@ -40,24 +40,27 @@
 | 메뉴 삭제 | DELETE | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 204 |
 | 주문 생성 | POST | `/api/orders` | O | CUSTOMER | 201 |
 | 주문 목록 조회 | GET | `/api/orders` | O | CUSTOMER / OWNER | 200 |
-| 주문 취소 | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
+| 주문 취소 (결제 취소 포함) | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
 | 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 매장 주문) | 204 |
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
 | 정산 목록 조회 (관리자) | GET | `/api/admin/settlements?date=&status=` | O | ADMIN | 200 |
 | 정산 확정 (관리자) | PATCH | `/api/admin/settlements/{id}/confirm` | O | ADMIN | 200 |
 | 정산 지급 (관리자) | PATCH | `/api/admin/settlements/{id}/pay` | O | ADMIN | 200 |
+| 결제 환불 (관리자) | PATCH | `/api/admin/payments/{id}/refund` | O | ADMIN | 200 |
 
 ## 주문 상태 흐름
 
 ```
 ORDER_REQUEST(주문요청) ──결제──▶ PAYMENT_COMPLETED(결제완료) ──OWNER 수락──▶ ORDER_ACCEPTED(주문수락) ──OWNER──▶ DELIVERY_COMPLETED(배달완료)
-       │
-       └──CUSTOMER 취소──▶ ORDER_CANCELLED(주문취소)
+       │                                   │                                                                     │
+       └──CUSTOMER 취소──┬─────────────────┘                                                       ADMIN 환불 (결제만 REFUNDED,
+                         ▼                                                                          주문 상태는 그대로)
+                 ORDER_CANCELLED(주문취소) — 결제완료였다면 결제도 CANCELLED
 ```
 
 | 전이 | `Order` 메서드 | 호출 위치 |
 |---|---|---|
-| `ORDER_REQUEST → ORDER_CANCELLED` | `cancel()` | `OrderService.cancelOrder` |
+| `ORDER_REQUEST / PAYMENT_COMPLETED → ORDER_CANCELLED` | `cancel()` (결제완료면 `Payment.cancel()`도 함께) | `OrderService.cancelOrder` |
 | `ORDER_REQUEST → PAYMENT_COMPLETED` | `pay()` | `PaymentService.pay` |
 | `PAYMENT_COMPLETED → ORDER_ACCEPTED` | `accept()` | `OrderService.statusOrder` |
 | `ORDER_ACCEPTED → DELIVERY_COMPLETED` | `complete(deliveredAt)` (배달완료 시각 기록) | `OrderService.statusOrder` |
@@ -161,6 +164,9 @@ Response `200 OK`
   "from": "2026-11-01", "to": "2026-11-05",
   "paymentCount": 2,
   "totalAmount": 38009, "totalFee": 1900, "settlementAmount": 36109,
+  "refundCount": 0, "refundAmount": 0, "refundFee": 0, "refundSettlementAmount": 0,
+  "netSettlementAmount": 36109,
+  "refunds": [],
   "items": [
     { "paymentId": 3, "orderId": 5, "amount": 18009, "feeRate": 0.0500, "feeAmount": 900, "settlementAmount": 17109,
       "paidAt": "2026-11-01T18:20:00", "deliveredAt": "2026-11-01T19:05:00" },
@@ -171,6 +177,10 @@ Response `200 OK`
 ```
 - 합계는 건별 금액을 더하기만 함 → `totalFee + settlementAmount = totalAmount`
 - `items`는 배달완료 시각 순, 대상이 없으면 합계 0과 빈 배열
+- 판매(`paymentCount` ~ `items`)는 배달완료 시각 기준 — 나중에 환불돼도 빠지지 않음 → 한 번 조회한 금액이 바뀌지 않음
+- 환불(`refund*`, `refunds`)은 환불 시각이 기간 안인 결제, `netSettlementAmount` = 판매 정산액 - 환불 정산액 (음수 가능)
+  - `refunds` 항목: `paymentId`, `orderId`, `amount`, `feeAmount`, `settlementAmount`, `deliveredAt`, `refundedAt`
+  - 이월·실제 지급액은 일 정산 기록 기준이라 이 응답에는 없음 ([정산 기준 9장](settlement-policy.md#9-결제-취소환불과-차기-정산-반영))
 - 수수료·정산액은 OWNER 전용 응답에만 포함 (CUSTOMER의 결제 응답 `PaymentResponse`와 분리)
 
 | 코드 | 상황 |
@@ -302,13 +312,16 @@ Response `200 OK` — 주문 생성 응답 형식의 배열
 
 ### 주문 취소 `PATCH /api/orders/{id}/cancel`
 Response `204 No Content` — 주문 상태를 `ORDER_CANCELLED`로 변경
+- 주문수락 전(`ORDER_REQUEST`, `PAYMENT_COMPLETED`)에만 가능
+- 결제완료 주문이면 결제도 `CANCELLED`로 바뀌고 취소 시각(`cancelledAt`)을 기록 → 고객 결제액 전액 취소. 배달 전이라 정산에는 영향 없음
+- 주문 행을 잠그고 처리 → 사장님 수락과 동시에 들어와도 한쪽만 성공 (수락된 주문이 취소되지 않음)
 
 | 코드 | 상황 |
 |---|---|
 | 401 | 토큰 없음 |
 | 403 | OWNER가 요청, 본인 주문이 아님 |
 | 404 | 주문 없음 |
-| 409 | 주문요청 상태가 아님 (결제 완료된 주문 등은 취소 불가) |
+| 409 | 주문수락 이후(`ORDER_ACCEPTED`, `DELIVERY_COMPLETED`)이거나 이미 취소됨 — 배달완료 후에는 관리자 환불 |
 
 ### 주문 상태 변경 `PATCH /api/orders/{id}/status`
 Request
@@ -345,9 +358,11 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 ```json
 {
   "id": 1, "orderId": 1, "amount": 36000, "paymentMethod": "CARD",
-  "orderStatus": "PAYMENT_COMPLETED", "paidAt": "2026-10-08T14:05:00"
+  "orderStatus": "PAYMENT_COMPLETED", "paidAt": "2026-10-08T14:05:00",
+  "status": "COMPLETED", "cancelledAt": null, "refundedAt": null
 }
 ```
+- `status`: 결제 상태 `COMPLETED` / `CANCELLED`(배달 전 취소) / `REFUNDED`(배달 후 환불)
 
 | 코드 | 상황 |
 |---|---|
@@ -371,11 +386,14 @@ PENDING(확정 대기) ── PATCH .../confirm ──▶ CONFIRMED(확정) ─�
 - 정산 응답 형식 (`SettlementResponse`)
   ```json
   { "id": 1, "storeId": 1, "storeName": "치킨집", "settlementDate": "2026-11-05",
-    "paymentCount": 2, "totalAmount": 38009, "totalFee": 1900, "settlementAmount": 36109,
+    "paymentCount": 2, "totalAmount": 38009, "totalFee": 1900, "salesSettlementAmount": 36109,
+    "refundCount": 1, "refundAmount": 10000, "refundFee": 500, "refundSettlementAmount": 9500,
+    "carriedInAmount": 0, "carriedOutAmount": 0, "settlementAmount": 26609,
     "status": "CONFIRMED",
     "aggregatedAt": "2026-11-06T01:10:00", "confirmedAt": "2026-11-06T09:00:00", "paidAt": null }
   ```
   - `aggregatedAt`: 스케줄러 집계 시각, `confirmedAt`: 확정 시각(`PENDING`이면 `null`), `paidAt`: 지급 시각(`PAID`가 아니면 `null`)
+  - `settlementAmount`: **실제 지급액** = max(판매 정산액 - 환불 정산액 - 이월받은 금액, 0). 모자라면 `carriedOutAmount`로 다음 정산에 이월
 
 ### 정산 목록 조회 `GET /api/admin/settlements`
 Request — 쿼리 파라미터
@@ -418,3 +436,25 @@ Response `200 OK` — 지급된 정산
 | 409 | `CONFIRMED`가 아님 — 확정 전(`PENDING`)이거나 이미 지급됨(`PAID`, 지급 시각은 처음 값 유지) |
 
 - 같은 정산에 지급 요청이 동시에 들어와도 행 잠금으로 한 번만 성공, 나머지는 409
+
+---
+
+## 관리자 — 결제
+
+### 결제 환불 `PATCH /api/admin/payments/{id}/refund`
+배달완료 주문의 결제를 **전액** 환불 — `COMPLETED` → `REFUNDED`, 환불 시각(`refundedAt`)을 서버 시각으로 기록. 요청 본문 없음
+- 고객 결제액·플랫폼 수수료·매장 정산액이 모두 취소됨 (결제에 저장된 금액 그대로)
+- 주문 상태는 `DELIVERY_COMPLETED` 그대로 (최종 상태)
+- 정산은 여기서 바꾸지 않음 → 다음에 집계되는 정산에서 차감, 이미 만들어진 정산(확정·지급 포함)은 바뀌지 않음 ([정산 기준 9장](settlement-policy.md#9-결제-취소환불과-차기-정산-반영))
+- 배달 전 주문은 고객의 주문 취소(`PATCH /api/orders/{id}/cancel`)로 처리
+
+Response `200 OK` — 결제 응답 (`status: REFUNDED`)
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | 결제 없음 |
+| 409 | 배달완료 전 주문, 이미 환불·취소된 결제 (환불 시각은 처음 값 유지) |
+
+- 같은 결제에 환불 요청이 동시에 들어와도 행 잠금으로 한 번만 성공, 나머지는 409

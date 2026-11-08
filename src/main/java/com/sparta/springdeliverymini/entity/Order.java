@@ -121,10 +121,12 @@ public class Order extends BaseEntity {
     // 어디서 호출하든 현재 상태를 확인하므로, 결제 전 주문이 배달완료되는 등의 잘못된 전이가 불가능
     // (권한·본인 확인은 Service 책임)
 
-    // 주문 취소: ORDER_REQUEST → ORDER_CANCELLED
+    // 주문 취소: ORDER_REQUEST / PAYMENT_COMPLETED → ORDER_CANCELLED
+    // 주문수락(ORDER_ACCEPTED) 이후는 매장이 조리를 시작했으므로 취소 불가
+    // 결제완료 주문의 결제 취소(Payment.cancel)는 OrderService가 같은 트랜잭션에서 함께 처리
     public void cancel() {
-        if (this.status != OrderStatus.ORDER_REQUEST) {
-            throw new InvalidOrderStatusException("주문요청 상태에서만 주문을 취소할 수 있습니다.");
+        if (this.status != OrderStatus.ORDER_REQUEST && this.status != OrderStatus.PAYMENT_COMPLETED) {
+            throw new InvalidOrderStatusException("주문수락 전(주문요청·결제완료) 상태에서만 주문을 취소할 수 있습니다.");
         }
         this.status = OrderStatus.ORDER_CANCELLED;
     }

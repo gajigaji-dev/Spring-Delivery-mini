@@ -59,9 +59,10 @@ public class PaymentService {
             );
         }
 
-        // 4. 결제할 주문 조회
+        // 4. 결제할 주문 조회 (행 잠금)
         // 주문이 존재하지 않으면 → 404
-        Order order = orderRepository.findById(request.orderId())
+        // 같은 주문의 결제·취소가 동시에 들어와도 한 번에 하나씩 → 취소된 주문에 결제가 저장되는 일 없음
+        Order order = orderRepository.findByIdForUpdate(request.orderId())
                 .orElseThrow(() ->
                         new ApiException(
                                 HttpStatus.NOT_FOUND,

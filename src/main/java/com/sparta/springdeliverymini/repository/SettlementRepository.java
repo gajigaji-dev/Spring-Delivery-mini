@@ -34,4 +34,17 @@ public interface SettlementRepository extends JpaRepository<Settlement, Long> {
     // (매장은 함께 조회하지 않음 — JOIN하면 stores 행까지 잠기므로)
     @Query("SELECT s FROM Settlement s WHERE s.id = :id")
     Optional<Settlement> findByIdForUpdate(@Param("id") Long id);
+
+    // 매장의 미차감 이월분 — date보다 앞 날짜 정산 중 다음으로 넘긴 금액이 있고 아직 차감 기록이 없는 정산
+    // settlement_date < date → 이월분은 더 뒤 날짜의 정산에서만 차감 (날짜 역순으로 집계돼도 앞 날짜로 거슬러 가지 않음)
+    // 부분 인덱스 idx_settlements_store_carried_out 사용 (V9)
+    @Query("""
+            SELECT s FROM Settlement s
+            WHERE s.store.id = :storeId
+              AND s.settlementDate < :date
+              AND s.carriedOutAmount > 0
+              AND NOT EXISTS (SELECT 1 FROM SettlementCarryover c WHERE c.fromSettlement = s)
+            ORDER BY s.settlementDate, s.id
+            """)
+    List<Settlement> findUnsettledCarryovers(@Param("storeId") Long storeId, @Param("date") LocalDate date);
 }

@@ -232,7 +232,7 @@ class SettlementAggregationIntegrationTest {
 
         assertThatThrownBy(() -> jdbc.update("UPDATE settlements SET total_fee = 600 WHERE id = ?", saved.getId()))
                 .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("settlements_amount_check");
+                .hasMessageContaining("settlements_sales_amount_check"); // V9에서 판매 금액 규칙으로 분리
     }
 
     @Test
