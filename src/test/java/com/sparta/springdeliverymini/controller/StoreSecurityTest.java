@@ -4,6 +4,7 @@ import com.sparta.springdeliverymini.config.SecurityConfig;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
 import com.sparta.springdeliverymini.service.OrderService;
+import com.sparta.springdeliverymini.service.SettlementService;
 import com.sparta.springdeliverymini.service.StoreService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,6 +14,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+
+import java.time.LocalDate;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -40,6 +43,9 @@ class StoreSecurityTest {
 
     @MockitoBean
     private OrderService orderService;
+
+    @MockitoBean
+    private SettlementService settlementService;
 
     private String bearer(String username, Role role) {
         return "Bearer " + jwtProvider.createToken(username, role);
@@ -110,5 +116,60 @@ class StoreSecurityTest {
                 .andExpect(status().isUnauthorized());
 
         verify(orderService, never()).getStoreOrders(anyLong(), any());
+    }
+
+    // ===== 정산 조회 =====
+
+    @Test
+    void OWNER는_매장_정산을_조회할_수_있다() throws Exception {
+        mockMvc.perform(get("/api/stores/1/settlements")
+                        .param("from", "2026-11-01").param("to", "2026-11-05")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
+                .andExpect(status().isOk());
+
+        verify(settlementService).getStoreSettlement(
+                1L, LocalDate.of(2026, 11, 1), LocalDate.of(2026, 11, 5), "owner1");
+    }
+
+    @Test
+    void CUSTOMER는_매장_정산_조회가_Security에서_403() throws Exception {
+        mockMvc.perform(get("/api/stores/1/settlements")
+                        .param("from", "2026-11-01").param("to", "2026-11-05")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("customer1", Role.CUSTOMER)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("권한이 없습니다."));
+
+        verify(settlementService, never()).getStoreSettlement(anyLong(), any(), any(), any());
+    }
+
+    @Test
+    void 토큰_없이_매장_정산을_조회하면_401() throws Exception {
+        mockMvc.perform(get("/api/stores/1/settlements")
+                        .param("from", "2026-11-01").param("to", "2026-11-05"))
+                .andExpect(status().isUnauthorized());
+
+        verify(settlementService, never()).getStoreSettlement(anyLong(), any(), any(), any());
+    }
+
+    @Test
+    void 정산_조회_기간이_없으면_400() throws Exception {
+        mockMvc.perform(get("/api/stores/1/settlements")
+                        .param("from", "2026-11-01")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("to: 필수 값입니다."));
+
+        verify(settlementService, never()).getStoreSettlement(anyLong(), any(), any(), any());
+    }
+
+    @Test
+    void 정산_조회_날짜_형식이_틀리면_400() throws Exception {
+        mockMvc.perform(get("/api/stores/1/settlements")
+                        .param("from", "2026/11/01").param("to", "2026-11-05")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("from: 형식이 올바르지 않습니다."));
+
+        verify(settlementService, never()).getStoreSettlement(anyLong(), any(), any(), any());
     }
 }

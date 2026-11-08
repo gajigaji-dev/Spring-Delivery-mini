@@ -16,7 +16,7 @@
 
   | 코드 | 상황 |
   |---|---|
-  | 400 | 요청 값 검증 실패, JSON 형식 오류 |
+  | 400 | 요청 값 검증 실패, JSON 형식 오류, 필수 쿼리 파라미터 누락, 경로·쿼리 파라미터 형식 오류 |
   | 401 | 토큰이 없거나 유효하지 않음(만료·위조), 로그인 실패 |
   | 403 | 권한 없음 (역할이 다르거나 본인 데이터가 아님) |
   | 404 | 대상(매장·메뉴·주문)이 없음 |
@@ -32,6 +32,7 @@
 | 매장 목록 조회 | GET | `/api/stores` | X | - | 200 |
 | 매장 단건 조회 | GET | `/api/stores/{id}` | X | - | 200 |
 | 매장별 주문 조회 | GET | `/api/stores/{id}/orders` | O | OWNER (본인 매장) | 200 |
+| 매장별 정산 조회 | GET | `/api/stores/{id}/settlements?from=&to=` | O | OWNER (본인 매장) | 200 |
 | 메뉴 등록 | POST | `/api/menus` | O | OWNER (본인 매장) | 201 |
 | 메뉴 목록 조회 | GET | `/api/menus` | X | - | 200 |
 | 메뉴 단건 조회 | GET | `/api/menus/{id}` | X | - | 200 |
@@ -56,7 +57,7 @@ ORDER_REQUEST(주문요청) ──결제──▶ PAYMENT_COMPLETED(결제완료
 | `ORDER_REQUEST → ORDER_CANCELLED` | `cancel()` | `OrderService.cancelOrder` |
 | `ORDER_REQUEST → PAYMENT_COMPLETED` | `pay()` | `PaymentService.pay` |
 | `PAYMENT_COMPLETED → ORDER_ACCEPTED` | `accept()` | `OrderService.statusOrder` |
-| `ORDER_ACCEPTED → DELIVERY_COMPLETED` | `complete()` | `OrderService.statusOrder` |
+| `ORDER_ACCEPTED → DELIVERY_COMPLETED` | `complete(deliveredAt)` (배달완료 시각 기록) | `OrderService.statusOrder` |
 
 - 상태를 임의 값으로 바꾸는 메서드는 없음 → 어디서 호출하든 위 표 외의 전이는 `InvalidOrderStatusException`(409)
 
@@ -135,6 +136,43 @@ Response `200 OK` — 주문 생성 응답 형식의 배열, 해당 매장에 �
 
 | 코드 | 상황 |
 |---|---|
+| 401 | 토큰 없음 |
+| 403 | CUSTOMER가 요청, 본인 매장이 아님 |
+| 404 | 매장 없음 |
+
+### 매장별 정산 조회 `GET /api/stores/{id}/settlements`
+기간 안에 **배달완료**된 결제의 합계와 건별 내역 (기준은 [정산 기준](settlement-policy.md))
+
+Request — 쿼리 파라미터
+```
+GET /api/stores/1/settlements?from=2026-11-01&to=2026-11-05
+```
+- `from`, `to`: 필수, `yyyy-MM-dd`, 둘 다 포함하는 날짜 → 배달완료 시각 `[from 00:00, to+1 00:00)` (Asia/Seoul)
+- `from ≤ to`, 최대 31일
+- 확정된 날짜까지만 조회 가능 (D일은 D+1 01:00 이후 확정 → 오늘은 조회 불가)
+
+Response `200 OK`
+```json
+{
+  "storeId": 1, "storeName": "치킨집",
+  "from": "2026-11-01", "to": "2026-11-05",
+  "paymentCount": 2,
+  "totalAmount": 38009, "totalFee": 1900, "settlementAmount": 36109,
+  "items": [
+    { "paymentId": 3, "orderId": 5, "amount": 18009, "feeRate": 0.0500, "feeAmount": 900, "settlementAmount": 17109,
+      "paidAt": "2026-11-01T18:20:00", "deliveredAt": "2026-11-01T19:05:00" },
+    { "paymentId": 4, "orderId": 6, "amount": 20000, "feeRate": 0.0500, "feeAmount": 1000, "settlementAmount": 19000,
+      "paidAt": "2026-11-05T20:10:00", "deliveredAt": "2026-11-05T21:00:00" }
+  ]
+}
+```
+- 합계는 건별 금액을 더하기만 함 → `totalFee + settlementAmount = totalAmount`
+- `items`는 배달완료 시각 순, 대상이 없으면 합계 0과 빈 배열
+- 수수료·정산액은 OWNER 전용 응답에만 포함 (CUSTOMER의 결제 응답 `PaymentResponse`와 분리)
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `from`/`to` 누락·형식 오류, 시작일 > 종료일, 31일 초과, 확정 전 날짜 포함 |
 | 401 | 토큰 없음 |
 | 403 | CUSTOMER가 요청, 본인 매장이 아님 |
 | 404 | 매장 없음 |
@@ -236,10 +274,12 @@ Response `201 Created`
   ],
   "totalPrice": 38000,
   "deliveryAddress": "서울시 강남구 ...", "status": "ORDER_REQUEST",
-  "createdAt": "2026-10-08T14:03:00", "updatedAt": "2026-10-08T14:03:00"
+  "createdAt": "2026-10-08T14:03:00", "updatedAt": "2026-10-08T14:03:00",
+  "deliveredAt": null
 }
 ```
 - `menuName`, `unitPrice`는 현재 메뉴가 아닌 주문 당시 값
+- `deliveredAt`: 배달완료 시각, 배달완료 전에는 `null`
 
 | 코드 | 상황 |
 |---|---|
@@ -273,6 +313,7 @@ Request
 { "status": "ORDER_ACCEPTED" }
 ```
 - 허용되는 변경: `PAYMENT_COMPLETED → ORDER_ACCEPTED`, `ORDER_ACCEPTED → DELIVERY_COMPLETED`
+- `DELIVERY_COMPLETED`로 변경하면 서버 현재 시각(Asia/Seoul)을 배달완료 시각(`deliveredAt`)으로 기록 → 정산 기간 기준
 
 Response `204 No Content`
 

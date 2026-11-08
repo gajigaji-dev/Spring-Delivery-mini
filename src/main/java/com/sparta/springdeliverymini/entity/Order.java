@@ -6,6 +6,7 @@ import lombok.NoArgsConstructor;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import jakarta.persistence.*;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -53,6 +54,12 @@ public class Order extends BaseEntity {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private OrderStatus status;
+
+    // 배달완료 시각 — 정산 기간을 나누는 기준 (docs/settlement-policy.md)
+    // complete()에서 한 번만 기록, 배달완료 전에는 null
+    // updated_at과 따로 두는 이유: updated_at은 이후 다른 값이 바뀌면 움직여 정산 기간이 달라질 수 있음
+    // DB에서도 "배달완료 상태 ⇔ delivered_at 있음"을 CHECK 제약으로 강제 (V6)
+    private LocalDateTime deliveredAt;
 
     // 항목 없이 생성 → addItem()으로 항목을 담음 (총액은 0원에서 시작)
     public Order(
@@ -142,12 +149,17 @@ public class Order extends BaseEntity {
 
     // 배달 완료: ORDER_ACCEPTED → DELIVERY_COMPLETED
     // 단계 건너뛰기(결제완료 → 배달완료) 불가
-    public void complete() {
+    // deliveredAt은 호출하는 쪽(OrderService)이 Clock 기준 현재 시각을 넘김 (Payment.paidAt과 같은 방식)
+    public void complete(LocalDateTime deliveredAt) {
         validateNotDelivered();
         if (this.status != OrderStatus.ORDER_ACCEPTED) {
             throw new InvalidOrderStatusException("허용되지 않는 주문 상태 변경입니다.");
         }
+        if (deliveredAt == null) {
+            throw new IllegalArgumentException("배달완료 시각이 필요합니다.");
+        }
         this.status = OrderStatus.DELIVERY_COMPLETED;
+        this.deliveredAt = deliveredAt;
     }
 
     // 배달완료는 최종 상태 → 이후 어떤 변경도 불가

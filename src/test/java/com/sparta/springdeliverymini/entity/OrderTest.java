@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.time.LocalDateTime;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -12,6 +14,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class OrderTest {
 
     private final Store store = new Store("치킨집", null);
+    private static final LocalDateTime DELIVERED_AT = LocalDateTime.of(2026, 11, 5, 23, 59, 59);
 
     private Order orderWith(OrderStatus status) {
         // 상태 전이만 검증하므로 회원·점주는 필요 없음
@@ -99,8 +102,28 @@ class OrderTest {
         order.accept();
         assertThat(order.getStatus()).isEqualTo(OrderStatus.ORDER_ACCEPTED);
 
-        order.complete();
+        order.complete(DELIVERED_AT);
         assertThat(order.getStatus()).isEqualTo(OrderStatus.DELIVERY_COMPLETED);
+    }
+
+    @Test
+    void 배달완료하면_배달완료_시각이_기록된다() {
+        Order order = orderWith(OrderStatus.ORDER_ACCEPTED);
+        assertThat(order.getDeliveredAt()).isNull();
+
+        order.complete(DELIVERED_AT);
+
+        assertThat(order.getDeliveredAt()).isEqualTo(DELIVERED_AT);
+    }
+
+    @Test
+    void 배달완료_시각_없이는_배달완료할_수_없다() {
+        Order order = orderWith(OrderStatus.ORDER_ACCEPTED);
+
+        assertThatThrownBy(() -> order.complete(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.ORDER_ACCEPTED);
+        assertThat(order.getDeliveredAt()).isNull();
     }
 
     @Test
@@ -153,10 +176,11 @@ class OrderTest {
         // 결제 전 주문의 배달완료, 단계 건너뛰기(결제완료 → 배달완료) 포함
         Order order = orderWith(status);
 
-        assertThatThrownBy(order::complete)
+        assertThatThrownBy(() -> order.complete(DELIVERED_AT))
                 .isInstanceOf(InvalidOrderStatusException.class)
                 .hasMessage("허용되지 않는 주문 상태 변경입니다.");
         assertThat(order.getStatus()).isEqualTo(status);
+        assertThat(order.getDeliveredAt()).isNull(); // 실패하면 시각도 기록되지 않음
     }
 
     @Test
@@ -166,7 +190,7 @@ class OrderTest {
         assertThatThrownBy(order::accept)
                 .isInstanceOf(InvalidOrderStatusException.class)
                 .hasMessage("이미 배달완료된 주문은 상태를 변경할 수 없습니다.");
-        assertThatThrownBy(order::complete)
+        assertThatThrownBy(() -> order.complete(DELIVERED_AT))
                 .isInstanceOf(InvalidOrderStatusException.class)
                 .hasMessage("이미 배달완료된 주문은 상태를 변경할 수 없습니다.");
     }
