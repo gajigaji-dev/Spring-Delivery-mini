@@ -22,7 +22,7 @@
 | [API 명세](docs/api.md) | 공통 사항, API 목록, 주문 상태 흐름, API별 요청·응답·에러 코드 |
 | [데이터베이스 / ERD](docs/database.md) | Flyway 마이그레이션, ERD, 테이블 관계·상세, 시간대, 결제 연관관계 |
 | [금액 처리 정책](docs/money-policy.md) | 금액 타입, 수수료 계산·반올림, 수수료율 설정 |
-| [정산 기준](docs/settlement-policy.md) | 정산 대상 시점, 정산 주기, 기간 기준, 정산 금액 집계 |
+| [정산 기준](docs/settlement-policy.md) | 정산 대상 시점, 정산 주기, 기간 기준, 정산 금액 집계, 정산 확정·스케줄러 |
 
 ### 실행 · 테스트
 
@@ -73,10 +73,12 @@
 - 배달완료 시각 기준 하루 단위(Asia/Seoul, `[00:00, 다음 날 00:00)`)로 묶어 다음 날 01:00에 확정
 - OWNER의 기간 정산 조회 — 결제 총액·수수료·정산액 합계와 건별 내역 (확정된 날짜만, 최대 31일)
 - 합계는 결제마다 저장한 금액을 더하기만 함 (다시 반올림하지 않음)
+- 매일 01:10 스케줄러가 매장별 일 정산을 확정해 저장 (`settlements`, 확정 → 지급완료 상태 관리)
+- 같은 매장·날짜는 한 번만 확정 — 여러 번·동시에 실행돼도 DB UNIQUE 제약으로 중복 정산 방지
 - 자세한 기준은 [정산 기준](docs/settlement-policy.md)
 
 ### 데이터베이스 설계
-- User, Store, Menu, Order, OrderItem, Payment 간의 관계 설계
+- User, Store, Menu, Order, OrderItem, Payment, Settlement 간의 관계 설계
 - 엔티티 간 외래키 설정
 - 주문 및 결제 데이터의 연관관계 구성
 - JPA를 활용한 데이터 접근 및 관리

@@ -112,7 +112,8 @@ ORDER BY o.delivered_at, p.id;
 | 상황 | 영향 |
 |---|---|
 | 배달완료 이후 환불·부분 취소 도입 | 이미 확정된 기간을 고치지 않고, **환불이 발생한 날의 정산에서 차감**(음수 항목)하는 방식으로 처리 |
-| 결제 `@ManyToOne` 전환 ([데이터베이스 · 결제 연관관계](database.md#결제-연관관계-onetoone-vs-manytoone)) | 집계 조건에 `p.status = 'SUCCESS'` 추가 |
+| 결제 `@ManyToOne` 전환 ([데이터베이스 · 결제 연관관계](database.md#결제-연관관계-onetoone-vs-manytoone)) | 집계 조건에 `p.status = 'SUCCESS'` 추가 (`findSettlementTargets`, `findSettlementStoreIds`) |
+| 매장이 많아져 전체 매장 대상 조회가 느려짐 | `findSettlementStoreIds`는 매장 조건 없이 `delivered_at` 구간으로 찾으므로 필요하면 `orders(delivered_at)` 인덱스 추가 검토 |
 | 주간·월간 지급 | 일 정산 확정 결과를 합산. 주 시작 요일(월요일 등)은 지급 정책을 정할 때 결정 |
 | 매장별 수수료율 | 결제 시점 `fee_rate` 스냅샷을 쓰므로 정산 기준 변경 없음 |
 
@@ -126,3 +127,63 @@ ORDER BY o.delivered_at, p.id;
 | 정산 대상 결제 조회 | `PaymentRepository.findSettlementTargets` |
 | 합계 계산 | `StoreSettlementResponse.of` |
 | DB 컬럼·제약·인덱스 | `V6__add_delivered_at_to_orders.sql` |
+| 합계 계산 (조회·확정 공통) | `entity.SettlementTotals` |
+| 일 정산 확정 기록·상태 전이 | `entity.Settlement`, `entity.SettlementStatus` |
+| 매장별 확정, 중복 확정 방지 | `SettlementConfirmService.confirmDaily` |
+| 정산 대상 매장 조회 | `PaymentRepository.findSettlementStoreIds` |
+| 자동 실행 | `scheduler.SettlementScheduler` (활성화: `config.SchedulingConfig`) |
+| 확정 테이블·제약 | `V7__add_settlements.sql` |
+
+## 8. 정산 확정 — settlements
+
+조회 API는 요청할 때마다 결제를 다시 합산하지만, 사장님에게 지급할 금액은 **한 번 확정해 기록으로 남겨야** 지급·대사의 근거가 됨.
+매일 스케줄러가 전날(D) 정산을 매장별로 확정해 `settlements`에 저장한다.
+
+### 확정 규칙
+
+| 항목 | 기준 |
+|---|---|
+| 단위 | 매장 1곳 × 하루(D) = 1건 (`settlement_date`) |
+| 확정 가능 시점 | D+1 01:00 이후 (조회 API의 확정 시각과 같은 규칙, `SettlementPeriod`) — 이전이면 거부 |
+| 대상 | 조회 API와 같은 쿼리(`findSettlementTargets`)로 가져온 결제 |
+| 금액 | 조회 API와 같은 합계 계산(`SettlementTotals`) → 확정 금액과 조회 금액이 항상 같음 |
+| 대상 없는 매장 | 기록을 만들지 않음 |
+| 확정 후 | 금액 변경 불가. 확정 이후 해당 날짜에 새 건이 들어오지 않으므로(3장 확정 시각) 다시 집계할 일이 없음 |
+
+### 상태
+
+```
+CONFIRMED(확정) ── markPaid(paidAt) ──▶ PAID(지급완료)
+```
+
+- `CONFIRMED`: 집계해 금액을 고정한 상태. 생성과 동시에 이 상태
+- `PAID`: 지급까지 끝난 최종 상태. `CONFIRMED`에서만 전이 가능 (이미 지급된 정산을 다시 지급하지 않음)
+- 상태 전이는 `Settlement` 메서드에서만 판단하고, DB에서도 "`PAID` ⇔ `paid_at` 있음"을 CHECK 제약으로 강제
+- 지급 처리를 호출하는 API·배치는 아직 없음 (지급 방식이 정해지면 추가)
+
+### 중복 확정 방지
+
+| 단계 | 방법 |
+|---|---|
+| 1. 애플리케이션 | 확정 전에 `(store_id, settlement_date)`가 이미 있는지 확인 → 있으면 건너뜀 |
+| 2. DB | `UNIQUE (store_id, settlement_date)` — 두 실행이 동시에 1을 통과해도 두 번째 INSERT는 거부 → 이미 확정된 것을 확인하고 건너뜀 |
+
+- 2의 UNIQUE 위반이 아닌 다른 제약 위반(금액 CHECK 등)은 건너뛰지 않고 실패로 기록
+- 여러 서버에서 스케줄러가 함께 돌아도 결과는 같음 (분산 락 없이 DB 제약으로 보장)
+
+### 트랜잭션
+
+- 매장 1곳 = 트랜잭션 1개 → 한 매장에서 실패해도 다른 매장의 확정은 커밋됨
+- 실패한 매장은 기록이 남지 않으므로 다음 실행에서 다시 확정 시도
+
+### 스케줄러
+
+| 설정 (`application.yml`) | 기본값 | 의미 |
+|---|---|---|
+| `settlement.scheduler.enabled` | `true` | `false`면 스케줄 실행 안 함 |
+| `settlement.scheduler.cron` | `0 10 1 * * *` | 매일 01:10 (Asia/Seoul) — 확정 시각 01:00에 10분 여유 |
+| `settlement.scheduler.catch-up-days` | `7` | 실행마다 최근 N일을 오래된 날짜부터 확정 |
+
+- 실행할 때마다 마지막 확정 가능 날짜부터 거슬러 N일을 확정 → 서버가 내려가 실행을 놓친 날도 N일 안이면 다음 실행에서 채워짐
+- 이미 확정된 매장·날짜는 건너뛰므로 같은 날짜를 여러 번 처리해도 결과가 같음
+- 한 날짜·한 매장의 오류는 로그만 남기고 나머지를 계속 처리

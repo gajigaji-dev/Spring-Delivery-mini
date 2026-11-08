@@ -32,4 +32,18 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
             @Param("storeId") Long storeId,
             @Param("start") LocalDateTime start,
             @Param("end") LocalDateTime end);
+
+    // [start, end) 구간에 정산 대상 결제가 있는 매장 id — 정산 확정 배치가 확정할 매장을 고를 때 사용
+    // 조건은 findSettlementTargets와 같음 (매장 조건만 없음) → 대상이 없는 매장은 정산 기록을 만들지 않음
+    @Query("""
+            SELECT DISTINCT o.store.id FROM Payment p
+            JOIN p.order o
+            WHERE o.status = com.sparta.springdeliverymini.entity.OrderStatus.DELIVERY_COMPLETED
+              AND o.deliveredAt >= :start
+              AND o.deliveredAt < :end
+            ORDER BY o.store.id
+            """)
+    List<Long> findSettlementStoreIds(
+            @Param("start") LocalDateTime start,
+            @Param("end") LocalDateTime end);
 }
