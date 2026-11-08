@@ -117,7 +117,7 @@ ORDER BY o.delivered_at, p.id;
 | 결제 `@ManyToOne` 전환 ([데이터베이스 · 결제 연관관계](database.md#결제-연관관계-onetoone-vs-manytoone)) | 집계 조건에 `p.status = 'SUCCESS'` 추가 (`findSettlementTargets`, `findSettlementStoreIds`) |
 | 매장이 많아져 전체 매장 대상 조회가 느려짐 | `findSettlementStoreIds`는 매장 조건 없이 `delivered_at` 구간으로 찾으므로 필요하면 `orders(delivered_at)` 인덱스 추가 검토 |
 | 주간·월간 지급 | 일 정산 확정 결과를 합산. 주 시작 요일(월요일 등)은 지급 정책을 정할 때 결정 |
-| 매장별 수수료율 | 결제 시점 `fee_rate` 스냅샷을 쓰므로 정산 기준 변경 없음 |
+| 매장별 수수료율 | **구현됨 (V10, #32)** — 결제 시점의 매장 수수료율(없으면 공통)이 `fee_rate` 스냅샷으로 저장되므로 정산 기준 변경 없음. 결제 후 배달완료 전에 바뀌어도 결제 시점 수수료율 적용 ([금액 처리 정책](money-policy.md)) |
 
 ## 7. 구현 위치
 

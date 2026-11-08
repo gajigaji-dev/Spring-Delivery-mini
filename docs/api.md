@@ -47,6 +47,8 @@
 | 정산 확정 (관리자) | PATCH | `/api/admin/settlements/{id}/confirm` | O | ADMIN | 200 |
 | 정산 지급 (관리자) | PATCH | `/api/admin/settlements/{id}/pay` | O | ADMIN | 200 |
 | 결제 환불 (관리자) | PATCH | `/api/admin/payments/{id}/refund` | O | ADMIN | 200 |
+| 매장 수수료율 설정 (관리자) | PUT | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
+| 매장 수수료율 해제 (관리자) | DELETE | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
 
 ## 주문 상태 흐름
 
@@ -458,3 +460,47 @@ Response `200 OK` — 결제 응답 (`status: REFUNDED`)
 | 409 | 배달완료 전 주문, 이미 환불·취소된 결제 (환불 시각은 처음 값 유지) |
 
 - 같은 결제에 환불 요청이 동시에 들어와도 행 잠금으로 한 번만 성공, 나머지는 409
+
+---
+
+## 관리자 — 매장 수수료율
+
+매장별 플랫폼 수수료율을 설정·해제한다 ([금액 처리 정책](money-policy.md)).
+- 수수료율은 **결제 시점**에 정해져 결제(`payments.fee_rate`)에 저장됨 → 바꾼 값은 **이후 결제부터** 적용
+- 이미 저장된 결제와 정산(확정·지급 포함)은 바뀌지 않음. 결제 후 배달완료 전에 바꿔도 그 결제는 결제 시점 수수료율로 정산
+- 매장 수수료율이 없으면 공통 수수료율(`application.yml`의 `payment.fee.rate`) 사용
+- 수수료율은 공개 매장 조회(`GET /api/stores`, `/api/stores/{id}`) 응답에 포함하지 않음
+- 응답 형식 (`AdminStoreFeeRateResponse`)
+  ```json
+  { "storeId": 1, "storeName": "치킨집", "feeRate": 0.0300, "effectiveFeeRate": 0.0300, "defaultFeeRateApplied": false }
+  ```
+  - `feeRate`: 매장 수수료율 (해제 상태면 `null`)
+  - `effectiveFeeRate`: 이후 결제에 실제로 적용되는 수수료율
+  - `defaultFeeRateApplied`: `true`면 공통 수수료율 사용 중
+
+### 매장 수수료율 설정 `PUT /api/admin/stores/{id}/fee-rate`
+Request
+```json
+{ "feeRate": 0.03 }
+```
+- `feeRate`: 필수, 0 이상 1 이하, 소수점 4자리까지 (`0.03` = 3%). `0`은 수수료 0%(공통 수수료율로 대체되지 않음)
+
+Response `200 OK` — 수수료율 응답
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `feeRate` 누락·`null`, 0 미만·1 초과, 소수점 5자리 이상, 숫자가 아님 |
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | 매장 없음 |
+
+### 매장 수수료율 해제 `DELETE /api/admin/stores/{id}/fee-rate`
+매장 수수료율을 지워 이후 결제부터 공통 수수료율을 사용. 요청 본문 없음, 이미 해제된 매장이어도 성공
+
+Response `200 OK` — 수수료율 응답 (`feeRate: null`, `defaultFeeRateApplied: true`)
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | 매장 없음 |
