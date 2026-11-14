@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.dto.OrderCreateRequest;
 import com.sparta.springdeliverymini.dto.OrderItemRequest;
 import com.sparta.springdeliverymini.dto.OrderResponse;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
@@ -12,6 +13,8 @@ import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
+import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.SliceImpl;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,7 +41,8 @@ public class OrderService {
     private final PaymentRepository paymentRepository;
     private final Clock clock; // 배달완료·결제 취소 시각 기준 (config.TimeConfig, Asia/Seoul)
 
-    public List<OrderResponse> getOrders(String username) {
+    // 주문 목록 조회 — 페이지 단위, id 오름차순 (#40)
+    public Slice<OrderResponse> getOrders(String username, PageQuery pageQuery) {
         // 1. 현재 로그인한 사용자 찾기
         User currentUser = userRepository.findByUsername(username)
                 .orElseThrow(() ->
@@ -50,25 +54,21 @@ public class OrderService {
 
         // 2. CUSTOMER는 본인의 주문만 조회
         if (currentUser.getRole() == Role.CUSTOMER) {
-            return orderRepository.findAllByUserId(currentUser.getId())
-                    .stream()
-                    .map(OrderResponse::from)
-                    .toList();
+            return orderRepository.findAllByUserId(currentUser.getId(), pageQuery.toPageable())
+                    .map(OrderResponse::from);
         }
 
         // 3. OWNER는 본인의 모든 매장에 들어온 주문만 조회
         if (currentUser.getRole() == Role.OWNER) {
-            return orderRepository.findAllByStoreOwnerId(currentUser.getId())
-                    .stream()
-                    .map(OrderResponse::from)
-                    .toList();
+            return orderRepository.findAllByStoreOwnerId(currentUser.getId(), pageQuery.toPageable())
+                    .map(OrderResponse::from);
         }
 
-        return List.of();
+        return new SliceImpl<>(List.of());
     }
 
     // 매장별 주문 조회 — 본인 매장의 주문만 조회 가능
-    public List<OrderResponse> getStoreOrders(Long storeId, String username) {
+    public Slice<OrderResponse> getStoreOrders(Long storeId, String username, PageQuery pageQuery) {
         // 1. 현재 로그인한 사용자 찾기
         // 토큰은 유효하지만 그 사이 회원이 삭제된 경우 → 401
         User currentUser = userRepository.findByUsername(username)
@@ -82,11 +82,9 @@ public class OrderService {
         // 3. 매장 소유권 확인 — 매장이 없으면 404, 다른 OWNER의 매장이면 403
         Store store = storeService.getOwnedStore(storeId, currentUser);
 
-        // 4. 해당 매장에 들어온 주문 조회
-        return orderRepository.findAllByStoreId(store.getId())
-                .stream()
-                .map(OrderResponse::from)
-                .toList();
+        // 4. 해당 매장에 들어온 주문 조회 (페이지 단위, id 오름차순)
+        return orderRepository.findAllByStoreId(store.getId(), pageQuery.toPageable())
+                .map(OrderResponse::from);
     }
 
     @Transactional

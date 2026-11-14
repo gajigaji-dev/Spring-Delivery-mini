@@ -1,6 +1,8 @@
 package com.sparta.springdeliverymini.controller;
 
 import com.sparta.springdeliverymini.config.SecurityConfig;
+import com.sparta.springdeliverymini.dto.PageQuery;
+import com.sparta.springdeliverymini.dto.StoreResponse;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
 import com.sparta.springdeliverymini.entity.SettlementStatus;
@@ -12,19 +14,23 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.SliceImpl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.LocalDate;
+import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -92,17 +98,58 @@ class StoreSecurityTest {
 
     @Test
     void 매장_조회는_토큰_없이_가능하다() throws Exception {
+        given(storeService.getStores(any())).willReturn(new SliceImpl<>(List.of()));
+
         mockMvc.perform(get("/api/stores")).andExpect(status().isOk());
         mockMvc.perform(get("/api/stores/1")).andExpect(status().isOk());
     }
 
     @Test
+    void 매장_목록은_파라미터가_없으면_첫_페이지_20건을_배열로_응답하고_페이지_정보는_헤더에_담는다() throws Exception {
+        // 본문은 기존과 같은 JSON 배열 → 배열을 읽던 클라이언트가 그대로 동작
+        PageQuery firstPage = PageQuery.of(0, 20);
+        given(storeService.getStores(firstPage)).willReturn(new SliceImpl<>(
+                List.of(new StoreResponse(1L, "치킨집", 3L, null, null)), firstPage.toPageable(), true));
+
+        mockMvc.perform(get("/api/stores"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$[0].name").value("치킨집"))
+                .andExpect(header().string("X-Page", "0"))
+                .andExpect(header().string("X-Size", "20"))
+                .andExpect(header().string("X-Has-Next", "true"));
+    }
+
+    @Test
+    void 매장_목록의_page와_size는_서비스로_전달된다() throws Exception {
+        given(storeService.getStores(any())).willReturn(new SliceImpl<>(List.of()));
+
+        mockMvc.perform(get("/api/stores").param("page", "3").param("size", "100"))
+                .andExpect(status().isOk());
+
+        verify(storeService).getStores(PageQuery.of(3, 100));
+    }
+
+    @Test
+    void 목록의_page나_size가_범위를_벗어나면_400() throws Exception {
+        // size 상한(100)을 넘기면 전체 조회와 다름없어지므로 보정하지 않고 거부
+        mockMvc.perform(get("/api/stores").param("size", "101")).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/stores").param("size", "0")).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/stores").param("page", "-1")).andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/stores").param("page", "abc")).andExpect(status().isBadRequest());
+
+        verify(storeService, never()).getStores(any());
+    }
+
+    @Test
     void OWNER는_매장_주문을_조회할_수_있다() throws Exception {
+        given(orderService.getStoreOrders(anyLong(), any(), any())).willReturn(new SliceImpl<>(List.of()));
+
         mockMvc.perform(get("/api/stores/1/orders")
                         .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
                 .andExpect(status().isOk());
 
-        verify(orderService).getStoreOrders(1L, "owner1");
+        verify(orderService).getStoreOrders(1L, "owner1", PageQuery.of(0, 20));
     }
 
     @Test
@@ -111,7 +158,7 @@ class StoreSecurityTest {
                         .header(HttpHeaders.AUTHORIZATION, bearer("customer1", Role.CUSTOMER)))
                 .andExpect(status().isForbidden());
 
-        verify(orderService, never()).getStoreOrders(anyLong(), any());
+        verify(orderService, never()).getStoreOrders(anyLong(), any(), any());
     }
 
     @Test
@@ -120,7 +167,7 @@ class StoreSecurityTest {
         mockMvc.perform(get("/api/stores/1/orders"))
                 .andExpect(status().isUnauthorized());
 
-        verify(orderService, never()).getStoreOrders(anyLong(), any());
+        verify(orderService, never()).getStoreOrders(anyLong(), any(), any());
     }
 
     // ===== 정산 조회 =====

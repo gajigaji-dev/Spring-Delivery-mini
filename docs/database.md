@@ -20,11 +20,12 @@
 | `V9__add_payment_status_and_settlement_refunds.sql` | `payments`에 `status`·`cancelled_at`·`refunded_at` 추가(기존 결제는 `COMPLETED`), `settlements`에 판매·환불·이월 컬럼 추가(기존 행은 환불·이월 0으로 백필) 및 금액 CHECK 분리, `settlement_refunds`·`settlement_carryovers` 테이블 추가 |
 | `V10__add_store_fee_rate.sql` | `stores.fee_rate`(매장별 수수료율, NULL = 공통 수수료율) 추가 + 0~1 CHECK 제약. 기존 매장은 NULL(백필 없음), 기존 결제·정산은 변경 없음 |
 | `V11__add_settlement_status_histories_and_aggregation_failures.sql` | `settlement_status_histories`(정산 상태 변경 이력: 처리자·시각, 전이·처리자 CHECK, `(settlement_id, to_status)` UNIQUE), `settlement_aggregation_failures`(집계 실패 기록: `(store_id, settlement_date)` UNIQUE, 상태·해결 정보 CHECK) 테이블 추가. 기존 테이블·행은 변경 없음, 과거 전이 이력은 백필하지 않음 |
+| `V12__add_order_list_indexes.sql` | 주문 목록 페이지 조회용 인덱스: `orders (user_id, id)` 추가, `orders (store_id, id)` 추가 후 역할이 겹치는 `idx_orders_store_id (store_id)` 제거. 행은 변경 없음 (근거: [성능 개선 4장](performance.md#4-인덱스-근거-explain)) |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V12__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V13__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -89,6 +90,7 @@
 
 > `delivered_at`을 `updated_at`과 따로 두는 이유: `updated_at`은 이후 다른 값이 바뀌면 움직여 이미 정산한 주문의 기간이 달라질 수 있음
 > `(store_id, delivered_at)` 인덱스로 매장별 정산 기간 조회, `(store_id, status)` 인덱스로 매장별 상태 조회
+> `(user_id, id)`, `(store_id, id)` 인덱스로 고객·매장별 주문 목록을 id 순서로 페이지 조회 (V12 — 정렬 없이 필요한 페이지만큼만 읽음)
 
 > 메뉴 가격이 나중에 바뀌어도 주문 금액이 변하지 않도록 `total_price`를 주문 시점에 따로 저장
 

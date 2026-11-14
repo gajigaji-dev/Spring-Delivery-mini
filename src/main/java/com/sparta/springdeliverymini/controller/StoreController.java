@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.OrderResponse;
 import com.sparta.springdeliverymini.dto.OwnerSettlementDetailResponse;
 import com.sparta.springdeliverymini.dto.OwnerSettlementListResponse;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.dto.StoreCreateRequest;
 import com.sparta.springdeliverymini.dto.StoreResponse;
 import com.sparta.springdeliverymini.dto.StoreSettlementResponse;
@@ -44,10 +45,13 @@ public class StoreController {
         return ResponseEntity.status(HttpStatus.CREATED).body(store);
     }
 
-    // 전체 매장 목록 (로그인 없이 조회 가능)
+    // 매장 목록 (로그인 없이 조회 가능)
+    // 페이지 단위 (?page=0&size=20, size 최대 100), 본문은 배열 그대로이고 페이지 정보는 응답 헤더
     @GetMapping
-    public List<StoreResponse> getStores() {
-        return storeService.getStores();
+    public ResponseEntity<List<StoreResponse>> getStores(
+            @RequestParam(defaultValue = PageQuery.DEFAULT_PAGE_PARAM) int page,
+            @RequestParam(defaultValue = PageQuery.DEFAULT_SIZE_PARAM) int size) {
+        return SliceResponse.of(storeService.getStores(PageQuery.of(page, size)));
     }
 
     // 매장 상세 조회 (로그인 없이 조회 가능), 없는 매장은 Service에서 404
@@ -57,11 +61,14 @@ public class StoreController {
     }
 
     // 매장별 주문 조회 — OWNER만 가능(SecurityConfig), 본인 매장인지는 Service에서 확인 (다른 매장 → 403)
+    // 페이지 단위 (?page=0&size=20, size 최대 100)
     @GetMapping("/{id}/orders")
-    public List<OrderResponse> getStoreOrders(
+    public ResponseEntity<List<OrderResponse>> getStoreOrders(
             @PathVariable Long id,
+            @RequestParam(defaultValue = PageQuery.DEFAULT_PAGE_PARAM) int page,
+            @RequestParam(defaultValue = PageQuery.DEFAULT_SIZE_PARAM) int size,
             Authentication authentication) {
-        return orderService.getStoreOrders(id, authentication.getName());
+        return SliceResponse.of(orderService.getStoreOrders(id, authentication.getName(), PageQuery.of(page, size)));
     }
 
     // 매장별 기간 정산 조회 — OWNER만 가능(SecurityConfig), 본인 매장인지·기간 규칙은 Service에서 확인
