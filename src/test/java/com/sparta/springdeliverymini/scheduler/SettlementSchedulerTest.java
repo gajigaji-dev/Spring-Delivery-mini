@@ -1,6 +1,8 @@
 package com.sparta.springdeliverymini.scheduler;
 
 import com.sparta.springdeliverymini.config.TimeConfig;
+import com.sparta.springdeliverymini.lock.DistributedLock;
+import com.sparta.springdeliverymini.lock.LockUnavailableException;
 import com.sparta.springdeliverymini.logging.TraceIdFilter;
 import com.sparta.springdeliverymini.service.SettlementAggregationService;
 import com.sparta.springdeliverymini.service.SettlementAggregationService.DailyResult;
@@ -12,6 +14,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.MDC;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -20,19 +23,34 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.*;
 
-// 스케줄러가 집계 가능한 날짜를 골라 최근 N일을 오래된 순으로 집계하는지 검증 (DB 없이)
+// 스케줄러가 집계 가능한 날짜를 골라 최근 N일을 오래된 순으로 집계하는지 검증 (DB·Redis 없이)
+// 분산 락 자체(Redis)는 lock.RedisDistributedLockTest, 여러 인스턴스 동시 실행은 SettlementSchedulerLockTest
 @ExtendWith(MockitoExtension.class)
 class SettlementSchedulerTest {
+
+    private static final Duration AT_MOST = Duration.ofMinutes(30);
+    private static final Duration AT_LEAST = Duration.ofMinutes(5);
+
+    // 항상 락을 잡는 락 (락 동작과 무관한 집계 로직 테스트용)
+    private static final DistributedLock ALWAYS_ACQUIRED = (name, atMost, atLeast, task) -> {
+        task.run();
+        return true;
+    };
 
     @Mock
     private SettlementAggregationService aggregationService;
 
     private SettlementScheduler scheduler(LocalDateTime now, int catchUpDays) {
+        return scheduler(now, catchUpDays, ALWAYS_ACQUIRED);
+    }
+
+    private SettlementScheduler scheduler(LocalDateTime now, int catchUpDays, DistributedLock lock) {
         Clock clock = Clock.fixed(now.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
-        return new SettlementScheduler(aggregationService, clock, catchUpDays);
+        return new SettlementScheduler(aggregationService, clock, lock, catchUpDays, AT_MOST, AT_LEAST);
     }
 
     private static DailyResult empty(LocalDate date) {
@@ -77,6 +95,50 @@ class SettlementSchedulerTest {
     void catch_up_days가_1보다_작으면_기동_실패() {
         assertThatThrownBy(() -> scheduler(LocalDateTime.of(2026, 11, 6, 1, 10), 0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void 락_최소_유지_시간이_최대_유지_시간보다_길면_기동_실패() {
+        Clock clock = Clock.systemDefaultZone();
+        assertThatThrownBy(() -> new SettlementScheduler(aggregationService, clock, ALWAYS_ACQUIRED, 7,
+                Duration.ofMinutes(5), Duration.ofMinutes(10)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new SettlementScheduler(aggregationService, clock, ALWAYS_ACQUIRED, 7,
+                Duration.ZERO, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ---- 분산 락 (#41) ----
+
+    @Test
+    void 설정한_락_이름과_유지_시간으로_락을_요청한다() {
+        DistributedLock lock = mock(DistributedLock.class);
+        given(lock.executeIfAcquired(any(), any(), any(), any())).willReturn(true);
+
+        scheduler(LocalDateTime.of(2026, 11, 6, 1, 10), 3, lock).aggregateDailySettlements();
+
+        verify(lock).executeIfAcquired(eq("settlement-daily-aggregation"), eq(AT_MOST), eq(AT_LEAST), any());
+    }
+
+    @Test
+    void 다른_인스턴스가_락을_잡고_있으면_집계하지_않는다() {
+        DistributedLock heldByOther = (name, atMost, atLeast, task) -> false;
+
+        scheduler(LocalDateTime.of(2026, 11, 6, 1, 10), 3, heldByOther).aggregateDailySettlements();
+
+        verifyNoInteractions(aggregationService);
+    }
+
+    @Test
+    void Redis_장애로_락을_확인할_수_없으면_집계하지_않고_예외도_던지지_않는다() {
+        DistributedLock redisDown = (name, atMost, atLeast, task) -> {
+            throw new LockUnavailableException("Redis 장애", new RuntimeException());
+        };
+
+        scheduler(LocalDateTime.of(2026, 11, 6, 1, 10), 3, redisDown).aggregateDailySettlements();
+
+        verifyNoInteractions(aggregationService);
+        assertThat(MDC.get(TraceIdFilter.MDC_KEY)).isNull();
     }
 
     // ---- traceId(MDC) ----

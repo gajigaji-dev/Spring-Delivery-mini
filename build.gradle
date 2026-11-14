@@ -24,6 +24,8 @@ dependencies {
     implementation 'org.flywaydb:flyway-database-postgresql'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
+    // Redis: 결제 멱등성 키 저장·스케줄러 분산 락 (#41). 클라이언트는 기본값 Lettuce
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     // 관측성: 헬스체크·메트릭 엔드포인트(Actuator) + Prometheus 형식 메트릭 노출
     implementation 'org.springframework.boot:spring-boot-starter-actuator'

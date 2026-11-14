@@ -203,7 +203,7 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 | 2. DB | `UNIQUE (store_id, settlement_date)` — 두 실행이 동시에 1을 통과해도 두 번째 INSERT는 거부 → 이미 있는 것을 확인하고 건너뜀 |
 
 - 2의 UNIQUE 위반이 아닌 다른 제약 위반(금액 CHECK 등)은 건너뛰지 않고 실패로 기록
-- 여러 서버에서 스케줄러가 함께 돌아도 결과는 같음 (분산 락 없이 DB 제약으로 보장)
+- 여러 서버에서 스케줄러가 함께 돌아도 결과는 같음 (DB 제약으로 보장). 실행 자체는 Redis 분산 락으로 한 서버만 하도록 줄임 (아래 스케줄러, #41)
 
 ### 트랜잭션
 
@@ -217,10 +217,21 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 | `settlement.scheduler.enabled` | `true` | `false`면 스케줄 실행 안 함 |
 | `settlement.scheduler.cron` | `0 10 1 * * *` | 매일 01:10 (Asia/Seoul) — 집계 가능 시각 01:00에 10분 여유 |
 | `settlement.scheduler.catch-up-days` | `7` | 실행마다 최근 N일을 오래된 날짜부터 집계 |
+| `settlement.scheduler.lock-at-most-for` | `30m` | 분산 락 최대 유지 시간(TTL) — 실행 중 서버가 죽어도 이 시간 뒤 풀림. 집계 최대 실행 시간보다 넉넉하게 |
+| `settlement.scheduler.lock-at-least-for` | `5m` | 빨리 끝나도 이 시간까지 락 유지 — 시계가 조금 늦은 서버가 끝난 작업을 다시 실행하지 않도록 |
 
 - 실행할 때마다 마지막 집계 가능 날짜부터 거슬러 N일을 집계 → 서버가 내려가 실행을 놓친 날도 N일 안이면 다음 실행에서 채워짐
 - 이미 정산이 있는 매장·날짜는 건너뛰므로 같은 날짜를 여러 번 처리해도 결과가 같음
 - 한 날짜·한 매장의 오류는 로그와 실패 기록(`settlement_aggregation_failures`, 10장)을 남기고 나머지를 계속 처리 → catch-up 기간 안에 해결되지 않으면 관리자가 재집계
+
+#### 분산 락 — 여러 서버 중 한 대만 실행 (#41)
+- 실행 전에 Redis 락 `lock:settlement-daily-aggregation`을 잡음 (`SET NX PX`, 값은 실행마다 다른 token) — `lock.RedisDistributedLock`
+- 락을 잡은 서버만 집계, 못 잡은 서버는 로그만 남기고 건너뜀
+- 끝나면(집계 오류·예외 포함) token이 내 것일 때만 해제 — `lock-at-least-for`가 남았으면 그때까지 TTL만 줄임 (Lua 스크립트로 확인·해제를 한 번에)
+- 실행이 `lock-at-most-for`를 넘기면 락이 풀려 다른 서버가 실행할 수 있음 → 경고 로그. 이때도 정산 중복은 DB UNIQUE가 막음 (실행 중 TTL 연장은 하지 않음)
+- **Redis 장애·타임아웃이면 실행하지 않음** — 다음 실행이 최근 `catch-up-days`일을 다시 집계해 채우고, 그보다 오래 빠진 날짜는 관리자 재집계(10장)
+- 락은 중복 실행을 줄이는 장치이고 정산 1건 보장은 계속 DB 제약 — Redis 기록이 사라져도(재시작 등) 정산이 두 번 만들어지지 않음
+- 관리자 수동 재집계(10장)는 락을 잡지 않음 (요청 단위 작업이고 DB 잠금·UNIQUE로 스케줄러와 경합해도 안전)
 
 ### 기존 데이터 (V7 → V8)
 

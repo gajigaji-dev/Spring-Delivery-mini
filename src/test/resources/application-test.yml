@@ -3,5 +3,11 @@
 # DB는 TestcontainersConfiguration(@ServiceConnection)이 연결하므로 datasource URL을 두지 않음
 
 # 테스트 전용 JWT 키 (Base64, 256비트 이상). 테스트에서 토큰을 만들고 검증하는 데만 쓰이며 운영에 사용 금지
+# 통합 테스트는 같은 테스트 안에서 스케줄러를 여러 번 호출함 → 최소 유지 시간 없이 끝나면 바로 락 해제
+# (최소 유지 시간 동작은 RedisDistributedLockTest에서 따로 검증)
+settlement:
+  scheduler:
+    lock-at-least-for: 0s
+
 jwt:
   secret: dGVzdC1vbmx5LXNlY3JldC1rZXktZm9yLXNwcmluZy1kZWxpdmVyeS1taW5pLWp3dC0yNTZiaXQ=
