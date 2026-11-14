@@ -23,6 +23,8 @@ import java.time.LocalDateTime;
 //   → 서버가 내려가 있어 실행을 놓친 날도 다음 실행에서 채워짐
 //   → 이미 정산이 있는 매장·날짜는 건너뛰므로 여러 번 실행해도 결과가 같음
 // - 여러 서버에서 동시에 실행돼도 DB UNIQUE(store_id, settlement_date)로 중복 정산되지 않음
+// - 매장 집계 실패는 실패 기록(settlement_aggregation_failures)으로 남고, 이후 실행에서 성공하면 해결 처리됨
+//   catch-up 기간을 넘긴 누락·실패분은 관리자가 재집계 (AdminSettlementService.reaggregate, #39)
 @Slf4j
 @Component
 public class SettlementScheduler {

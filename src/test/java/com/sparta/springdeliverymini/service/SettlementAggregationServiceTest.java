@@ -38,6 +38,8 @@ class SettlementAggregationServiceTest {
     @Mock private StoreRepository storeRepository;
     @Mock private SettlementRefundRepository settlementRefundRepository;
     @Mock private SettlementCarryoverRepository settlementCarryoverRepository;
+    @Mock private SettlementStatusHistoryRepository settlementStatusHistoryRepository;
+    @Mock private SettlementAggregationFailureRepository settlementAggregationFailureRepository;
     @Mock private PlatformTransactionManager transactionManager;
 
     // 11/6 01:10 → 11/5까지 집계 가능
@@ -55,7 +57,9 @@ class SettlementAggregationServiceTest {
         Clock clock = Clock.fixed(NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
         // Mock 트랜잭션 매니저로 TransactionTemplate을 만들어 콜백만 실행
         service = new SettlementAggregationService(paymentRepository, settlementRepository, storeRepository,
-                settlementRefundRepository, settlementCarryoverRepository, new TransactionTemplate(transactionManager), clock);
+                settlementRefundRepository, settlementCarryoverRepository,
+                settlementStatusHistoryRepository, settlementAggregationFailureRepository,
+                new TransactionTemplate(transactionManager), clock);
     }
 
     private static Payment payment(long amount) {
@@ -300,5 +304,163 @@ class SettlementAggregationServiceTest {
 
         assertThat(result).isEqualTo(new DailyResult(NOV_5, 0, 0, 0));
         verifyNoInteractions(settlementRepository, storeRepository);
+    }
+
+    // ---- 감사 이력·실패 기록·재집계 (#39) ----
+
+    private final User admin = new User("admin", "pw", Role.ADMIN);
+
+    private void givenSales(Long storeId) {
+        given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(storeId));
+        givenStore(storeId);
+        given(paymentRepository.findSettlementTargets(storeId, START, END)).willReturn(List.of(payment(10000)));
+    }
+
+    private SettlementStatusHistory savedHistory() {
+        ArgumentCaptor<SettlementStatusHistory> captor = ArgumentCaptor.forClass(SettlementStatusHistory.class);
+        verify(settlementStatusHistoryRepository).save(captor.capture());
+        return captor.getValue();
+    }
+
+    @Test
+    void 스케줄러_집계는_처리자_없는_PENDING_이력을_남긴다() {
+        givenSales(10L);
+
+        service.aggregateDaily(NOV_5);
+
+        SettlementStatusHistory history = savedHistory();
+        assertThat(history.getSettlement()).isSameAs(savedSettlement());
+        assertThat(history.getFromStatus()).isNull();
+        assertThat(history.getToStatus()).isEqualTo(SettlementStatus.PENDING);
+        assertThat(history.getActor()).isNull();
+        assertThat(history.getChangedAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    void 관리자_재집계는_그_관리자를_처리자로_이력에_남긴다() {
+        givenSales(10L);
+
+        List<SettlementAggregationService.StoreResult> results = service.reaggregate(NOV_5, null, admin);
+
+        assertThat(results).extracting(SettlementAggregationService.StoreResult::outcome)
+                .containsExactly(SettlementAggregationService.Outcome.CREATED);
+        assertThat(savedHistory().getActor()).isSameAs(admin);
+    }
+
+    @Test
+    void 매장을_지정한_재집계는_그_매장만_집계한다() {
+        givenStore(10L);
+        given(paymentRepository.findSettlementTargets(10L, START, END)).willReturn(List.of(payment(10000)));
+
+        service.reaggregate(NOV_5, 10L, admin);
+
+        verify(paymentRepository, never()).findSettlementStoreIds(any(), any());
+        verify(settlementRepository).saveAndFlush(any());
+    }
+
+    @Test
+    void 처리자_없는_재집계는_거부한다() {
+        assertThatThrownBy(() -> service.reaggregate(NOV_5, null, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(paymentRepository, settlementRepository);
+    }
+
+    @Test
+    void 매장_집계가_실패하면_실패_기록을_남긴다() {
+        given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(10L));
+        givenStore(10L);
+        given(paymentRepository.findSettlementTargets(10L, START, END)).willThrow(new IllegalStateException("DB 오류"));
+
+        List<SettlementAggregationService.StoreResult> results = service.reaggregate(NOV_5, null, admin);
+
+        assertThat(results).singleElement().satisfies(result -> {
+            assertThat(result.outcome()).isEqualTo(SettlementAggregationService.Outcome.FAILED);
+            assertThat(result.error()).isEqualTo("IllegalStateException: DB 오류");
+        });
+        ArgumentCaptor<SettlementAggregationFailure> captor = ArgumentCaptor.forClass(SettlementAggregationFailure.class);
+        verify(settlementAggregationFailureRepository).save(captor.capture());
+        SettlementAggregationFailure failure = captor.getValue();
+        assertThat(failure.isFailed()).isTrue();
+        assertThat(failure.getSettlementDate()).isEqualTo(NOV_5);
+        assertThat(failure.getFailureCount()).isEqualTo(1);
+        assertThat(failure.getLastError()).isEqualTo("IllegalStateException: DB 오류");
+        assertThat(failure.getLastFailedAt()).isEqualTo(NOW);
+        assertThat(failure.getLastFailedBy()).isSameAs(admin);
+    }
+
+    @Test
+    void DB_제약_위반_실패는_제약_이름만_기록한다() {
+        givenSales(10L);
+        // DB 오류 메시지에는 입력값이 들어 있을 수 있으므로 저장하지 않음
+        given(settlementRepository.saveAndFlush(any())).willThrow(new DataIntegrityViolationException(
+                "Detail: Key (store_id)=(10)", new org.hibernate.exception.ConstraintViolationException(
+                "violation", new java.sql.SQLException("x"), "settlements_net_amount_check")));
+
+        List<SettlementAggregationService.StoreResult> results = service.reaggregate(NOV_5, null, admin);
+
+        assertThat(results.get(0).error())
+                .isEqualTo("DataIntegrityViolationException constraint=settlements_net_amount_check");
+    }
+
+    @Test
+    void 다시_실패하면_기존_실패_기록의_횟수를_늘린다() {
+        given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(10L));
+        givenStore(10L);
+        given(paymentRepository.findSettlementTargets(10L, START, END)).willThrow(new IllegalStateException("DB 오류"));
+        SettlementAggregationFailure existing =
+                new SettlementAggregationFailure(store, NOV_5, "이전 오류", null, NOW.minusDays(1));
+        given(settlementAggregationFailureRepository.findByStoreIdAndSettlementDate(10L, NOV_5))
+                .willReturn(Optional.of(existing));
+
+        service.aggregateDaily(NOV_5);
+
+        assertThat(existing.getFailureCount()).isEqualTo(2);
+        assertThat(existing.getLastError()).isEqualTo("IllegalStateException: DB 오류");
+        assertThat(existing.getFirstFailedAt()).isEqualTo(NOW.minusDays(1));
+        assertThat(existing.getLastFailedAt()).isEqualTo(NOW);
+        verify(settlementAggregationFailureRepository, never()).save(any());
+    }
+
+    @Test
+    void 실패한_사이_다른_실행이_정산을_만들었으면_실패로_남기지_않는다() {
+        given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(10L));
+        givenStore(10L);
+        // 집계 트랜잭션에서는 없었지만, 실패 기록 트랜잭션(매장 잠금 후)에서는 이미 있음
+        given(settlementRepository.existsByStoreIdAndSettlementDate(10L, NOV_5)).willReturn(false, true);
+        given(paymentRepository.findSettlementTargets(10L, START, END)).willThrow(new IllegalStateException("DB 오류"));
+
+        service.aggregateDaily(NOV_5);
+
+        verifyNoInteractions(settlementAggregationFailureRepository);
+    }
+
+    @Test
+    void 재집계가_성공하면_실패_기록을_해결_처리한다() {
+        givenSales(10L);
+        SettlementAggregationFailure failure =
+                new SettlementAggregationFailure(store, NOV_5, "이전 오류", null, NOW.minusDays(1));
+        given(settlementAggregationFailureRepository.findByStoreIdAndSettlementDate(10L, NOV_5))
+                .willReturn(Optional.of(failure));
+
+        service.reaggregate(NOV_5, null, admin);
+
+        assertThat(failure.getStatus()).isEqualTo(SettlementAggregationFailureStatus.RESOLVED);
+        assertThat(failure.getResolvedAt()).isEqualTo(NOW);
+        assertThat(failure.getResolvedBy()).isSameAs(admin);
+        assertThat(failure.getSettlement()).isSameAs(savedSettlement());
+    }
+
+    @Test
+    void 이미_정산이_있는_매장은_재집계해도_건너뛰고_아무것도_저장하지_않는다() {
+        given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(10L));
+        givenStore(10L);
+        given(settlementRepository.existsByStoreIdAndSettlementDate(10L, NOV_5)).willReturn(true);
+
+        List<SettlementAggregationService.StoreResult> results = service.reaggregate(NOV_5, null, admin);
+
+        assertThat(results).extracting(SettlementAggregationService.StoreResult::outcome)
+                .containsExactly(SettlementAggregationService.Outcome.ALREADY_EXISTS);
+        verify(settlementRepository, never()).saveAndFlush(any());
+        verifyNoInteractions(settlementStatusHistoryRepository, settlementAggregationFailureRepository);
     }
 }

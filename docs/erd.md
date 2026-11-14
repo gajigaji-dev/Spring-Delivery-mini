@@ -18,6 +18,10 @@ erDiagram
     payments ||--o| settlement_refunds : "payment_id (UNIQUE)"
     settlements ||--o| settlement_carryovers : "from_settlement_id (UNIQUE)"
     settlements ||--o{ settlement_carryovers : "to_settlement_id"
+    settlements ||--o{ settlement_status_histories : "settlement_id"
+    users ||--o{ settlement_status_histories : "actor_user_id (NULL = 스케줄러)"
+    stores ||--o{ settlement_aggregation_failures : "store_id"
+    settlements ||--o| settlement_aggregation_failures : "settlement_id (해결 시)"
 
     users {
         bigint id PK
@@ -102,6 +106,28 @@ erDiagram
         bigint to_settlement_id FK
         bigint amount
     }
+    settlement_status_histories {
+        bigint id PK
+        bigint settlement_id FK "to_status와 UNIQUE"
+        varchar from_status "NULL = 집계로 생성"
+        varchar to_status
+        bigint actor_user_id FK "NULL = 스케줄러"
+        timestamp changed_at
+    }
+    settlement_aggregation_failures {
+        bigint id PK
+        bigint store_id FK
+        date settlement_date "store_id와 UNIQUE"
+        varchar status "FAILED/RESOLVED"
+        int failure_count
+        varchar last_error
+        timestamp first_failed_at
+        timestamp last_failed_at
+        bigint last_failed_by_user_id FK
+        timestamp resolved_at
+        bigint resolved_by_user_id FK
+        bigint settlement_id FK
+    }
 ```
 
 ## 테이블 관계
@@ -119,6 +145,10 @@ erDiagram
 | settlements ─ settlement_refunds | 1 : N | `settlement_refunds.settlement_id` → `settlements.id` | 정산 1건에서 여러 환불을 차감 |
 | payments ─ settlement_refunds | 1 : 1 | `settlement_refunds.payment_id` → `payments.id` (unique) | 환불 1건은 정확히 한 정산에서만 차감 |
 | settlements ─ settlement_carryovers | 1 : 1 / 1 : N | `from_settlement_id` (unique), `to_settlement_id` → `settlements.id` | 한 정산의 이월분은 한 번만, 한 정산은 여러 이월분을 받을 수 있음 |
+| settlements ─ settlement_status_histories | 1 : N | `settlement_status_histories.settlement_id` → `settlements.id` | 정산 1건에 상태 변경 이력 여러 건 (전이마다 1건, 최대 3건) |
+| users ─ settlement_status_histories | 1 : N | `settlement_status_histories.actor_user_id` → `users.id` (NULL 허용) | 확정·지급한 관리자. 스케줄러 집계는 NULL |
+| stores ─ settlement_aggregation_failures | 1 : N | `settlement_aggregation_failures.store_id` → `stores.id` | 매장·날짜당 집계 실패 기록 1건 |
+| settlements ─ settlement_aggregation_failures | 1 : 0..1 | `settlement_aggregation_failures.settlement_id` → `settlements.id` (NULL 허용) | 재집계로 만들어진 정산 |
 
 - **OWNER가 받은 주문 조회**: `orders → stores → users(owner)`로 본인 매장에 들어온 주문만 찾음 (`findAllByStoreOwnerId`), 매장 하나는 `findAllByStoreId`
 - **`orders.store_id`를 따로 두는 이유**: 메뉴를 거치지 않고 매장별 주문 조회·소유권 검증 가능. `Order.addItem`이 다른 매장의 메뉴를 거부하므로 항목 메뉴의 매장과 어긋날 수 없음
