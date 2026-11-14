@@ -20,14 +20,38 @@ services:
       timeout: 3s
       retries: 10
 
+  # 결제 멱등성 키·스케줄러 분산 락 (#41)
+  # AOF + 볼륨으로 영속화: 재시작해도 완료 기록(24h)이 남아 같은 Idempotency-Key 재시도가 처음 응답을 계속 받음
+  #   (영속화가 없으면 재시작 후 재시도는 처음 응답 대신 DB 검사 409 — 중복 결제는 어느 쪽이든 DB 제약이 막음)
+  # appendfsync everysec: 매 명령 fsync(always)보다 빠르고, 비정상 종료 시 잃는 기록은 최대 약 1초분
+  # TTL은 AOF에 만료 시각으로 저장 → 재시작 후에도 원래 시각에 만료됨 (docs/architecture.md Redis)
+  redis:
+    image: redis:8.2
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    # local 실행(bootRun·IDE)용으로 호스트에도 열되, 로컬 PC에서만 접근(127.0.0.1)
+    # 6379가 아닌 6380 — 다른 프로젝트의 Redis(6379)와 섞이지 않도록 이 프로젝트 전용 포트 사용
+    # 앱 컨테이너는 compose 네트워크로 redis:6379에 접속 (이 포트 매핑과 무관)
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   app:
     build: .
     depends_on:
       db:
         condition: service_healthy   # DB가 접속 가능해진 뒤 기동 (Flyway 마이그레이션이 바로 실행되므로)
+      redis:
+        condition: service_healthy
     environment:
       SPRING_PROFILES_ACTIVE: dev
       DB_URL: jdbc:postgresql://db:5432/delivery
+      REDIS_HOST: redis
       DB_USERNAME: ${DB_USERNAME}
       DB_PASSWORD: ${DB_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET을 .env에 지정하세요}
@@ -78,3 +102,4 @@ services:
 
 volumes:
   db-data:
+  redis-data:

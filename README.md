@@ -6,10 +6,10 @@
 | 구분 | 기술 |
 |---|---|
 | 언어 · 프레임워크 | Java 21 · Spring Boot 4.1.x |
-| 데이터베이스 | PostgreSQL 18 · Flyway |
+| 데이터베이스 | PostgreSQL 18 · Flyway · Redis 8 (결제 멱등성 키·스케줄러 분산 락) |
 | 사용 기술 | Spring Web · Spring Data JPA · Spring Security · JWT (JJWT) · Validation · Lombok |
 | 관측성 · 문서 | Spring Boot Actuator · Micrometer Prometheus · Grafana · springdoc-openapi (Swagger UI) |
-| 테스트 | JUnit 5 · Mockito · Testcontainers (PostgreSQL 18) |
+| 테스트 | JUnit 5 · Mockito · Testcontainers (PostgreSQL 18 · Redis) |
 | 빌드 · 도구 | Gradle · Postman |
 
 ## 아키텍처
@@ -21,6 +21,8 @@ flowchart LR
     svc --> ent[Entity<br/>상태 전이 · 수수료 규칙]
     svc --> repo[Repository<br/>JPA] --> db[(PostgreSQL)]
     sch[Scheduler<br/>매일 01:10 정산 집계] --> svc
+    svc -.결제 멱등성 키.-> redis[(Redis)]
+    sch -.분산 락.-> redis
 ```
 
 자세한 구성·요청 흐름·패키지 구조는 [프로젝트 구조](docs/architecture.md)를 참고하세요.
@@ -31,14 +33,14 @@ flowchart LR
 | 회원 | 회원가입·로그인, BCrypt, JWT 인증, CUSTOMER / OWNER / ADMIN 역할 (ADMIN은 DB에서만 지정) |
 | 매장 · 메뉴 | OWNER의 매장 생성(여러 개 가능), 메뉴 등록·수정·삭제(Soft Delete), 소유권은 `Store.isOwnedBy` 한곳에서 판단 |
 | 주문 | 같은 매장의 메뉴 여러 개를 한 주문에 담음, 총액은 서버 계산, 주문 당시 메뉴 이름·단가 스냅샷, 상태 전이(결제 → 수락 → 배달완료) |
-| 결제 | 서버가 정한 금액으로 결제, 중복 결제 방지(DB UNIQUE), 수수료(기본 5%, 매장별 설정 가능) 스냅샷 저장, 수락 전 취소·배달 후 관리자 환불 |
+| 결제 | 서버가 정한 금액으로 결제, 중복 결제 방지(DB UNIQUE), `Idempotency-Key`로 재시도 시 처음 응답 재전송(Redis, 같은 키 다른 요청 422·장애 시 503), 수수료(기본 5%, 매장별 설정 가능) 스냅샷 저장, 수락 전 취소·배달 후 관리자 환불 |
 | 정산 | 배달완료 시각 기준 일 정산, 스케줄러 집계(PENDING) → 관리자 확정 → 지급, 환불은 다음 정산에서 차감하고 부족하면 이월, 사장님 정산 기록 조회 |
-| 정산 운영 | 확정·지급 처리자와 시각을 감사 이력으로 기록(처리자는 인증 정보 기준), 집계 실패를 DB에 기록하고 관리자가 누락·실패분만 재집계(기존 정산은 재계산하지 않음, 스케줄러와 동시 실행에도 매장·날짜당 1건) |
+| 정산 운영 | 확정·지급 처리자와 시각을 감사 이력으로 기록(처리자는 인증 정보 기준), 집계 실패를 DB에 기록하고 관리자가 누락·실패분만 재집계(기존 정산은 재계산하지 않음, 스케줄러와 동시 실행에도 매장·날짜당 1건), 여러 인스턴스 중 한 대만 스케줄러 실행(Redis 분산 락, 장애 시 건너뛰고 다음 실행에서 보충) |
 
 ## 문서
 | 문서 | 내용 |
 |---|---|
-| [프로젝트 구조](docs/architecture.md) | 아키텍처·주문~정산 흐름 다이어그램, 패키지 구조, 요청 처리 흐름, 테스트 |
+| [프로젝트 구조](docs/architecture.md) | 아키텍처·주문~정산 흐름 다이어그램, 패키지 구조, Redis 키·TTL·장애 시 동작, 요청 처리 흐름, 테스트 |
 | [API 명세](docs/api.md) | API 목록, 주문 상태 흐름, API별 요청·응답·에러 코드 |
 | [ERD](docs/erd.md) | ERD 다이어그램, 테이블 간 관계 |
 | [데이터베이스](docs/database.md) | Flyway 마이그레이션, 테이블 상세·제약조건, 시간대, 결제 연관관계 |
@@ -57,6 +59,7 @@ flowchart LR
 | `DB_USERNAME`, `DB_PASSWORD` | O | DB 계정 (docker-compose는 이 값으로 PostgreSQL 계정도 생성) |
 | `JWT_SECRET` | O | JWT 서명 키, Base64 인코딩된 256비트 이상 (`openssl rand -base64 32`). 기본값 없음 → 없으면 기동 실패 |
 | `DB_URL` | dev | JDBC URL. docker-compose가 자동 지정 |
+| `REDIS_PORT` | local | 이 프로젝트 전용 Redis 포트 (`.env.example`: `6380`). local은 `localhost:REDIS_PORT`로 접속하고, compose는 이 포트로 `redis` 컨테이너를 127.0.0.1에 엶 (앱 컨테이너는 `redis:6379`로 접속). 미지정 시 local 기본값은 6379 → 다른 프로젝트 Redis와 섞일 수 있으니 지정 권장. Redis가 없어도 기동되며 `Idempotency-Key` 결제는 503, 정산 스케줄러는 실행을 건너뜀 |
 | `APP_PORT` | - | docker-compose에서 호스트에 여는 포트 (기본 8080) |
 | `GRAFANA_ADMIN_PASSWORD` | monitoring | Grafana admin 비밀번호. `--profile monitoring`에서 필수 (빈 값·`admin`이면 Grafana만 기동 실패) |
 
@@ -69,7 +72,7 @@ flowchart LR
 
 ### 실행
 ```bash
-# 1) Docker Compose — 애플리케이션 + PostgreSQL 18 (http://localhost:8080)
+# 1) Docker Compose — 애플리케이션 + PostgreSQL 18 + Redis (http://localhost:8080)
 docker compose up --build -d
 docker compose down          # 종료 (DB 데이터 유지, 삭제하려면 -v)
 
@@ -77,7 +80,8 @@ docker compose down          # 종료 (DB 데이터 유지, 삭제하려면 -v)
 #      .env에 GRAFANA_ADMIN_PASSWORD 필수 (없거나 admin이면 Grafana만 기동 실패, 기본 up에는 영향 없음)
 docker compose --profile monitoring up --build -d
 
-# 2) 직접 실행 (local) — localhost:5432에 delivery DB가 있어야 함
+# 2) 직접 실행 (local) — localhost:5432에 delivery DB, localhost:REDIS_PORT(6380)에 Redis가 있어야 함
+docker compose up -d redis   # 이 프로젝트 전용 Redis (127.0.0.1:6380)
 ./gradlew bootRun
 
 # 테스트 — Docker 실행 중이어야 함 (로컬 DB·환경변수 불필요)
@@ -85,6 +89,7 @@ docker compose --profile monitoring up --build -d
 ```
 - compose의 DB 포트는 로컬 PostgreSQL(5432)과 겹치지 않도록 호스트에 열지 않음
 - compose의 DB 계정은 `db-data` 볼륨이 처음 생성될 때만 만들어짐 → `.env`의 DB 계정을 바꿨다면 `docker compose down -v`로 볼륨을 지우고 다시 실행
+- compose의 Redis는 이 프로젝트 전용 포트 `127.0.0.1:6380`(`REDIS_PORT`) — 6379는 다른 프로젝트 Redis와 겹칠 수 있어 사용하지 않음. AOF + `redis-data` 볼륨으로 재시작해도 멱등성 기록 유지 (`down -v`면 함께 삭제)
 - API 문서: local·dev 프로필에서 http://localhost:8080/swagger-ui.html (기본 설정은 비활성)
 - 헬스체크 `GET /actuator/health`, 메트릭 `GET /actuator/prometheus`(local은 8080, dev는 호스트에 열지 않는 8081 관리 포트)
 - 모든 응답에 `X-Trace-Id` 헤더가 붙고, 같은 값이 서버 로그 각 줄(`[traceId]`)과 에러 응답 `traceId`에 들어감

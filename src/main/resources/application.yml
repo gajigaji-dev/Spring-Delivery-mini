@@ -12,6 +12,17 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
 
+  # Redis — 결제 멱등성 키·스케줄러 분산 락 (#41). 접속 주소는 환경변수(기본 localhost:6379)
+  # timeout을 짧게 두는 이유: Lettuce 기본 명령 타임아웃(60초) 동안 결제 요청이 멈춰 있지 않도록
+  #   → 장애·지연 시 빨리 503(결제) / 실행 건너뜀(스케줄러)으로 끝냄
+  # 연결은 처음 명령을 보낼 때 맺으므로 Redis가 없어도 애플리케이션은 기동됨
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 1s
+      connect-timeout: 1s
+
   # JPA
   jpa:
     hibernate:
@@ -39,16 +50,27 @@ spring:
 payment:
   fee:
     rate: "0.05" # 문자열로 지정 → double을 거치지 않고 BigDecimal로 그대로 바인딩
+  # 결제 멱등성(Idempotency-Key 헤더) 기록 보관 시간 — config.PaymentIdempotencyProperties
+  # processing-ttl: 처리 중 기록 유지 시간 (결제 1건 처리 시간보다 넉넉하게, 서버가 처리 중 죽으면 이 시간 뒤 재시도 가능)
+  # completed-ttl: 완료 응답 보관 시간 (이 시간 안의 같은 키 재시도는 처음 응답을 그대로 받음)
+  idempotency:
+    processing-ttl: 1m
+    completed-ttl: 24h
 
 # 일 정산 자동 확정 — scheduler.SettlementScheduler
 # enabled: false면 스케줄 실행 안 함 (config.SchedulingConfig)
 # cron: 초 분 시 일 월 요일, Asia/Seoul 기준. D일은 D+1 01:00에 확정 가능 → 10분 여유를 두고 01:10
 # catch-up-days: 실행할 때마다 최근 N일을 확정 (실행을 놓친 날 보충, 이미 확정된 날은 건너뜀)
+# lock-at-most-for / lock-at-least-for: 여러 서버 중 한 대만 실행하는 Redis 분산 락 (#41, lock.RedisDistributedLock)
+#   at-most: 락 최대 유지 시간 — 서버가 실행 중 죽어도 이 시간 뒤 풀림. 집계 최대 실행 시간보다 넉넉하게
+#   at-least: 빨리 끝나도 이 시간까지 락 유지 — 시계가 늦은 서버가 끝난 작업을 다시 실행하지 않도록
 settlement:
   scheduler:
     enabled: true
     cron: "0 10 1 * * *"
     catch-up-days: 7
+    lock-at-most-for: 30m
+    lock-at-least-for: 5m
 
 # JWT — secret은 Base64 인코딩된 256비트 이상 키, JWT_SECRET 환경변수로만 주입
 # 기본값을 두지 않음: 저장소에 공개된 키로 운영 토큰이 서명되는 일을 막기 위해, 값이 없으면 기동 실패
@@ -74,6 +96,11 @@ management:
   endpoint:
     health:
       show-details: never
+  # Redis 헬스체크는 끔: Redis 장애 때도 키 없는 결제·조회 등 나머지 API는 정상이므로
+  # 헬스체크가 DOWN이 되어 인스턴스 전체가 트래픽에서 빠지거나 재시작되지 않도록 (Redis 장애는 로그·503으로 드러남)
+  health:
+    redis:
+      enabled: false
 
 # API 문서(springdoc) — 기본 비활성: 운영에서 API 구조가 공개되지 않도록 local·dev 프로필에서만 켬
 springdoc:
