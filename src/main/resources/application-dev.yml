@@ -1,5 +1,0 @@
-# dev 프로필 — docker-compose로 애플리케이션과 DB를 함께 실행 (docker-compose.yml에서 지정)
-# DB 주소·계정·JWT 키는 모두 compose가 환경변수로 주입 → 값이 없으면 기동 실패
-spring:
-  datasource:
-    url: ${DB_URL}

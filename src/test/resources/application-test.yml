@@ -1,7 +1,0 @@
-# test 프로필 — ./gradlew test에서 자동 활성화 (build.gradle의 test 설정)
-# 테스트 전용 설정이라 main jar에는 포함되지 않음
-# DB는 TestcontainersConfiguration(@ServiceConnection)이 연결하므로 datasource URL을 두지 않음
-
-# 테스트 전용 JWT 키 (Base64, 256비트 이상). 테스트에서 토큰을 만들고 검증하는 데만 쓰이며 운영에 사용 금지
-jwt:
-  secret: dGVzdC1vbmx5LXNlY3JldC1rZXktZm9yLXNwcmluZy1kZWxpdmVyeS1taW5pLWp3dC0yNTZiaXQ=

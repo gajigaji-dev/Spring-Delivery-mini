@@ -47,6 +47,4 @@ tasks.named('test') {
     useJUnitPlatform()
     // 테스트는 main()을 거치지 않으므로 JVM 기본 시간대를 여기서 고정 (SpringDeliveryMiniApplication.main과 동일)
     systemProperty 'user.timezone', 'Asia/Seoul'
-    // 테스트 전용 설정(src/test/resources/application-test.yml, 테스트 JWT 키 등) 사용
-    systemProperty 'spring.profiles.active', 'test'
 }
