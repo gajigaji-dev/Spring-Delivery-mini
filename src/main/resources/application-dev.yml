@@ -3,3 +3,20 @@
 spring:
   datasource:
     url: ${DB_URL}
+
+# Actuator는 별도 관리 포트(8081)로 분리 — docker-compose에서 8081은 호스트에 공개하지 않아
+# 같은 compose 네트워크의 Prometheus만 수집 가능 (8080 API 포트에서는 /actuator 경로가 없음)
+management:
+  server:
+    port: 8081
+  endpoints:
+    web:
+      exposure:
+        include: health, prometheus
+
+# dev(docker-compose) 환경에서도 Swagger UI 사용: http://localhost:8080/swagger-ui.html
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true

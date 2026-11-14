@@ -1,0 +1,10 @@
+# Prometheus 수집 설정 — docker compose --profile monitoring up 으로 실행
+# app 컨테이너의 관리 포트(8081, dev 프로필)에서 수집. 8081은 호스트에 공개하지 않으므로 compose 네트워크 안에서만 접근
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: delivery-app
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["app:8081"]

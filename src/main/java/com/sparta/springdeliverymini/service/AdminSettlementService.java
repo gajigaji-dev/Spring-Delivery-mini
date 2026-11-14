@@ -1,6 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.dto.SettlementResponse;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.entity.Settlement;
@@ -20,6 +21,7 @@ import java.util.List;
 
 // 관리자 정산 관리 — 조회, 확정(PENDING → CONFIRMED), 지급(CONFIRMED → PAID)
 // 상태 전이 규칙은 Settlement 엔티티가 판단 (위반 시 InvalidSettlementStatusException → 409)
+@Slf4j
 @Service
 @Transactional(readOnly = true)
 @RequiredArgsConstructor // final 필드를 받는 생성자 자동 생성 (생성자 주입)
@@ -43,7 +45,11 @@ public class AdminSettlementService {
     public SettlementResponse confirm(Long settlementId, String username) {
         validateAdmin(username);
         Settlement settlement = findForUpdate(settlementId);
+        SettlementStatus before = settlement.getStatus();
         settlement.confirm(LocalDateTime.now(clock));
+        log.info("정산 확정 settlementId={}, storeId={}, settlementDate={}, settlementAmount={}, status={}->{}",
+                settlement.getId(), settlement.getStore().getId(), settlement.getSettlementDate(),
+                settlement.getSettlementAmount(), before, settlement.getStatus());
         return SettlementResponse.from(settlement);
     }
 
@@ -53,7 +59,12 @@ public class AdminSettlementService {
     public SettlementResponse pay(Long settlementId, String username) {
         validateAdmin(username);
         Settlement settlement = findForUpdate(settlementId);
+        SettlementStatus before = settlement.getStatus();
         settlement.markPaid(LocalDateTime.now(clock));
+        // 지급 상태 변경 로그 — 송금 연동 전이라 지급 이력 추적의 1차 근거 (계좌 등 개인정보는 다루지 않음)
+        log.info("정산 지급 settlementId={}, storeId={}, settlementDate={}, settlementAmount={}, status={}->{}",
+                settlement.getId(), settlement.getStore().getId(), settlement.getSettlementDate(),
+                settlement.getSettlementAmount(), before, settlement.getStatus());
         return SettlementResponse.from(settlement);
     }
 

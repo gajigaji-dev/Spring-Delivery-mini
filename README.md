@@ -8,6 +8,7 @@
 | 언어 · 프레임워크 | Java 21 · Spring Boot 4.1.x |
 | 데이터베이스 | PostgreSQL 18 · Flyway |
 | 사용 기술 | Spring Web · Spring Data JPA · Spring Security · JWT (JJWT) · Validation · Lombok |
+| 관측성 · 문서 | Spring Boot Actuator · Micrometer Prometheus · Grafana · springdoc-openapi (Swagger UI) |
 | 테스트 | JUnit 5 · Mockito · Testcontainers (PostgreSQL 18) |
 | 빌드 · 도구 | Gradle · Postman |
 
@@ -55,6 +56,7 @@ flowchart LR
 | `JWT_SECRET` | O | JWT 서명 키, Base64 인코딩된 256비트 이상 (`openssl rand -base64 32`). 기본값 없음 → 없으면 기동 실패 |
 | `DB_URL` | dev | JDBC URL. docker-compose가 자동 지정 |
 | `APP_PORT` | - | docker-compose에서 호스트에 여는 포트 (기본 8080) |
+| `GRAFANA_ADMIN_PASSWORD` | monitoring | Grafana admin 비밀번호. `--profile monitoring`에서 필수 (빈 값·`admin`이면 Grafana만 기동 실패) |
 
 ### 프로필
 | 프로필 | 용도 | DB | 설정 파일 |
@@ -69,6 +71,10 @@ flowchart LR
 docker compose up --build -d
 docker compose down          # 종료 (DB 데이터 유지, 삭제하려면 -v)
 
+# 1-1) 모니터링 포함 — Prometheus(http://localhost:9090) + Grafana(http://localhost:3000, admin / GRAFANA_ADMIN_PASSWORD)
+#      .env에 GRAFANA_ADMIN_PASSWORD 필수 (없거나 admin이면 Grafana만 기동 실패, 기본 up에는 영향 없음)
+docker compose --profile monitoring up --build -d
+
 # 2) 직접 실행 (local) — localhost:5432에 delivery DB가 있어야 함
 ./gradlew bootRun
 
@@ -76,4 +82,8 @@ docker compose down          # 종료 (DB 데이터 유지, 삭제하려면 -v)
 ./gradlew test
 ```
 - compose의 DB 포트는 로컬 PostgreSQL(5432)과 겹치지 않도록 호스트에 열지 않음
+- compose의 DB 계정은 `db-data` 볼륨이 처음 생성될 때만 만들어짐 → `.env`의 DB 계정을 바꿨다면 `docker compose down -v`로 볼륨을 지우고 다시 실행
+- API 문서: local·dev 프로필에서 http://localhost:8080/swagger-ui.html (기본 설정은 비활성)
+- 헬스체크 `GET /actuator/health`, 메트릭 `GET /actuator/prometheus`(local은 8080, dev는 호스트에 열지 않는 8081 관리 포트)
+- 모든 응답에 `X-Trace-Id` 헤더가 붙고, 같은 값이 서버 로그 각 줄(`[traceId]`)과 에러 응답 `traceId`에 들어감
 - CI: GitHub Actions(`.github/workflows/ci.yml`)가 main 대상 PR·push마다 `./gradlew build`(전체 테스트 포함) 실행

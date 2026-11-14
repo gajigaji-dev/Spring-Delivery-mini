@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -74,6 +76,19 @@ class AdminPaymentServiceTest {
         assertThat(response.amount()).isEqualTo(18009);
         assertThat(response.orderStatus()).isEqualTo(OrderStatus.DELIVERY_COMPLETED); // 주문 상태는 그대로
         assertThat(payment.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void 환불하면_식별자와_상태_변경이_로그에_남고_개인정보는_남지_않는다(CapturedOutput output) {
+        givenUser("admin", Role.ADMIN);
+        given(paymentRepository.findByIdForUpdate(1L)).willReturn(Optional.of(payment(OrderStatus.DELIVERY_COMPLETED)));
+
+        service.refund(1L, "admin");
+
+        assertThat(output).contains("결제 환불 paymentId=1, orderId=10, amount=18009, status=COMPLETED->REFUNDED");
+        // 회원 아이디·배달 주소는 로그에 남기지 않음
+        assertThat(output).doesNotContain("customer1").doesNotContain("서울시");
     }
 
     @Test

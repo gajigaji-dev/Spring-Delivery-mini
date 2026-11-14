@@ -56,3 +56,28 @@ settlement:
 jwt:
   secret: ${JWT_SECRET}
   expiration-ms: 3600000  # 1시간
+
+# 로그 — 모든 로그 줄에 요청별 traceId(logging.TraceIdFilter가 MDC에 넣은 값)를 출력
+# 요청 밖(스케줄러 등)에서는 빈 값. 응답 헤더 X-Trace-Id·에러 응답 traceId와 같은 값으로 로그를 찾을 수 있음
+logging:
+  pattern:
+    correlation: "[%X{traceId:-}] "
+
+# Actuator — 기본값은 운영 기준으로 최소 노출: 헬스체크만, 상세(DB 상태 등) 없이 UP/DOWN만
+# 메트릭(prometheus)은 local·dev 프로필에서만 노출 (application-local.yml, application-dev.yml)
+# 노출된 엔드포인트의 접근 권한은 SecurityConfig (health·prometheus는 공개, 나머지는 ADMIN)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+# API 문서(springdoc) — 기본 비활성: 운영에서 API 구조가 공개되지 않도록 local·dev 프로필에서만 켬
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

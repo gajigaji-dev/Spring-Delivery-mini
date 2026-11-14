@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -89,6 +91,21 @@ class AdminSettlementServiceTest {
         assertThat(response.status()).isEqualTo(SettlementStatus.CONFIRMED);
         assertThat(response.confirmedAt()).isEqualTo(NOW); // Clock 기준 현재 시각
         assertThat(response.paidAt()).isNull();
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void 정산_확정과_지급은_상태_변경_로그를_남긴다(CapturedOutput output) {
+        loginAs(admin);
+        Settlement settlement = pending(1L);
+        given(settlementRepository.findByIdForUpdate(1L)).willReturn(Optional.of(settlement));
+
+        service.confirm(1L, "admin");
+        service.pay(1L, "admin");
+
+        assertThat(output)
+                .contains("정산 확정 settlementId=1, storeId=10, settlementDate=2026-11-05, settlementAmount=9500, status=PENDING->CONFIRMED")
+                .contains("정산 지급 settlementId=1, storeId=10, settlementDate=2026-11-05, settlementAmount=9500, status=CONFIRMED->PAID");
     }
 
     @Test

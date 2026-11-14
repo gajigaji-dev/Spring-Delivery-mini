@@ -1,6 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.dto.OrderCreateRequest;
 import com.sparta.springdeliverymini.dto.OrderItemRequest;
 import com.sparta.springdeliverymini.dto.OrderResponse;
@@ -24,6 +25,7 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @Transactional(readOnly = true)
 @RequiredArgsConstructor // final 필드를 받는 생성자 자동 생성 (생성자 주입)
@@ -187,7 +189,11 @@ public class OrderService {
         if (paid) {
             Payment payment = paymentRepository.findByOrderId(order.getId())
                     .orElseThrow(() -> new IllegalStateException("결제완료 주문에 결제 내역이 없습니다: " + order.getId()));
+            PaymentStatus before = payment.getStatus();
             payment.cancel(LocalDateTime.now(clock));
+            // 결제 취소 상태 변경 로그 — 식별자·금액·상태만 기록 (회원 아이디 등 개인정보는 남기지 않음)
+            log.info("결제 취소 paymentId={}, orderId={}, amount={}, status={}->{}",
+                    payment.getId(), order.getId(), payment.getAmount(), before, payment.getStatus());
         }
     }
 

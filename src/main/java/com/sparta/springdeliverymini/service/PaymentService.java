@@ -1,6 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.config.PaymentFeeProperties;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
@@ -17,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.LocalDateTime;
 
+@Slf4j
 @Service
 @Transactional(readOnly = true)
 @RequiredArgsConstructor // final 필드를 받는 생성자 자동 생성 (생성자 주입)
@@ -115,6 +117,11 @@ public class PaymentService {
                     "이미 결제된 주문입니다."
             );
         }
+
+        // 결제 상태 변경 로그 — 식별자·금액·상태만 기록 (회원 아이디·카드 정보 등 개인정보는 남기지 않음)
+        // traceId(MDC)가 함께 찍혀 요청 로그·에러 로그와 연결됨
+        log.info("결제 완료 paymentId={}, orderId={}, storeId={}, amount={}, status={}",
+                payment.getId(), order.getId(), order.getStore().getId(), payment.getAmount(), payment.getStatus());
 
         return PaymentResponse.from(payment);
     }
