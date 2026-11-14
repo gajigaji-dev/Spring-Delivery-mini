@@ -121,8 +121,9 @@ src/main/java/com/sparta/springdeliverymini
     └── GlobalExceptionHandler.java      # 예외를 {"message": ...} JSON 응답으로 변환
 
 src/main/resources
-├── application.yml
-├── .env.example                         # DB 계정 환경변수 예시 (.env로 복사해 사용, .env는 git 제외)
+├── application.yml                      # 공통 설정 (기본 프로필 local, DB 계정·JWT 키는 환경변수)
+├── application-local.yml                # local: localhost DB, 루트 .env 읽기, SQL 로그
+├── application-dev.yml                  # dev: docker-compose 실행 (DB_URL)
 └── db/migration                         # Flyway 마이그레이션 SQL (V{버전}__{설명}.sql)
 ```
 
@@ -175,6 +176,9 @@ sequenceDiagram
 ```bash
 ./gradlew test   # Docker 실행 중이어야 함 (로컬 DB·DB 환경변수 불필요)
 ```
+
+- `test` 프로필이 build.gradle에서 자동 활성화되어 `src/test/resources/application-test.yml`의 테스트 전용 JWT 키를 사용 (main jar에는 포함되지 않음)
+- CI(`.github/workflows/ci.yml`)도 같은 `./gradlew build`로 전체 테스트를 실행
 
 | 종류 | 대상 | DB |
 |---|---|---|

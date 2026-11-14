@@ -2,10 +2,14 @@ spring:
   application:
     name: delivery
 
-  # DB 연결 — 3-3의 docker run 값과 똑같이
+  # 프로필 — local(기본, 개발 PC에서 직접 실행) / dev(docker-compose) / test(테스트, src/test/resources)
+  # 프로필을 지정하지 않으면 local로 실행. 프로필별 설정은 application-{프로필}.yml
+  profiles:
+    default: local
+
+  # DB 연결 — URL은 프로필별 파일에서 지정, 계정은 환경변수로만 받음 (코드·설정 파일에 계정을 두지 않기 위해)
   datasource:
-    url: jdbc:postgresql://localhost:5432/delivery
-    username: ${DB_USERNAME} # 환경변수로 지정
+    username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
 
   # JPA
@@ -14,10 +18,8 @@ spring:
       # 스키마 변경은 Flyway(db/migration)만 담당, Hibernate는 엔티티와 테이블이 맞는지 검사만 함
       # 맞지 않으면 기동 실패 → 엔티티를 바꿨다면 마이그레이션 파일도 함께 추가
       ddl-auto: validate
-    show-sql: true
     properties:
       hibernate:
-        format_sql: true
         # hibernate.jdbc.time_zone은 일부러 지정하지 않음
         #   지정하면 JVM 시간대와 다를 때 LocalDateTime을 저장하면서 시간대 변환이 한 번 더 일어나 값이 밀림
         #   (예: JVM UTC + time_zone Asia/Seoul → 23:59가 다음 날 08:59로 저장, TimeZoneIntegrationTest로 확인)
@@ -48,7 +50,9 @@ settlement:
     cron: "0 10 1 * * *"
     catch-up-days: 7
 
-# JWT — secret은 Base64 인코딩된 256비트 이상 키. 운영에서는 JWT_SECRET 환경변수로 주입
+# JWT — secret은 Base64 인코딩된 256비트 이상 키, JWT_SECRET 환경변수로만 주입
+# 기본값을 두지 않음: 저장소에 공개된 키로 운영 토큰이 서명되는 일을 막기 위해, 값이 없으면 기동 실패
+# 테스트는 src/test/resources/application-test.yml의 테스트 전용 키 사용
 jwt:
-  secret: ${JWT_SECRET:ZGV2LW9ubHktc2VjcmV0LWtleS1mb3Itc3ByaW5nLWRlbGl2ZXJ5LW1pbmktand0LTI1NmJpdA==}
+  secret: ${JWT_SECRET}
   expiration-ms: 3600000  # 1시간
