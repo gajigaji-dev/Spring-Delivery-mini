@@ -19,11 +19,12 @@
 | `V8__add_settlement_pending_status_and_admin_role.sql` | 정산 상태에 `PENDING` 추가, `confirmed_at` NULL 허용 + `PENDING` ⇔ 확정 시각 없음 CHECK, `users.role`에 `ADMIN` 추가 (기존 행은 변경 없음) |
 | `V9__add_payment_status_and_settlement_refunds.sql` | `payments`에 `status`·`cancelled_at`·`refunded_at` 추가(기존 결제는 `COMPLETED`), `settlements`에 판매·환불·이월 컬럼 추가(기존 행은 환불·이월 0으로 백필) 및 금액 CHECK 분리, `settlement_refunds`·`settlement_carryovers` 테이블 추가 |
 | `V10__add_store_fee_rate.sql` | `stores.fee_rate`(매장별 수수료율, NULL = 공통 수수료율) 추가 + 0~1 CHECK 제약. 기존 매장은 NULL(백필 없음), 기존 결제·정산은 변경 없음 |
+| `V11__add_settlement_status_histories_and_aggregation_failures.sql` | `settlement_status_histories`(정산 상태 변경 이력: 처리자·시각, 전이·처리자 CHECK, `(settlement_id, to_status)` UNIQUE), `settlement_aggregation_failures`(집계 실패 기록: `(store_id, settlement_date)` UNIQUE, 상태·해결 정보 CHECK) 테이블 추가. 기존 테이블·행은 변경 없음, 과거 전이 이력은 백필하지 않음 |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V11__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V12__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -174,6 +175,37 @@
 
 > `from_settlement_id <> to_settlement_id` CHECK. "더 뒤 날짜로만 이월"은 행 간 비교라 애플리케이션(`SettlementCarryover`)에서 검증
 > 미차감 = 이 테이블들에 기록이 없는 환불·이월분 → 다음 집계가 가져감 ([정산 기준 9장](settlement-policy.md#9-결제-취소환불과-차기-정산-반영))
+
+### settlement_status_histories — 정산 상태 변경 이력 (V11)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| settlement_id | bigint | FK → settlements.id, NOT NULL, (settlement_id, to_status) **UNIQUE** | 대상 정산 — 같은 전이는 한 번만 기록 |
+| from_status | varchar(20) | NULL 허용 | 이전 상태 (집계로 처음 만들어지면 NULL) |
+| to_status | varchar(20) | NOT NULL | 바뀐 상태 |
+| actor_user_id | bigint | FK → users.id, `to_status`가 `PENDING`이 아니면 NOT NULL (CHECK) | 처리자 — 스케줄러 집계만 NULL |
+| changed_at | timestamp(6) | NOT NULL | 처리 시각 (확정·지급은 `confirmed_at`·`paid_at`과 같은 값) |
+
+> 허용 전이만 저장 (CHECK): `NULL → PENDING`, `PENDING → CONFIRMED`, `CONFIRMED → PAID`
+> INSERT만 하고 수정하지 않으므로 `BaseEntity`를 상속하지 않음 (`updated_at` 없음). V11 전의 전이는 행이 없음
+
+### settlement_aggregation_failures — 정산 집계 실패 기록 (V11)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| store_id | bigint | FK → stores.id, NOT NULL, (store_id, settlement_date) **UNIQUE** | 집계에 실패한 매장 |
+| settlement_date | date | NOT NULL | 집계에 실패한 정산 날짜 |
+| status | varchar(20) | NOT NULL, `FAILED` / `RESOLVED` | 실패(재집계 대상) / 해결 |
+| failure_count | integer | NOT NULL, 1 이상 | 지금까지 실패한 횟수 |
+| last_error | varchar(500) | NOT NULL | 마지막 실패 원인 요약 (예외 종류·제약 조건 이름) |
+| first_failed_at, last_failed_at | timestamp(6) | NOT NULL | 처음·마지막 실패 시각 |
+| last_failed_by_user_id | bigint | FK → users.id | 마지막 실패를 실행한 관리자 (스케줄러면 NULL) |
+| resolved_at | timestamp(6) | `RESOLVED`일 때만 NOT NULL (CHECK) | 해결 시각 |
+| resolved_by_user_id | bigint | FK → users.id, `FAILED`면 NULL (CHECK) | 해결한 관리자 (스케줄러면 NULL) |
+| settlement_id | bigint | FK → settlements.id, `FAILED`면 NULL (CHECK) | 재집계로 만들어진 정산 (대상 없음으로 해결되면 NULL) |
+
+> 미해결 실패 조회용 부분 인덱스 `idx_settlement_aggregation_failures_failed (settlement_date) WHERE status = 'FAILED'`
+> 정산 금액과 무관한 운영 기록이라 같은 행을 갱신함. 기록·해결 규칙은 [정산 기준 10장](settlement-policy.md#10-감사-이력과-누락실패분-재집계-39)
 
 ## 결제 연관관계: `@OneToOne` vs `@ManyToOne`
 

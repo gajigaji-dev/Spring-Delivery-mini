@@ -135,8 +135,10 @@ ORDER BY o.delivered_at, p.id;
 | 정산 대상 매장 조회 | `PaymentRepository.findSettlementStoreIds` |
 | 자동 집계 | `scheduler.SettlementScheduler` (활성화: `config.SchedulingConfig`) |
 | 관리자 확정·지급, 관리자 확인, 행 잠금 | `AdminSettlementService` ← `AdminSettlementController` |
+| 상태 변경 이력 (처리자·시각) | `entity.SettlementStatusHistory` — 집계는 `SettlementAggregationService`, 확정·지급은 `AdminSettlementService`가 저장 |
+| 집계 실패 기록, 누락·실패분 재집계 | `entity.SettlementAggregationFailure`, `SettlementAggregationService.reaggregate` ← `AdminSettlementService.reaggregate` |
 | 관리자 URL 권한 | `SecurityConfig` (`/api/admin/**`) |
-| 정산 테이블·제약 | `V7__add_settlements.sql`, `V8__add_settlement_pending_status_and_admin_role.sql` |
+| 정산 테이블·제약 | `V7__add_settlements.sql`, `V8__add_settlement_pending_status_and_admin_role.sql`, `V11__add_settlement_status_histories_and_aggregation_failures.sql` |
 
 ## 8. 정산 집계·확정·지급 — settlements
 
@@ -191,7 +193,7 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 | 대상 | 조회 API와 같은 쿼리(`findSettlementTargets`)로 가져온 결제 |
 | 금액 | 조회 API와 같은 합계 계산(`SettlementTotals`) → 집계 금액과 조회 금액이 항상 같음 |
 | 대상 없는 매장 | 기록을 만들지 않음 |
-| 집계 후 | 금액 변경 불가. 집계 이후 해당 날짜에 새 건이 들어오지 않으므로(3장 확정 시각) 다시 집계할 일이 없음 |
+| 집계 후 | 금액 변경 불가. 집계 이후 해당 날짜에 새 건이 들어오지 않으므로(3장 확정 시각) 다시 집계할 일이 없음 — 관리자 재집계도 정산이 없는 매장·날짜만 대상 ([10장](#10-감사-이력과-누락실패분-재집계-39)) |
 
 ### 중복 정산 방지
 
@@ -205,7 +207,7 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 
 ### 트랜잭션
 
-- 집계: 매장 1곳 = 트랜잭션 1개 → 한 매장에서 실패해도 다른 매장의 집계는 커밋됨. 실패한 매장은 기록이 남지 않으므로 다음 실행에서 다시 시도
+- 집계: 매장 1곳 = 트랜잭션 1개 → 한 매장에서 실패해도 다른 매장의 집계는 커밋됨. 실패한 매장은 정산이 남지 않으므로 다음 실행에서 다시 시도되고, 실패 사실은 별도 트랜잭션으로 기록됨 (10장)
 - 확정·지급: 요청 1건 = 트랜잭션 1개 (행 잠금은 커밋 시 해제)
 
 ### 스케줄러
@@ -218,7 +220,7 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 
 - 실행할 때마다 마지막 집계 가능 날짜부터 거슬러 N일을 집계 → 서버가 내려가 실행을 놓친 날도 N일 안이면 다음 실행에서 채워짐
 - 이미 정산이 있는 매장·날짜는 건너뛰므로 같은 날짜를 여러 번 처리해도 결과가 같음
-- 한 날짜·한 매장의 오류는 로그만 남기고 나머지를 계속 처리
+- 한 날짜·한 매장의 오류는 로그와 실패 기록(`settlement_aggregation_failures`, 10장)을 남기고 나머지를 계속 처리 → catch-up 기간 안에 해결되지 않으면 관리자가 재집계
 
 ### 기존 데이터 (V7 → V8)
 
@@ -280,7 +282,8 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 5. 이월 = findUnsettledCarryovers(store, D)
 6. Settlement.aggregate(...) → INSERT
 7. settlement_refunds, settlement_carryovers INSERT
-8. 오류 → 이 매장 트랜잭션 전체 롤백, 다음 실행에서 재시도
+8. 상태 이력(→ PENDING) INSERT, 이 매장·날짜의 실패 기록이 있으면 RESOLVED (10장)
+9. 오류 → 이 매장 트랜잭션 전체 롤백 후 실패 기록, 다음 실행 또는 관리자 재집계에서 재시도
 ```
 
 집계 대상 매장 = D일 판매가 있는 매장 ∪ `refunded_at < D+1`인 미차감 환불이 있는 매장
@@ -298,3 +301,67 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 - 사장님 기간 조회(`/settlements`)는 판매를 배달완료 시각, 환불을 **환불 시각** 기준으로 보여줌 (`netSettlementAmount` = 판매 − 환불, 음수 가능) — 발생 기준
 - 사장님 일 정산 기록 조회(`/daily-settlements`, `OwnerSettlementService`)는 저장된 정산 기준 — 실제 지급액·이월·상태, 어느 환불이 어느 정산에서 차감됐는지(`settlement_refunds`), 이월분이 어디서 차감됐는지(`settlement_carryovers`)를 보여줌. 관리자 정산과 같은 행을 읽으므로 금액이 항상 같음
   - 예) 11/5 23시 환불이 11/5 정산 집계 뒤에 반영되면 기간 조회에서는 11/5 환불, 일 정산 기록에서는 11/6 정산의 차감으로 보임
+
+## 10. 감사 이력과 누락·실패분 재집계 (#39)
+
+### 정산 상태 변경 이력 — settlement_status_histories (V11)
+
+정산이 만들어지고 상태가 바뀔 때마다 **누가·언제·어떤 상태로** 바꿨는지 1건씩 INSERT한다 (수정·삭제 없음).
+
+| 전이 | 기록 시점 | 처리자(`actor_user_id`) | 시각(`changed_at`) |
+|---|---|---|---|
+| (없음) → `PENDING` | 집계로 정산 생성 | 스케줄러면 NULL, 수동 재집계면 그 관리자 | 집계 시각 |
+| `PENDING` → `CONFIRMED` | 관리자 확정 | 확정한 관리자 (필수) | `confirmed_at`과 같은 값 |
+| `CONFIRMED` → `PAID` | 관리자 지급 | 지급한 관리자 (필수) | `paid_at`과 같은 값 |
+
+| 규칙 | 보장 방법 |
+|---|---|
+| **처리자는 요청 값을 믿지 않음** | API는 처리자 파라미터를 받지 않음. 토큰의 username으로 DB에서 조회해 `ADMIN`임을 확인한 회원(`AdminSettlementService.validateAdmin`)을 그대로 기록 |
+| 상태만 바뀌고 이력이 빠지는 일 없음 | 상태 전이와 같은 트랜잭션에서 저장 (집계는 매장 트랜잭션, 확정·지급은 행 잠금을 잡은 요청 트랜잭션) |
+| 거부된 전이는 이력을 남기지 않음 | `Settlement.confirm/markPaid`가 409를 던지면 저장 전에 끝남. 이력은 정산의 현재 상태와 같을 때만 생성 가능(`SettlementStatusHistory`) |
+| 같은 전이가 두 번 기록되지 않음 | `UNIQUE (settlement_id, to_status)` — 중복 지급 이력은 DB가 거부 |
+| 허용된 전이만, 확정·지급은 처리자 필수 | CHECK 제약 (`..._transition_check`, `..._actor_check`) |
+
+- 조회: 관리자 정산 응답의 `confirmedBy`·`paidBy`, 정산별 전체 이력은 `GET /api/admin/settlements/{id}/histories`
+- 사장님 응답(`OwnerSettlementResponse`)에는 처리자를 넣지 않음 (관리자 계정 정보 비노출)
+- **V11 전에 일어난 전이는 이력이 없음**: 처리자를 알 수 없어 채워 넣지 않음 → 그런 정산은 `confirmedBy`·`paidBy`가 `null` (시각은 기존 `confirmed_at`·`paid_at` 그대로)
+
+### 집계 실패 기록 — settlement_aggregation_failures (V11)
+
+매장 집계가 실패하면 그 매장 트랜잭션은 전부 롤백되어 정산이 남지 않는다. 이전에는 로그만 남아 **어떤 매장·날짜가 빠졌는지 DB에서 알 수 없었고**, catch-up 기간(7일) 안에 원인이 해결되지 않으면 조용히 누락됐다.
+
+```
+집계 실패 ──▶ FAILED(정산 없음, 재집계 대상) ── 이후 집계 성공 / 대상 없음 확인 ──▶ RESOLVED
+                 ▲                                                          │
+                 └────────────── 다시 실패 (failure_count + 1) ◀─────────────┘
+```
+
+- 매장·날짜당 1건 (`UNIQUE (store_id, settlement_date)`). 다시 실패하면 같은 행의 횟수·원인·시각만 갱신 (정산 금액과 무관한 운영 기록이라 UPDATE)
+- 실패 기록은 집계 트랜잭션이 롤백된 뒤 **별도 트랜잭션**으로 저장. 매장 행 잠금을 잡고 "정산이 아직 없음"을 다시 확인하므로 정산이 있는데 `FAILED`인 기록은 생기지 않음
+- 해결은 **성공한 집계와 같은 트랜잭션**에서 처리 → 스케줄러 재실행으로 성공해도, 관리자 재집계로 성공해도 `RESOLVED` (처리자: 스케줄러면 NULL)
+- 원인(`last_error`)은 예외 종류와 제약 조건 이름만 저장 (DB 오류 상세에는 입력값이 섞일 수 있음). 전체 스택 트레이스는 서버 로그
+- 실패 기록 저장 자체가 실패하면(DB 장애 등) 기존처럼 로그만 남음
+
+### 재집계 — `POST /api/admin/settlements/reaggregate`
+
+**재집계 = 정산이 없는 매장·날짜를 새로 집계하는 것.** 이미 만들어진 정산은 `PENDING`이라도 다시 계산하지 않는다 (8·9장의 "기존 정산 행은 바꾸지 않음" 유지 — 늦게 들어온 환불은 다음 정산에서 차감).
+
+| 대상 | 결과 |
+|---|---|
+| 정산이 없고 판매·미차감 환불이 있음 (집계 실패, catch-up 기간을 넘긴 누락) | 새 `PENDING` 정산 (`CREATED`) |
+| 정산이 없고 집계할 것도 없음 | 만들지 않음 (`NO_TARGET`) |
+| 이미 정산이 있음 (`PENDING`·`CONFIRMED`·`PAID`) | 날짜 전체 재집계: 건너뜀(`ALREADY_EXISTS`) / 매장 지정 재집계: **409** |
+| 아직 집계 가능 시각(D+1 01:00) 전인 날짜 | 400 |
+
+- 금액·수수료 계산, 환불·이월 차감은 스케줄러와 **같은 코드**(`SettlementAggregationService.aggregateStore`)
+- 지급된 정산은 재집계 대상이 될 수 없으므로 재집계로 중복 지급이 생기지 않음
+
+### 동시 실행·중복 요청
+
+| 경합 | 처리 |
+|---|---|
+| 같은 재집계를 여러 번·동시에 요청 | 매장 행 잠금으로 직렬화 → 첫 요청만 `CREATED`, 나머지는 정산을 확인하고 `ALREADY_EXISTS` |
+| 스케줄러 ↔ 수동 재집계 | 같은 잠금·같은 UNIQUE(`store_id, settlement_date`)를 공유 → 정산·집계 이력은 매장·날짜당 1건, 진 쪽은 실패가 아니라 건너뜀 |
+| 같은 정산을 두 관리자가 동시에 확정·지급 | 기존 정산 행 잠금 → 한 명만 성공, 이력의 처리자 = 실제로 성공한 관리자 |
+
+- 새 잠금·분산 락을 추가하지 않고 기존 매장 행 잠금과 DB 제약을 그대로 사용 (`SettlementAuditRecoveryIntegrationTest`로 확인)

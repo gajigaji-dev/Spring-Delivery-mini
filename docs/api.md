@@ -72,6 +72,9 @@
 | 정산 목록 조회 (관리자) | GET | `/api/admin/settlements?date=&status=` | O | ADMIN | 200 |
 | 정산 확정 (관리자) | PATCH | `/api/admin/settlements/{id}/confirm` | O | ADMIN | 200 |
 | 정산 지급 (관리자) | PATCH | `/api/admin/settlements/{id}/pay` | O | ADMIN | 200 |
+| 정산 상태 변경 이력 (관리자) | GET | `/api/admin/settlements/{id}/histories` | O | ADMIN | 200 |
+| 정산 재집계 (관리자) | POST | `/api/admin/settlements/reaggregate?date=&storeId=` | O | ADMIN | 200 |
+| 정산 집계 실패 기록 (관리자) | GET | `/api/admin/settlements/aggregation-failures?status=` | O | ADMIN | 200 |
 | 결제 환불 (관리자) | PATCH | `/api/admin/payments/{id}/refund` | O | ADMIN | 200 |
 | 매장 수수료율 설정 (관리자) | PUT | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
 | 매장 수수료율 해제 (관리자) | DELETE | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
@@ -496,8 +499,11 @@ PENDING(확정 대기) ── PATCH .../confirm ──▶ CONFIRMED(확정) ─�
     "refundCount": 1, "refundAmount": 10000, "refundFee": 500, "refundSettlementAmount": 9500,
     "carriedInAmount": 0, "carriedOutAmount": 0, "settlementAmount": 26609,
     "status": "CONFIRMED",
-    "aggregatedAt": "2026-11-06T01:10:00", "confirmedAt": "2026-11-06T09:00:00", "paidAt": null }
+    "aggregatedAt": "2026-11-06T01:10:00", "confirmedAt": "2026-11-06T09:00:00", "paidAt": null,
+    "confirmedBy": { "id": 7, "username": "admin" }, "paidBy": null }
   ```
+  - `confirmedBy`, `paidBy` (#39): 확정·지급한 관리자. 해당 단계 전이거나 V11 적용 전에 처리된 정산이면 `null`. 기존 필드는 그대로이고 뒤에 추가만 됨
+  - 처리자는 요청으로 받지 않고 **토큰의 인증 정보**로 기록 ([정산 기준 10장](settlement-policy.md#10-감사-이력과-누락실패분-재집계-39))
   - `aggregatedAt`: 스케줄러 집계 시각, `confirmedAt`: 확정 시각(`PENDING`이면 `null`), `paidAt`: 지급 시각(`PAID`가 아니면 `null`)
   - `settlementAmount`: **실제 지급액** = max(판매 정산액 - 환불 정산액 - 이월받은 금액, 0). 모자라면 `carriedOutAmount`로 다음 정산에 이월
 
@@ -542,6 +548,89 @@ Response `200 OK` — 지급된 정산
 | 409 | `CONFIRMED`가 아님 — 확정 전(`PENDING`)이거나 이미 지급됨(`PAID`, 지급 시각은 처음 값 유지) |
 
 - 같은 정산에 지급 요청이 동시에 들어와도 행 잠금으로 한 번만 성공, 나머지는 409
+- 확정·지급에 성공하면 처리자·시각이 상태 변경 이력에 기록됨 (409로 거부된 요청은 기록되지 않음)
+
+### 정산 상태 변경 이력 `GET /api/admin/settlements/{id}/histories`
+정산 1건이 언제 누구에 의해 집계·확정·지급됐는지 기록 순으로 조회
+
+Response `200 OK`
+```json
+[
+  { "id": 1, "fromStatus": null, "toStatus": "PENDING", "actor": null, "changedAt": "2026-11-06T01:10:00" },
+  { "id": 2, "fromStatus": "PENDING", "toStatus": "CONFIRMED",
+    "actor": { "id": 7, "username": "admin" }, "changedAt": "2026-11-06T09:00:00" },
+  { "id": 3, "fromStatus": "CONFIRMED", "toStatus": "PAID",
+    "actor": { "id": 8, "username": "admin2" }, "changedAt": "2026-11-07T10:00:00" }
+]
+```
+- `fromStatus`가 `null`인 첫 행은 집계. `actor`가 `null`이면 스케줄러, 값이 있으면 재집계한 관리자
+- V11 적용 전에 일어난 전이는 이력이 없음 (빈 배열이거나 이후 전이만 나옴)
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | 정산 없음 |
+
+### 정산 재집계 `POST /api/admin/settlements/reaggregate`
+집계 실패나 스케줄러 누락(catch-up 기간 초과)으로 **정산이 없는 매장·날짜**를 새로 집계해 `PENDING` 정산을 만든다. 이미 있는 정산은 상태와 관계없이 다시 계산하지 않음. 요청 본문 없음
+
+Request — 쿼리 파라미터
+```
+POST /api/admin/settlements/reaggregate?date=2026-11-05            # 그 날짜의 집계 대상 매장 전체
+POST /api/admin/settlements/reaggregate?date=2026-11-05&storeId=1  # 매장 1곳만
+```
+- `date`: 필수, `yyyy-MM-dd` — 집계 가능 시각(다음 날 01:00)이 지난 날짜
+- `storeId`: 선택 — 없으면 그 날짜에 판매 또는 미차감 환불이 있는 매장 전체
+
+Response `200 OK`
+```json
+{ "date": "2026-11-05", "created": 1, "skipped": 1, "failed": 1,
+  "results": [
+    { "storeId": 1, "outcome": "CREATED", "settlementId": 12, "error": null },
+    { "storeId": 2, "outcome": "ALREADY_EXISTS", "settlementId": null, "error": null },
+    { "storeId": 3, "outcome": "FAILED", "settlementId": null,
+      "error": "DataIntegrityViolationException constraint=settlements_net_amount_check" }
+  ] }
+```
+- `outcome`: `CREATED`(새 정산) / `ALREADY_EXISTS`(이미 정산이 있어 건너뜀) / `NO_TARGET`(집계할 판매·환불 없음) / `FAILED`(다시 실패 — 실패 기록에 남음)
+- 일부 매장이 실패해도 200이며 매장별 결과로 구분 (매장 1곳 = 트랜잭션 1개)
+- 같은 요청을 반복하거나 스케줄러와 동시에 실행돼도 매장·날짜당 정산은 1건 (뒤 요청은 `ALREADY_EXISTS`)
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `date` 누락·형식 오류, `storeId` 형식 오류, 아직 집계할 수 없는 날짜 |
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | `storeId`의 매장 없음 |
+| 409 | `storeId`를 지정했는데 그 매장·날짜에 이미 정산이 있음 (`PENDING`·`CONFIRMED`·`PAID` 모두) |
+
+### 정산 집계 실패 기록 `GET /api/admin/settlements/aggregation-failures`
+Request — 쿼리 파라미터
+```
+GET /api/admin/settlements/aggregation-failures?status=FAILED
+```
+- `status`: 선택, `FAILED`(재집계 대상) / `RESOLVED` — 없으면 전체
+
+Response `200 OK` — 최근 실패 순, 없으면 빈 배열
+```json
+[
+  { "id": 1, "storeId": 3, "storeName": "분식집", "settlementDate": "2026-11-05",
+    "status": "RESOLVED", "failureCount": 2,
+    "lastError": "DataIntegrityViolationException constraint=settlements_net_amount_check",
+    "firstFailedAt": "2026-11-06T01:10:00", "lastFailedAt": "2026-11-06T09:10:00",
+    "lastFailedBy": { "id": 7, "username": "admin" },
+    "resolvedAt": "2026-11-06T10:10:00", "resolvedBy": { "id": 8, "username": "admin2" }, "settlementId": 12 }
+]
+```
+- `lastFailedBy`·`resolvedBy`가 `null`이면 스케줄러 실행. `settlementId`는 재집계로 만들어진 정산 (`FAILED`이거나 대상 없음으로 해결되면 `null`)
+- `lastError`는 예외 종류와 제약 조건 이름만 담음. 상세 원인은 서버 로그
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `status`가 정의되지 않은 값 |
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
 
 ---
 

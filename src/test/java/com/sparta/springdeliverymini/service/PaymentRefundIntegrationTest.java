@@ -55,6 +55,8 @@ class PaymentRefundIntegrationTest {
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
     @Autowired private SettlementRepository settlementRepository;
+    @Autowired private SettlementStatusHistoryRepository settlementStatusHistoryRepository;
+    @Autowired private SettlementAggregationFailureRepository settlementAggregationFailureRepository;
     @Autowired private SettlementRefundRepository settlementRefundRepository;
     @Autowired private SettlementCarryoverRepository settlementCarryoverRepository;
 
@@ -74,6 +76,9 @@ class PaymentRefundIntegrationTest {
     @AfterEach
     void tearDown() {
         // FK 순서대로 삭제: 차감 기록 → settlements → payments → orders → menus → stores → users
+        // 정산을 참조하는 감사 이력·실패 기록(V11)을 먼저 삭제
+        settlementStatusHistoryRepository.deleteAllInBatch();
+        settlementAggregationFailureRepository.deleteAllInBatch();
         settlementCarryoverRepository.deleteAllInBatch();
         settlementRefundRepository.deleteAllInBatch();
         settlementRepository.deleteAllInBatch();

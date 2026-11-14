@@ -2,6 +2,7 @@ package com.sparta.springdeliverymini.controller;
 
 import com.sparta.springdeliverymini.config.SecurityConfig;
 import com.sparta.springdeliverymini.entity.Role;
+import com.sparta.springdeliverymini.entity.SettlementAggregationFailureStatus;
 import com.sparta.springdeliverymini.entity.SettlementStatus;
 import com.sparta.springdeliverymini.exception.InvalidSettlementStatusException;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
@@ -24,6 +25,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -110,6 +112,90 @@ class AdminSettlementSecurityTest {
                         .header(HttpHeaders.AUTHORIZATION, bearer("admin", Role.ADMIN)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("확정(CONFIRMED) 상태의 정산만 지급할 수 있습니다. 현재 상태: PAID"));
+    }
+
+    // ---- 재집계·감사 기록 (#39) ----
+
+    @Test
+    void 재집계와_감사_기록_조회도_토큰이_없으면_401이고_ADMIN이_아니면_403() throws Exception {
+        mockMvc.perform(post("/api/admin/settlements/reaggregate").param("date", "2026-11-05"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/admin/settlements/1/histories"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/admin/settlements/aggregation-failures"))
+                .andExpect(status().isUnauthorized());
+
+        for (Role role : new Role[]{Role.OWNER, Role.CUSTOMER}) {
+            String token = bearer("user1", role);
+            mockMvc.perform(post("/api/admin/settlements/reaggregate").param("date", "2026-11-05")
+                            .header(HttpHeaders.AUTHORIZATION, token))
+                    .andExpect(status().isForbidden());
+            mockMvc.perform(get("/api/admin/settlements/1/histories").header(HttpHeaders.AUTHORIZATION, token))
+                    .andExpect(status().isForbidden());
+            mockMvc.perform(get("/api/admin/settlements/aggregation-failures").header(HttpHeaders.AUTHORIZATION, token))
+                    .andExpect(status().isForbidden());
+        }
+        verifyNoInteractions(adminSettlementService);
+    }
+
+    @Test
+    void ADMIN은_날짜와_매장으로_재집계할_수_있고_처리자는_토큰에서_가져온다() throws Exception {
+        // 요청에 다른 처리자를 넣어 보내도 무시됨 — Service에는 토큰의 username만 전달
+        mockMvc.perform(post("/api/admin/settlements/reaggregate")
+                        .param("date", "2026-11-05").param("storeId", "7")
+                        .param("username", "someone-else").param("actorId", "999")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("admin", Role.ADMIN)))
+                .andExpect(status().isOk());
+
+        verify(adminSettlementService).reaggregate(LocalDate.of(2026, 11, 5), 7L, "admin");
+    }
+
+    @Test
+    void 매장을_지정하지_않으면_날짜_전체를_재집계한다() throws Exception {
+        mockMvc.perform(post("/api/admin/settlements/reaggregate").param("date", "2026-11-05")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("admin", Role.ADMIN)))
+                .andExpect(status().isOk());
+
+        verify(adminSettlementService).reaggregate(LocalDate.of(2026, 11, 5), null, "admin");
+    }
+
+    @Test
+    void 이미_정산이_있는_매장의_재집계는_409() throws Exception {
+        given(adminSettlementService.reaggregate(any(), anyLong(), anyString()))
+                .willThrow(new InvalidSettlementStatusException("이미 정산이 있는 매장·날짜는 재집계할 수 없습니다. 현재 상태: PAID"));
+
+        mockMvc.perform(post("/api/admin/settlements/reaggregate")
+                        .param("date", "2026-11-05").param("storeId", "7")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("admin", Role.ADMIN)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("이미 정산이 있는 매장·날짜는 재집계할 수 없습니다. 현재 상태: PAID"));
+    }
+
+    @Test
+    void 재집계의_날짜_누락_형식_오류는_400() throws Exception {
+        String token = bearer("admin", Role.ADMIN);
+        mockMvc.perform(post("/api/admin/settlements/reaggregate").header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/admin/settlements/reaggregate").param("date", "2026-11-05").param("storeId", "abc")
+                        .header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(adminSettlementService);
+    }
+
+    @Test
+    void ADMIN은_정산_이력과_집계_실패_기록을_조회할_수_있다() throws Exception {
+        String token = bearer("admin", Role.ADMIN);
+        mockMvc.perform(get("/api/admin/settlements/1/histories").header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/admin/settlements/aggregation-failures").param("status", "FAILED")
+                        .header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/admin/settlements/aggregation-failures").param("status", "DONE")
+                        .header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isBadRequest());
+
+        verify(adminSettlementService).getHistories(1L, "admin");
+        verify(adminSettlementService).getAggregationFailures(SettlementAggregationFailureStatus.FAILED, "admin");
     }
 
     @Test
