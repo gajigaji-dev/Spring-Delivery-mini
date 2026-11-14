@@ -1,126 +1,79 @@
 # Spring Delivery Mini
 
-## 1. 프로젝트 소개
-- 스파르타 단기 심화 온보딩 주차 과제로, Spring Boot · JPA를 이용해 구현한 미니 배달 서비스
+스파르타 단기 심화 온보딩 주차 과제로 시작한 미니 배달 서비스입니다. 주문·결제부터 수수료, 일 정산, 환불·이월까지 구현했습니다.
 
-## 2. 프로젝트에서 요구/사용한 기술 스택
+## 기술 스택
 | 구분 | 기술 |
 |---|---|
 | 언어 · 프레임워크 | Java 21 · Spring Boot 4.1.x |
-| 빌드 도구 | Gradle |
-| 데이터베이스 | PostgreSQL 18 |
-| 사용 기술 | Spring Web · Spring Data JPA · PostgreSQL Driver · Spring Security · Validation · Lombok · JWT (JJWT) |
-| API 테스트 | Postman |
+| 데이터베이스 | PostgreSQL 18 · Flyway |
+| 사용 기술 | Spring Web · Spring Data JPA · Spring Security · JWT (JJWT) · Validation · Lombok |
 | 테스트 | JUnit 5 · Mockito · Testcontainers (PostgreSQL 18) |
-| DB 마이그레이션 | Flyway |
+| 빌드 · 도구 | Gradle · Postman |
 
-## 3. 문서
+## 아키텍처
 
-| 문서 | 내용 |
-|---|---|
-| [프로젝트 구조](docs/architecture.md) | 패키지 구조, 계층별 역할, 요청 처리 흐름, 테스트 |
-| [API 명세](docs/api.md) | 공통 사항, API 목록, 주문 상태 흐름, API별 요청·응답·에러 코드 |
-| [데이터베이스 / ERD](docs/database.md) | Flyway 마이그레이션, ERD, 테이블 관계·상세, 시간대, 결제 연관관계 |
-| [금액 처리 정책](docs/money-policy.md) | 금액 타입, 수수료 계산·반올림, 공통·매장별 수수료율 |
-| [정산 기준](docs/settlement-policy.md) | 정산 대상 시점, 정산 주기, 기간 기준, 정산 금액 집계, 정산 집계·확정·지급·스케줄러, 결제 취소·환불과 차기 정산 반영 |
-
-### 실행 · 테스트
-
-```bash
-./gradlew bootRun   # src/main/resources/.env.example을 .env로 복사해 DB 계정 입력
-./gradlew test      # Docker 실행 중이어야 함 (로컬 DB·DB 환경변수 불필요)
+```mermaid
+flowchart LR
+    client([Client]) -->|Bearer JWT| sec[Spring Security<br/>JWT 필터 · URL 역할 검사]
+    sec --> ctrl[Controller] --> svc[Service<br/>DB 기준 권한 재확인]
+    svc --> ent[Entity<br/>상태 전이 · 수수료 규칙]
+    svc --> repo[Repository<br/>JPA] --> db[(PostgreSQL)]
+    sch[Scheduler<br/>매일 01:10 정산 집계] --> svc
 ```
 
-## 4. 주요 기능
-### 회원
-- 회원가입 및 로그인
-- BCrypt를 이용한 비밀번호 암호화
-- JWT 기반 인증 및 인가
-- CUSTOMER / OWNER / ADMIN 역할(Role)에 따른 접근 권한 분리 (ADMIN은 가입 불가, DB에서 직접 지정)
+자세한 구성·요청 흐름·패키지 구조는 [프로젝트 구조](docs/architecture.md)를 참고하세요.
 
-### 매장
-- OWNER의 매장 생성 (한 OWNER가 여러 매장 보유 가능)
-- 매장 목록·상세 조회 (로그인 불필요)
-- 매장별 주문 조회·정산 조회 (본인 매장만, 다른 매장 → 403)
-- 소유권 판단은 `Store.isOwnedBy` 한곳에서 → 메뉴 등록·수정·삭제, 주문 처리, 매장별 주문·정산 조회가 같은 규칙 사용
+## 주요 기능
+| 영역 | 내용 |
+|---|---|
+| 회원 | 회원가입·로그인, BCrypt, JWT 인증, CUSTOMER / OWNER / ADMIN 역할 (ADMIN은 DB에서만 지정) |
+| 매장 · 메뉴 | OWNER의 매장 생성(여러 개 가능), 메뉴 등록·수정·삭제(Soft Delete), 소유권은 `Store.isOwnedBy` 한곳에서 판단 |
+| 주문 | 같은 매장의 메뉴 여러 개를 한 주문에 담음, 총액은 서버 계산, 주문 당시 메뉴 이름·단가 스냅샷, 상태 전이(결제 → 수락 → 배달완료) |
+| 결제 | 서버가 정한 금액으로 결제, 중복 결제 방지(DB UNIQUE), 수수료(기본 5%, 매장별 설정 가능) 스냅샷 저장, 수락 전 취소·배달 후 관리자 환불 |
+| 정산 | 배달완료 시각 기준 일 정산, 스케줄러 집계(PENDING) → 관리자 확정 → 지급, 환불은 다음 정산에서 차감하고 부족하면 이월, 사장님 정산 기록 조회 |
 
-### 메뉴
-- OWNER의 메뉴 등록(본인 매장에만), 수정, 삭제
-- 메뉴 조회 및 상세 조회
-- 메뉴 등록은 Spring Security에서 OWNER만 허용, 등록할 매장·수정·삭제할 메뉴의 매장이 본인 매장인지 Service에서 검증
-- Soft Delete를 통한 메뉴 삭제 처리
+## 문서
+| 문서 | 내용 |
+|---|---|
+| [프로젝트 구조](docs/architecture.md) | 아키텍처·주문~정산 흐름 다이어그램, 패키지 구조, 요청 처리 흐름, 테스트 |
+| [API 명세](docs/api.md) | API 목록, 주문 상태 흐름, API별 요청·응답·에러 코드 |
+| [ERD](docs/erd.md) | ERD 다이어그램, 테이블 간 관계 |
+| [데이터베이스](docs/database.md) | Flyway 마이그레이션, 테이블 상세·제약조건, 시간대, 결제 연관관계 |
+| [금액 처리 정책](docs/money-policy.md) | 금액 타입, 수수료 계산·반올림, 공통·매장별 수수료율 |
+| [정산 기준](docs/settlement-policy.md) | 정산 기간 기준, 집계·확정·지급, 결제 취소·환불과 이월 |
+| [질문 · 피드백 요청](docs/review-questions.md) | 과제 리뷰 때 받고 싶은 피드백 |
 
-### 주문
-- CUSTOMER의 메뉴 주문 — 한 주문에 같은 매장의 메뉴 여러 개를 담을 수 있음 (주문 항목 `order_items`)
-- 총액은 서버에서 `항목별 메뉴 가격 × 수량의 합`으로 계산
-- 주문 당시 메뉴 이름·단가를 항목에 저장 → 이후 메뉴가 수정·삭제되어도 주문 내역은 그대로
-- 주문은 메뉴의 매장으로 자동 연결 (`orders.store_id`), 다른 매장 메뉴를 섞으면 400
-- 주문 내역 조회 (CUSTOMER는 본인 주문, OWNER는 본인의 모든 매장에 들어온 주문)
-- 주문요청 상태에서만 주문 취소 가능
-- OWNER의 주문 상태 변경 (결제완료 → 주문수락 → 배달완료), 배달완료 시 배달완료 시각 기록
-- 주문자 / 매장 주인 본인 여부에 따른 접근 권한 검증
+## 실행 · 테스트
 
-### 결제
-- CUSTOMER의 본인 주문 결제
-- 결제 수단 검증 (CARD만 허용)
-- 결제 금액은 요청으로 받지 않고 서버에서 주문 총액을 그대로 사용
-- 결제 시 플랫폼 수수료(기본 5%)와 사장님 정산액을 계산해 함께 저장 ([금액 처리 정책](docs/money-policy.md) 참고)
-- 관리자(ADMIN)의 매장별 수수료율 설정·해제 — 결제 시점의 매장 수수료율(없으면 공통 수수료율)을 결제에 스냅샷으로 저장, 기존 결제·정산은 변경 없음
-- 결제 완료에 따른 주문 상태 변경
-- 중복 결제 방지
-- 주문수락 전 고객 취소 시 결제도 함께 취소(`CANCELLED`), 주문수락 이후 취소 불가
-- 배달완료 후 관리자(ADMIN) 전액 환불(`REFUNDED`) — 결제액·수수료·정산액 모두 취소, 동시 환불은 행 잠금으로 한 번만 성공
+### 환경변수
+루트의 `.env.example`을 `.env`로 복사해 값을 채움 (`.env`는 git 제외). local 프로필과 docker-compose가 같은 파일을 읽음
 
-### 정산
-- 매장별로, 배달완료된 결제만 정산 대상
-- 배달완료 시각 기준 하루 단위(Asia/Seoul, `[00:00, 다음 날 00:00)`)로 묶어 다음 날 01:00에 확정
-- OWNER의 기간 정산 조회 — 결제 총액·수수료·정산액 합계와 건별 내역 (확정된 날짜만, 최대 31일)
-- OWNER의 일 정산 기록 조회 — 실제 지급액·이월·상태(확정 대기/확정/지급)와 정산별 판매·환불 차감·이월 내역
-- 합계는 결제마다 저장한 금액을 더하기만 함 (다시 반올림하지 않음)
-- 매일 01:10 스케줄러가 매장별 일 정산을 집계해 확정 대기(`PENDING`)로 저장 (`settlements`)
-- 관리자(ADMIN)가 확정(`CONFIRMED`) → 지급(`PAID`) 처리, 확정·지급 시각 기록
-- 같은 매장·날짜는 한 번만 집계 — 여러 번·동시에 실행돼도 DB UNIQUE 제약으로 중복 정산 방지
-- 잘못된 상태 전이·중복 지급은 409, 동시 지급 요청은 행 잠금으로 한 번만 성공
-- 환불은 이미 만들어진 정산을 바꾸지 않고 다음 정산에서 차감, 지급액이 음수가 되면 다음 정산으로 이월 — 차감 기록 테이블의 UNIQUE 제약으로 중복 차감·누락 방지
-- 자세한 기준은 [정산 기준](docs/settlement-policy.md)
+| 변수 | 필수 | 설명 |
+|---|---|---|
+| `DB_USERNAME`, `DB_PASSWORD` | O | DB 계정 (docker-compose는 이 값으로 PostgreSQL 계정도 생성) |
+| `JWT_SECRET` | O | JWT 서명 키, Base64 인코딩된 256비트 이상 (`openssl rand -base64 32`). 기본값 없음 → 없으면 기동 실패 |
+| `DB_URL` | dev | JDBC URL. docker-compose가 자동 지정 |
+| `APP_PORT` | - | docker-compose에서 호스트에 여는 포트 (기본 8080) |
 
-### 데이터베이스 설계
-- User, Store, Menu, Order, OrderItem, Payment, Settlement 간의 관계 설계
-- 엔티티 간 외래키 설정
-- 주문 및 결제 데이터의 연관관계 구성
-- JPA를 활용한 데이터 접근 및 관리
+### 프로필
+| 프로필 | 용도 | DB | 설정 파일 |
+|---|---|---|---|
+| `local` (기본) | bootRun·IDE 실행, SQL 로그 출력 | `localhost:5432/delivery` | `application-local.yml` |
+| `dev` | docker-compose 실행 | `DB_URL` (compose의 `db` 컨테이너) | `application-dev.yml` |
+| `test` | `./gradlew test`에서 자동 활성화, 테스트 전용 JWT 키 | Testcontainers | `src/test/resources/application-test.yml` |
 
-### REST API 및 예외 처리
-- Validation을 이용한 요청 데이터 검증
-- 인증/인가에 따른 HTTP 상태 코드 처리
-- 잘못된 요청, 권한 없음, 리소스 없음 등의 예외 처리
+### 실행
+```bash
+# 1) Docker Compose — 애플리케이션 + PostgreSQL 18 (http://localhost:8080)
+docker compose up --build -d
+docker compose down          # 종료 (DB 데이터 유지, 삭제하려면 -v)
 
-## 5. 질문이나 피드백 받고 싶은 것
-### 질문 및 피드백 요청 사항
+# 2) 직접 실행 (local) — localhost:5432에 delivery DB가 있어야 함
+./gradlew bootRun
 
-1. Spring Security / JWT 설계
-- 현재 SecurityConfig에서 CUSTOMER / OWNER 역할별 접근 권한을 분리하고, Service에서 본인 데이터 여부를 추가로 검증하는 방식으로 구현했습니다.
-  현재와 같은 역할 기반 접근 제어 구조에서 보완하거나 개선할 부분이 있을까요?
-- JWT 인증 필터와 SecurityConfig의 역할 분리를 현재와 같이 구성하는 것이 적절한지 궁금합니다.
-- 401(인증 실패)과 403(인가 실패)을 현재와 같이 구분해서 처리하는 방식이 적절한지 궁금합니다.
-
-2. Soft Delete 설계
-- 메뉴 삭제 시 실제 DELETE 대신 deleted = true로 처리하고 조회에서 제외하는 Soft Delete 방식을 적용했습니다.
-  배달 주문 서비스에서 이 방식이 적절한지, 또는 deletedAt 등을 추가하는 것이 더 나은지 궁금합니다.
-- 삭제된 메뉴와 기존 주문 데이터의 관계를 유지하기 위해 Soft Delete를 선택했는데, 이 설계에서 추가적으로 고려할 부분이 있을까요?
-
-3. User · Store · Menu · Order · Payment 데이터베이스 설계
-- 현재 User–Store(1:N), Store–Menu(1:N), Store–Order(1:N), User–Order(1:N), Order–OrderItem(1:N), Menu–OrderItem(1:N), Order–Payment(1:1)로 관계를 설계하고 외래키를 설정했습니다.
-  서비스 요구사항을 기준으로 현재 ERD와 엔티티 관계가 적절한지 검토받고 싶습니다.
-- Payment.order_id에 UNIQUE 제약을 두어 주문 1건당 결제 1건만 허용하도록 했는데, 이러한 중복 결제 방지 방식을 DB 제약조건으로 처리하는 것이 적절한지 궁금합니다.
-- 주문 항목(order_items)에 주문 당시 메뉴 이름·단가를, 주문에 total_price를 저장해 주문 당시의 가격을 보존하도록 했는데, 메뉴 가격 변경을 고려했을 때 현재 데이터 모델이 적절한지 궁금합니다.
-
-4. 트랜잭션 처리
-- 결제 시 Payment 저장과 Order 상태 변경을 하나의 @Transactional로 묶었습니다.
-  현재와 같이 결제와 주문 상태 변경을 하나의 트랜잭션으로 처리하는 것이 적절한지, 추가적으로 고려할 동시성 문제가 있는지 궁금합니다.
-
-5. 전체적인 설계
-- 현재 Controller → Service → Repository 계층으로 분리하고 DTO를 통해 요청/응답을 처리했는데, 신입 개발자 포트폴리오 수준에서 구조적으로 부족하거나 개선할 부분이 있는지 피드백 받고 싶습니다.
-- 현재 구현에서 실제 운영 환경을 고려했을 때 가장 먼저 개선해야 할 부분이 무엇인지 궁금합니다.
-
-굳이 다 답변해주실 필요는 없지만 1, 4, 5를 중점으로 피드백 받고 싶습니다.
+# 테스트 — Docker 실행 중이어야 함 (로컬 DB·환경변수 불필요)
+./gradlew test
+```
+- compose의 DB 포트는 로컬 PostgreSQL(5432)과 겹치지 않도록 호스트에 열지 않음
+- CI: GitHub Actions(`.github/workflows/ci.yml`)가 main 대상 PR·push마다 `./gradlew build`(전체 테스트 포함) 실행
