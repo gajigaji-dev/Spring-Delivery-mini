@@ -45,7 +45,35 @@ flowchart LR
 | [질문 · 피드백 요청](docs/review-questions.md) | 과제 리뷰 때 받고 싶은 피드백 |
 
 ## 실행 · 테스트
+
+### 환경변수
+루트의 `.env.example`을 `.env`로 복사해 값을 채움 (`.env`는 git 제외). local 프로필과 docker-compose가 같은 파일을 읽음
+
+| 변수 | 필수 | 설명 |
+|---|---|---|
+| `DB_USERNAME`, `DB_PASSWORD` | O | DB 계정 (docker-compose는 이 값으로 PostgreSQL 계정도 생성) |
+| `JWT_SECRET` | O | JWT 서명 키, Base64 인코딩된 256비트 이상 (`openssl rand -base64 32`). 기본값 없음 → 없으면 기동 실패 |
+| `DB_URL` | dev | JDBC URL. docker-compose가 자동 지정 |
+| `APP_PORT` | - | docker-compose에서 호스트에 여는 포트 (기본 8080) |
+
+### 프로필
+| 프로필 | 용도 | DB | 설정 파일 |
+|---|---|---|---|
+| `local` (기본) | bootRun·IDE 실행, SQL 로그 출력 | `localhost:5432/delivery` | `application-local.yml` |
+| `dev` | docker-compose 실행 | `DB_URL` (compose의 `db` 컨테이너) | `application-dev.yml` |
+| `test` | `./gradlew test`에서 자동 활성화, 테스트 전용 JWT 키 | Testcontainers | `src/test/resources/application-test.yml` |
+
+### 실행
 ```bash
-./gradlew bootRun   # src/main/resources/.env.example을 .env로 복사해 DB 계정 입력
-./gradlew test      # Docker 실행 중이어야 함 (로컬 DB·DB 환경변수 불필요)
+# 1) Docker Compose — 애플리케이션 + PostgreSQL 18 (http://localhost:8080)
+docker compose up --build -d
+docker compose down          # 종료 (DB 데이터 유지, 삭제하려면 -v)
+
+# 2) 직접 실행 (local) — localhost:5432에 delivery DB가 있어야 함
+./gradlew bootRun
+
+# 테스트 — Docker 실행 중이어야 함 (로컬 DB·환경변수 불필요)
+./gradlew test
 ```
+- compose의 DB 포트는 로컬 PostgreSQL(5432)과 겹치지 않도록 호스트에 열지 않음
+- CI: GitHub Actions(`.github/workflows/ci.yml`)가 main 대상 PR·push마다 `./gradlew build`(전체 테스트 포함) 실행
