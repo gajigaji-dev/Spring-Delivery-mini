@@ -1,0 +1,38 @@
+# 빌드·테스트 자동화 — main 대상 PR과 main push에서 실행
+# 통합 테스트는 Testcontainers로 PostgreSQL을 띄우므로 Docker가 있는 ubuntu 러너 사용 (별도 DB 서비스 불필요)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Windows에서 커밋돼 실행 권한이 없을 수 있음
+      - run: chmod +x gradlew
+
+      # 컴파일 + 전체 테스트 + bootJar (test 프로필은 build.gradle에서 자동 활성화)
+      - run: ./gradlew build
+
+      - name: 테스트 리포트 업로드 (실패 시)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: build/reports/tests/test

@@ -1,0 +1,18 @@
+# local 프로필 — 개발 PC에서 bootRun·IDE로 직접 실행 (프로필 미지정 시 기본)
+spring:
+  config:
+    # 프로젝트 루트의 .env(DB_USERNAME·DB_PASSWORD·JWT_SECRET)를 읽음. 없으면 무시하고 OS 환경변수만 사용
+    # OS 환경변수가 .env보다 우선 → IDE 실행 설정에 지정한 값도 그대로 동작
+    # docker-compose도 같은 .env를 읽으므로 값을 한 곳에서 관리
+    import: optional:file:.env[.properties]
+
+  # 로컬 PostgreSQL (docker run으로 띄운 5432 포트의 delivery DB)
+  datasource:
+    url: jdbc:postgresql://localhost:5432/delivery
+
+  # 개발 중 SQL 확인용
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
