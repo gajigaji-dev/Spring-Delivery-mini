@@ -16,3 +16,17 @@ spring:
     properties:
       hibernate:
         format_sql: true
+
+# 개발 PC에서는 메트릭 확인을 위해 prometheus·metrics까지 노출 (metrics는 SecurityConfig에서 ADMIN만)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+
+# 개발 PC에서는 Swagger UI 사용: http://localhost:8080/swagger-ui.html
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true

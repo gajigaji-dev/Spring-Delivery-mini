@@ -1,0 +1,8 @@
+# monitoring/grafana/dashboards의 JSON 대시보드를 자동 등록
+apiVersion: 1
+providers:
+  - name: delivery
+    folder: Delivery
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

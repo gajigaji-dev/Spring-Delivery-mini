@@ -8,10 +8,23 @@
   ```
   Authorization: Bearer {accessToken}
   ```
-- 에러 응답은 모두 같은 형식
+- 에러 응답은 모두 같은 형식 (`exception.ApiErrorResponse`, Security의 401/403과 Spring MVC 표준 404/405 포함)
   ```json
-  { "message": "에러 메시지" }
+  {
+    "status": 409,
+    "error": "Conflict",
+    "message": "에러 메시지",
+    "path": "/api/admin/payments/1/refund",
+    "traceId": "5af890963e74404eb8ac559bfc252067"
+  }
   ```
+  - `message`는 기존과 같은 필드·문구 (기존 클라이언트는 그대로 동작), 나머지 필드는 #38에서 추가
+  - 500은 내부 예외 메시지를 숨기고 공통 문구로 응답 → `traceId`로 서버 로그 확인
+- 추적 헤더 `X-Trace-Id`
+  - 모든 응답에 포함. 요청에 `X-Trace-Id`(영문·숫자·하이픈 8~64자)를 보내면 그 값을 그대로 사용, 없거나 형식이 다르면 서버가 생성
+  - 같은 값이 에러 응답 `traceId`, 서버 로그 각 줄의 `[traceId]`에 들어감
+- API 문서(Swagger UI): local·dev 프로필에서 `/swagger-ui.html`, 명세 `/v3/api-docs` (기본 설정·운영은 비활성 → 404)
+  - Authorize 버튼에 로그인 응답의 `accessToken`을 넣으면 Bearer 헤더가 자동으로 붙음
 - 공통 에러 코드
 
   | 코드 | 상황 |
@@ -21,6 +34,16 @@
   | 403 | 권한 없음 (역할이 다르거나 본인 데이터가 아님) |
   | 404 | 대상(매장·메뉴·주문·정산)이 없음 |
   | 409 | 중복(아이디, 결제) 또는 현재 상태에서 할 수 없는 요청 (주문·정산 상태 전이) |
+  | 405 | 지원하지 않는 HTTP 메서드 (`Allow` 헤더 포함) |
+  | 500 | 예상하지 못한 서버 오류 (`traceId`로 로그 확인) |
+
+- 운영 엔드포인트 (Actuator)
+
+  | 경로 | 노출 | 권한 |
+  |---|---|---|
+  | `GET /actuator/health` | 모든 프로필 (UP/DOWN만, 상세 숨김) | 공개 |
+  | `GET /actuator/prometheus` | local(8080) · dev(관리 포트 8081, 호스트 비공개) | 공개 (수집기용) |
+  | 그 밖의 `/actuator/**` (metrics 등) | local만 metrics·info | ADMIN |
 
 ## API 목록
 

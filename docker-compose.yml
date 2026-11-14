@@ -1,8 +1,11 @@
 # 애플리케이션 + PostgreSQL 실행: 루트에 .env 작성 후 `docker compose up --build`
+# 모니터링(Prometheus + Grafana)까지 함께 실행: `docker compose --profile monitoring up --build` (.env에 GRAFANA_ADMIN_PASSWORD 필수)
 # 값은 .env(DB_USERNAME·DB_PASSWORD·JWT_SECRET)에서 읽음 → .env.example 참고
 services:
   db:
     image: postgres:18
+    ports:
+    - "5432:5432"
     environment:
       POSTGRES_DB: delivery
       POSTGRES_USER: ${DB_USERNAME:?DB_USERNAME을 .env에 지정하세요}
@@ -30,6 +33,48 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET을 .env에 지정하세요}
     ports:
       - "${APP_PORT:-8080}:8080"
+    # Actuator 관리 포트(8081, application-dev.yml)는 ports에 넣지 않음 → 호스트·외부에서 접근 불가,
+    # 같은 compose 네트워크의 Prometheus만 app:8081로 수집
+
+  # 메트릭 수집 — monitoring 프로필을 지정했을 때만 실행 (기본 `docker compose up`에는 포함되지 않음)
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["monitoring"]
+    depends_on:
+      - app
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"   # 로컬 PC에서만 접근 (외부 네트워크에 공개하지 않음)
+
+  # 대시보드 — Prometheus 데이터 소스·대시보드는 monitoring/grafana에서 자동 등록
+  grafana:
+    image: grafana/grafana:12.1.0
+    profiles: ["monitoring"]
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # .env의 GRAFANA_ADMIN_PASSWORD 필수 (기본 비밀번호 admin으로 뜨지 않도록)
+      # compose는 비활성 프로필 서비스까지 변수를 치환하므로 `:?`로 막으면 기본 `docker compose up`도 실패함
+      # → 여기서는 빈 값으로 넘기고, 아래 entrypoint가 Grafana 시작 직전에 검사 (monitoring 프로필에서만 실행됨)
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    # 비밀번호가 없거나 admin이면 기동하지 않고 종료 (exit 1), 통과하면 이미지 기본 진입점(/run.sh) 실행
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$$GF_SECURITY_ADMIN_PASSWORD" ] || [ "$$GF_SECURITY_ADMIN_PASSWORD" = "admin" ]; then
+          echo "GRAFANA_ADMIN_PASSWORD를 .env에 지정하세요 (빈 값·admin 불가)" >&2
+          exit 1
+        fi
+        exec /run.sh
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"   # 로컬 PC에서만 접근
 
 volumes:
   db-data:
