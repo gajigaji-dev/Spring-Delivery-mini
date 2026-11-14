@@ -145,7 +145,7 @@ class SettlementIntegrationTest {
     void 배달완료하면_주문_응답에_배달완료_시각이_담긴다() {
         OrderResponse order = deliveredOrder(chickenStore, "owner1", 10000, LocalDateTime.of(2026, 11, 5, 18, 30));
 
-        OrderResponse reloaded = orderService.getStoreOrders(chickenStore.id(), "owner1").stream()
+        OrderResponse reloaded = orderService.getStoreOrders(chickenStore.id(), "owner1", PageQuery.of(0, 20)).stream()
                 .filter(o -> o.id().equals(order.id())).findFirst().orElseThrow();
         assertThat(reloaded.deliveredAt()).isEqualTo(LocalDateTime.of(2026, 11, 5, 18, 30));
     }

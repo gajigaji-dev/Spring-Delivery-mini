@@ -44,6 +44,7 @@ flowchart LR
 | [데이터베이스](docs/database.md) | Flyway 마이그레이션, 테이블 상세·제약조건, 시간대, 결제 연관관계 |
 | [금액 처리 정책](docs/money-policy.md) | 금액 타입, 수수료 계산·반올림, 공통·매장별 수수료율 |
 | [정산 기준](docs/settlement-policy.md) | 정산 기간 기준, 집계·확정·지급, 결제 취소·환불과 이월, 감사 이력과 누락·실패분 재집계 |
+| [성능 개선](docs/performance.md) | 목록 API 페이지네이션·N+1 제거·인덱스 근거(EXPLAIN), k6 부하 테스트 개선 전후 비교, 남은 병목 |
 | [질문 · 피드백 요청](docs/review-questions.md) | 과제 리뷰 때 받고 싶은 피드백 |
 
 ## 실행 · 테스트

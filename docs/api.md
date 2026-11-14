@@ -25,6 +25,17 @@
   - 같은 값이 에러 응답 `traceId`, 서버 로그 각 줄의 `[traceId]`에 들어감
 - API 문서(Swagger UI): local·dev 프로필에서 `/swagger-ui.html`, 명세 `/v3/api-docs` (기본 설정·운영은 비활성 → 404)
   - Authorize 버튼에 로그인 응답의 `accessToken`을 넣으면 Bearer 헤더가 자동으로 붙음
+- 목록 페이지네이션 (#40) — 매장·메뉴·주문·매장별 주문 목록 공통
+  - 요청: `?page=0&size=20` (`page` 0부터, `size` 기본 20 · 최대 100). 범위를 벗어나거나 숫자가 아니면 400
+  - 응답 본문은 JSON 배열 그대로이고, 페이지 정보는 응답 헤더로 전달
+
+    | 헤더 | 내용 |
+    |---|---|
+    | `X-Page` | 현재 페이지 번호 |
+    | `X-Size` | 요청한 페이지 크기 |
+    | `X-Has-Next` | 다음 페이지가 있으면 `true` (전체 개수는 제공하지 않음) |
+  - 정렬은 id 오름차순(등록순) 고정. 범위를 넘은 페이지는 빈 배열 `[]`
+  - 파라미터 없이 호출하면 첫 20건만 응답 (이전에는 전체) — 배경·측정 결과는 [성능 개선](performance.md)
 - 공통 에러 코드
 
   | 코드 | 상황 |
@@ -53,19 +64,19 @@
 | 로그인 | POST | `/api/users/login` | X | - | 200 |
 | 내 토큰 정보 조회 | GET | `/api/users/me` | O | 로그인 사용자 | 200 |
 | 매장 생성 | POST | `/api/stores` | O | OWNER | 201 |
-| 매장 목록 조회 | GET | `/api/stores` | X | - | 200 |
+| 매장 목록 조회 | GET | `/api/stores?page=&size=` | X | - | 200 |
 | 매장 단건 조회 | GET | `/api/stores/{id}` | X | - | 200 |
-| 매장별 주문 조회 | GET | `/api/stores/{id}/orders` | O | OWNER (본인 매장) | 200 |
+| 매장별 주문 조회 | GET | `/api/stores/{id}/orders?page=&size=` | O | OWNER (본인 매장) | 200 |
 | 매장별 정산 조회 | GET | `/api/stores/{id}/settlements?from=&to=` | O | OWNER (본인 매장) | 200 |
 | 매장별 일 정산 기록 목록 | GET | `/api/stores/{id}/daily-settlements?from=&to=&status=` | O | OWNER (본인 매장) | 200 |
 | 매장별 일 정산 기록 상세 | GET | `/api/stores/{id}/daily-settlements/{settlementId}` | O | OWNER (본인 매장) | 200 |
 | 메뉴 등록 | POST | `/api/menus` | O | OWNER (본인 매장) | 201 |
-| 메뉴 목록 조회 | GET | `/api/menus` | X | - | 200 |
+| 메뉴 목록 조회 | GET | `/api/menus?page=&size=` | X | - | 200 |
 | 메뉴 단건 조회 | GET | `/api/menus/{id}` | X | - | 200 |
 | 메뉴 수정 | PUT | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 200 |
 | 메뉴 삭제 | DELETE | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 204 |
 | 주문 생성 | POST | `/api/orders` | O | CUSTOMER | 201 |
-| 주문 목록 조회 | GET | `/api/orders` | O | CUSTOMER / OWNER | 200 |
+| 주문 목록 조회 | GET | `/api/orders?page=&size=` | O | CUSTOMER / OWNER | 200 |
 | 주문 취소 (결제 취소 포함) | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
 | 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 매장 주문) | 204 |
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
@@ -173,17 +184,19 @@ Response `201 Created`
 | 403 | CUSTOMER가 요청 |
 
 ### 매장 목록 조회 `GET /api/stores` / 단건 조회 `GET /api/stores/{id}`
-Response `200 OK` — 매장 생성 응답 형식 (목록은 배열)
+Response `200 OK` — 매장 생성 응답 형식 (목록은 배열, [페이지네이션](#공통-사항) `?page=&size=`)
 
 | 코드 | 상황 |
 |---|---|
+| 400 | `page`·`size` 범위 초과 (목록) |
 | 404 | 매장 없음 (단건 조회) |
 
 ### 매장별 주문 조회 `GET /api/stores/{id}/orders`
-Response `200 OK` — 주문 생성 응답 형식의 배열, 해당 매장에 들어온 주문만
+Response `200 OK` — 주문 생성 응답 형식의 배열, 해당 매장에 들어온 주문만 ([페이지네이션](#공통-사항) `?page=&size=`)
 
 | 코드 | 상황 |
 |---|---|
+| 400 | `page`·`size` 범위 초과 |
 | 401 | 토큰 없음 |
 | 403 | CUSTOMER가 요청, 본인 매장이 아님 |
 | 404 | 매장 없음 |
@@ -327,7 +340,7 @@ Response `201 Created`
 | 404 | 매장 없음 |
 
 ### 메뉴 목록 조회 `GET /api/menus`
-Response `200 OK` — 삭제되지 않은 메뉴만 반환
+Response `200 OK` — 삭제되지 않은 메뉴만 반환 ([페이지네이션](#공통-사항) `?page=&size=`, 범위 초과 시 400)
 ```json
 [
   { "id": 1, "storeId": 1, "name": "후라이드 치킨", "price": 18000, "description": "바삭한 치킨",
@@ -411,12 +424,13 @@ Response `201 Created`
 | 404 | 항목 중 하나라도 메뉴가 없거나 삭제됨 |
 
 ### 주문 목록 조회 `GET /api/orders`
-Response `200 OK` — 주문 생성 응답 형식의 배열
+Response `200 OK` — 주문 생성 응답 형식의 배열 ([페이지네이션](#공통-사항) `?page=&size=`)
 - CUSTOMER: 본인이 한 주문만
 - OWNER: 본인의 모든 매장에 들어온 주문만 (매장 하나만 보려면 `GET /api/stores/{id}/orders`)
 
 | 코드 | 상황 |
 |---|---|
+| 400 | `page`·`size` 범위 초과 |
 | 401 | 토큰 없음 |
 
 ### 주문 취소 `PATCH /api/orders/{id}/cancel`

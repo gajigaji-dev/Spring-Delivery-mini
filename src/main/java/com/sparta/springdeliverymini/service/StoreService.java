@@ -1,6 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
 import lombok.RequiredArgsConstructor;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.dto.StoreCreateRequest;
 import com.sparta.springdeliverymini.dto.StoreResponse;
 import com.sparta.springdeliverymini.entity.Role;
@@ -9,11 +10,10 @@ import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
+import org.springframework.data.domain.Slice;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.util.List;
 
 @Service
 @Transactional(readOnly = true)
@@ -40,12 +40,10 @@ public class StoreService {
         return StoreResponse.from(storeRepository.save(store));
     }
 
-    // 전체 매장 목록 (로그인 없이 조회 가능)
-    public List<StoreResponse> getStores() {
-        return storeRepository.findAll()
-                .stream()
-                .map(StoreResponse::from)
-                .toList();
+    // 매장 목록 (로그인 없이 조회 가능) — 페이지 단위, id 오름차순 (#40)
+    public Slice<StoreResponse> getStores(PageQuery pageQuery) {
+        return storeRepository.findAllBy(pageQuery.toPageable())
+                .map(StoreResponse::from);
     }
 
     // 매장 상세 조회 — 존재하지 않으면 404

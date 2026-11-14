@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.OrderCreateRequest;
 import com.sparta.springdeliverymini.dto.OrderResponse;
 import com.sparta.springdeliverymini.dto.OrderStatusUpdateRequest;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.service.OrderService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -34,12 +35,15 @@ public class OrderController {
         return ResponseEntity.status(HttpStatus.CREATED).body(order);
     }
 
+    // 주문 목록 — 페이지 단위 (?page=0&size=20, size 최대 100), 본문은 배열 그대로이고 페이지 정보는 응답 헤더
     @GetMapping("/orders")
-    public List<OrderResponse> getOrders(
+    public ResponseEntity<List<OrderResponse>> getOrders(
+            @RequestParam(defaultValue = PageQuery.DEFAULT_PAGE_PARAM) int page,
+            @RequestParam(defaultValue = PageQuery.DEFAULT_SIZE_PARAM) int size,
             Authentication authentication
     ) {
         // JWT에서 현재 로그인한 사용자의 username을 가져와 주문 조회
-        return orderService.getOrders(authentication.getName());
+        return SliceResponse.of(orderService.getOrders(authentication.getName(), PageQuery.of(page, size)));
     }
 
     // Patch: 주문 삭제가 아닌 주문요청 -> 주문취소로 상태 변경 위함
