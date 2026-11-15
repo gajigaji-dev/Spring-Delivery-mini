@@ -31,4 +31,21 @@ public record PaymentResponse(
                 payment.getRefundedAt()
         );
     }
+
+    // 결제 직후의 응답을 다시 만듦 — DB 멱등성 기록으로 처음 응답을 재전송할 때 사용 (#41 후속, PaymentService.findIdempotentPayment)
+    // 결제 금액·수단·시각은 생성 후 바뀌지 않고, 결제 직후 상태는 항상 PAYMENT_COMPLETED / COMPLETED
+    // → 이후 주문이 배달완료·환불됐어도 처음 응답과 같은 값 (현재 상태는 결제 조회 API로 확인)
+    public static PaymentResponse atPayment(Payment payment) {
+        return new PaymentResponse(
+                payment.getId(),
+                payment.getOrder().getId(),
+                payment.getAmount(),
+                payment.getPaymentMethod(),
+                OrderStatus.PAYMENT_COMPLETED,
+                payment.getPaidAt(),
+                PaymentStatus.COMPLETED,
+                null,
+                null
+        );
+    }
 }

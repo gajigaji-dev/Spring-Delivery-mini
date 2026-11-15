@@ -6,8 +6,10 @@ import com.sparta.springdeliverymini.config.PaymentFeeProperties;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.repository.OrderRepository;
+import com.sparta.springdeliverymini.repository.PaymentIdempotencyKeyRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -17,6 +19,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.Optional;
 
 @Slf4j
 @Service
@@ -29,9 +33,30 @@ public class PaymentService {
     private final UserRepository userRepository;
     private final Clock clock; // 결제 시각 기준 (config.TimeConfig, Asia/Seoul)
     private final PaymentFeeProperties feeProperties; // 공통 수수료율 (application.yml payment.fee.rate, 매장 수수료율이 없을 때 사용)
+    private final OutboxEventRecorder outboxEventRecorder; // 결제 완료 이벤트 (#42)
+    private final PaymentIdempotencyKeyRepository idempotencyKeyRepository; // DB 멱등성 기록 (V14)
+
+    // DB에 남은 멱등성 기록 — fingerprint로 같은 요청인지 확인하고, response(결제 직후 응답)를 재전송
+    public record IdempotentPayment(String fingerprint, PaymentResponse response) {
+    }
+
+    // 같은 사용자·같은 Idempotency-Key로 이미 커밋된 결제가 있는지 확인 (PaymentIdempotencyService)
+    // Redis 기록이 없거나(TTL 만료·유실) Redis가 내려가 있을 때 처음 응답을 돌려주는 근거
+    public Optional<IdempotentPayment> findIdempotentPayment(String username, String idempotencyKey) {
+        return userRepository.findByUsername(username)
+                .flatMap(user -> idempotencyKeyRepository.findByUserIdAndKey(user.getId(), idempotencyKey))
+                .map(record -> new IdempotentPayment(
+                        record.getFingerprint(), PaymentResponse.atPayment(record.getPayment())));
+    }
 
     @Transactional
     public PaymentResponse pay(PaymentRequest request, String username) {
+        return pay(request, username, null, null);
+    }
+
+    // idempotencyKey가 있으면 결제와 같은 트랜잭션에 멱등성 기록을 저장 (없으면 저장하지 않음)
+    @Transactional
+    public PaymentResponse pay(PaymentRequest request, String username, String idempotencyKey, String fingerprint) {
 
         // 1. 현재 로그인한 사용자 찾기
         // 토큰은 유효하지만 그 사이 회원이 삭제된 경우 → 401
@@ -103,7 +128,9 @@ public class PaymentService {
                 order.getTotalPrice(),
                 order.getStore().effectiveFeeRate(feeProperties.rate()),
                 PaymentMethod.CARD,
-                LocalDateTime.now(clock)
+                // DB 컬럼 정밀도(timestamp(6), 마이크로초)에 맞춰 자름
+                // → 첫 응답의 paidAt과 DB 기록으로 다시 만든 응답(PaymentResponse.atPayment)의 paidAt이 같아짐
+                LocalDateTime.now(clock).truncatedTo(ChronoUnit.MICROS)
         );
         try {
             // 같은 주문을 동시에 결제하면 6·7번 검사를 둘 다 통과할 수 있음
@@ -117,6 +144,26 @@ public class PaymentService {
                     "이미 결제된 주문입니다."
             );
         }
+
+        // 8-1. 멱등성 기록을 같은 트랜잭션에 저장 (Idempotency-Key가 있을 때만)
+        // 결제가 커밋되면 기록도 반드시 남음 → Redis 기록이 사라져도 같은 키 재시도에 처음 응답을 돌려줄 수 있음
+        if (idempotencyKey != null) {
+            try {
+                idempotencyKeyRepository.saveAndFlush(new PaymentIdempotencyKey(
+                        currentUser, idempotencyKey, fingerprint, payment, LocalDateTime.now(clock)));
+            } catch (DataIntegrityViolationException e) {
+                // 같은 키로 다른 주문을 동시에 결제한 경우 (Redis 처리 중 기록이 만료·유실돼 둘 다 통과했을 때만 발생)
+                // 예외로 트랜잭션이 롤백되므로 이 결제는 저장되지 않음
+                throw new ApiException(
+                        HttpStatus.CONFLICT,
+                        "같은 Idempotency-Key의 결제가 이미 처리되었습니다. 잠시 후 다시 시도해 주세요."
+                );
+            }
+        }
+
+        // 9. 결제 완료 이벤트를 같은 트랜잭션에 저장 (Transactional Outbox, #42)
+        // Kafka 발행은 커밋 후 OutboxPublisher가 따로 함 → Kafka 장애여도 결제는 성공, 결제가 롤백되면 이벤트도 남지 않음
+        outboxEventRecorder.paymentCompleted(payment);
 
         // 결제 상태 변경 로그 — 식별자·금액·상태만 기록 (회원 아이디·카드 정보 등 개인정보는 남기지 않음)
         // traceId(MDC)가 함께 찍혀 요청 로그·에러 로그와 연결됨

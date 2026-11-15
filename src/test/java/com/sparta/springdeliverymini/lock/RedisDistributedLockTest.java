@@ -1,5 +1,6 @@
 package com.sparta.springdeliverymini.lock;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.sparta.springdeliverymini.RedisTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -22,7 +23,7 @@ class RedisDistributedLockTest {
     private static final Duration AT_MOST = Duration.ofSeconds(30);
 
     private final StringRedisTemplate redis = RedisTestSupport.template(Duration.ofMillis(300));
-    private final RedisDistributedLock lock = new RedisDistributedLock(redis);
+    private final RedisDistributedLock lock = new RedisDistributedLock(redis, new SimpleMeterRegistry());
 
     @AfterEach
     void tearDown() {
@@ -73,7 +74,7 @@ class RedisDistributedLockTest {
         long ttl = redis.getExpire(KEY, TimeUnit.MILLISECONDS);
         assertThat(ttl).isPositive().isLessThanOrEqualTo(10_000); // 최대 유지 시간(30초)이 아니라 남은 최소 유지 시간으로 줄어듦
 
-        RedisDistributedLock lateInstance = new RedisDistributedLock(RedisTestSupport.template(Duration.ofMillis(300)));
+        RedisDistributedLock lateInstance = new RedisDistributedLock(RedisTestSupport.template(Duration.ofMillis(300)), new SimpleMeterRegistry());
         AtomicInteger runs = new AtomicInteger();
         assertThat(lateInstance.executeIfAcquired(NAME, AT_MOST, Duration.ZERO, runs::incrementAndGet)).isFalse();
         assertThat(runs).hasValue(0);
@@ -81,7 +82,7 @@ class RedisDistributedLockTest {
 
     @Test
     void 최대_유지_시간이_지나면_락이_만료되고_원래_소유자는_새_소유자의_락을_지우지_않는다() throws Exception {
-        RedisDistributedLock otherInstance = new RedisDistributedLock(RedisTestSupport.template(Duration.ofMillis(300)));
+        RedisDistributedLock otherInstance = new RedisDistributedLock(RedisTestSupport.template(Duration.ofMillis(300)), new SimpleMeterRegistry());
         CountDownLatch otherAcquired = new CountDownLatch(1);
         CountDownLatch otherMayFinish = new CountDownLatch(1);
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -130,7 +131,7 @@ class RedisDistributedLockTest {
         List<Future<Boolean>> futures = new ArrayList<>();
         for (int i = 0; i < instances; i++) {
             // 인스턴스마다 별도 Redis 연결
-            RedisDistributedLock instanceLock = new RedisDistributedLock(RedisTestSupport.template(Duration.ofSeconds(2)));
+            RedisDistributedLock instanceLock = new RedisDistributedLock(RedisTestSupport.template(Duration.ofSeconds(2)), new SimpleMeterRegistry());
             futures.add(executor.submit(() -> {
                 ready.countDown();
                 start.await();
@@ -157,7 +158,7 @@ class RedisDistributedLockTest {
 
     @Test
     void Redis에_연결할_수_없으면_작업을_실행하지_않고_LockUnavailableException() {
-        RedisDistributedLock downLock = new RedisDistributedLock(RedisTestSupport.unreachableTemplate());
+        RedisDistributedLock downLock = new RedisDistributedLock(RedisTestSupport.unreachableTemplate(), new SimpleMeterRegistry());
         AtomicInteger runs = new AtomicInteger();
 
         assertThatThrownBy(() -> downLock.executeIfAcquired(NAME, AT_MOST, Duration.ZERO, runs::incrementAndGet))

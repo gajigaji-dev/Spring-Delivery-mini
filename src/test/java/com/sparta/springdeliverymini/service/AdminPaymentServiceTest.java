@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.service;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidPaymentStatusException;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
@@ -35,6 +36,7 @@ class AdminPaymentServiceTest {
 
     @Mock private PaymentRepository paymentRepository;
     @Mock private UserRepository userRepository;
+    @Mock private OutboxEventRecorder outboxEventRecorder;
 
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 11, 7, 10, 0);
     private static final LocalDateTime DELIVERED_AT = LocalDateTime.of(2026, 11, 5, 12, 0);
@@ -44,7 +46,7 @@ class AdminPaymentServiceTest {
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
-        service = new AdminPaymentService(paymentRepository, userRepository, clock);
+        service = new AdminPaymentService(paymentRepository, userRepository, clock, outboxEventRecorder);
     }
 
     private static Payment payment(OrderStatus orderStatus) {
@@ -76,6 +78,7 @@ class AdminPaymentServiceTest {
         assertThat(response.amount()).isEqualTo(18009);
         assertThat(response.orderStatus()).isEqualTo(OrderStatus.DELIVERY_COMPLETED); // 주문 상태는 그대로
         assertThat(payment.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+        verify(outboxEventRecorder).paymentRefunded(payment); // 환불 이벤트를 같은 트랜잭션에 저장 (#42)
     }
 
     @Test
@@ -137,5 +140,6 @@ class AdminPaymentServiceTest {
 
         assertThatThrownBy(() -> service.refund(1L, "admin")).isInstanceOf(InvalidPaymentStatusException.class);
         assertThat(payment.getRefundedAt()).isEqualTo(NOW.minusDays(1)); // 처음 환불 시각 유지
+        verify(outboxEventRecorder, never()).paymentRefunded(payment); // 중복 환불 이벤트 없음
     }
 }

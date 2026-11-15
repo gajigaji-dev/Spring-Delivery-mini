@@ -7,6 +7,7 @@ import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
+import com.sparta.springdeliverymini.repository.PaymentIdempotencyKeyRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
@@ -53,6 +54,7 @@ class PaymentIdempotencyIntegrationTest {
     @Autowired private PaymentIdempotencyService paymentIdempotencyService;
     @Autowired private StringRedisTemplate redisTemplate;
     @Autowired private UserRepository userRepository;
+    @Autowired private PaymentIdempotencyKeyRepository idempotencyKeyRepository;
     @Autowired private StoreRepository storeRepository;
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
@@ -64,6 +66,7 @@ class PaymentIdempotencyIntegrationTest {
     @AfterEach
     void tearDown() {
         // FK 순서대로 삭제: payments → orders(order_items는 ON DELETE CASCADE로 함께 삭제) → menus → stores → users
+        idempotencyKeyRepository.deleteAllInBatch(); // payments·users를 참조하므로 먼저 삭제
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -239,6 +242,59 @@ class PaymentIdempotencyIntegrationTest {
         Long ttlSeconds = redisTemplate.getExpire(key);
         assertThat(ttlSeconds).isBetween(Duration.ofHours(23).toSeconds(), Duration.ofHours(24).toSeconds());
         assertThat(redisTemplate.opsForValue().get(key)).contains("\"state\":\"COMPLETED\"");
+    }
+
+    // ===== DB 멱등성 기록 (V14) — Redis 기록이 사라진 뒤의 재시도 =====
+
+    @Test
+    void Redis_기록이_사라져도_같은_키_재시도는_DB_기록으로_처음_응답을_재전송한다() throws Exception {
+        User customer = customer("customer1");
+        Order order = order(customer);
+        String first = pay(customer, order.getId(), "key-1")
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(idempotencyKeyRepository.count()).isEqualTo(1); // 결제와 함께 저장됨
+
+        // 완료 기록 TTL 만료·Redis 유실
+        redisTemplate.delete(PaymentIdempotencyService.redisKey("customer1", "key-1"));
+
+        String retry = pay(customer, order.getId(), "key-1")
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Idempotent-Replayed", "true"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(retry).isEqualTo(first);
+        assertThat(paymentRepository.count()).isEqualTo(1);
+        // 재전송하면서 Redis 완료 기록을 다시 채움 → 다음 재시도는 Redis에서 바로 응답
+        assertThat(redisTemplate.opsForValue().get(PaymentIdempotencyService.redisKey("customer1", "key-1")))
+                .contains("\"state\":\"COMPLETED\"");
+    }
+
+    @Test
+    void Redis_기록이_사라진_뒤_같은_키로_다른_주문을_결제하면_DB_기록과_비교해_422() throws Exception {
+        User customer = customer("customer1");
+        Order first = order(customer);
+        Order second = order(customer);
+        pay(customer, first.getId(), "key-1").andExpect(status().isCreated());
+        redisTemplate.delete(PaymentIdempotencyService.redisKey("customer1", "key-1"));
+
+        pay(customer, second.getId(), "key-1").andExpect(status().isUnprocessableContent());
+
+        assertThat(paymentRepository.count()).isEqualTo(1);
+        // 실패한 요청은 처리 중 기록을 지움 → 원래 요청의 재시도는 계속 재전송됨
+        pay(customer, first.getId(), "key-1")
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Idempotent-Replayed", "true"));
+    }
+
+    @Test
+    void 키_없는_결제와_실패한_결제는_멱등성_기록을_남기지_않는다() throws Exception {
+        User customer = customer("customer1");
+        Order order = order(customer);
+        pay(customer, order.getId(), null).andExpect(status().isCreated());
+        pay(customer, order.getId(), "key-1").andExpect(status().isConflict()); // 이미 결제된 주문 → 롤백
+
+        assertThat(idempotencyKeyRepository.count()).isZero();
     }
 
     // ---- 준비 ----

@@ -1,8 +1,10 @@
 package com.sparta.springdeliverymini.service;
 
+import com.sparta.springdeliverymini.repository.PaymentIdempotencyKeyRepository;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.OrderRepository;
@@ -38,6 +40,9 @@ import static org.mockito.Mockito.verify;
 class PaymentServiceTest {
 
     @Mock
+    private PaymentIdempotencyKeyRepository idempotencyKeyRepository;
+
+    @Mock
     private PaymentRepository paymentRepository;
 
     @Mock
@@ -45,6 +50,9 @@ class PaymentServiceTest {
 
     @Mock
     private UserRepository userRepository;
+
+    @Mock
+    private OutboxEventRecorder outboxEventRecorder;
 
     // 결제 시각을 고정해 paidAt이 Clock 기준으로 기록되는지 확인 (Asia/Seoul 기준 자정 직전)
     private static final LocalDateTime FIXED_NOW = LocalDateTime.of(2026, 11, 5, 23, 59, 59);
@@ -58,7 +66,8 @@ class PaymentServiceTest {
     // Clock·수수료율은 Mock이 아니라 고정 값이므로 @InjectMocks 대신 직접 생성
     @BeforeEach
     void setUp() {
-        paymentService = new PaymentService(paymentRepository, orderRepository, userRepository, fixedClock, feeProperties);
+        paymentService = new PaymentService(paymentRepository, orderRepository, userRepository, fixedClock, feeProperties,
+                outboxEventRecorder, idempotencyKeyRepository);
     }
 
     private final User customer = user(1L, "customer1", Role.CUSTOMER);
@@ -100,6 +109,7 @@ class PaymentServiceTest {
         assertThat(response.amount()).isEqualTo(36000); // 요청값이 아닌 주문 총액
         assertThat(response.paidAt()).isEqualTo(FIXED_NOW); // JVM 시간대가 아닌 Clock(Asia/Seoul) 기준
         verify(paymentRepository).saveAndFlush(any(Payment.class));
+        verify(outboxEventRecorder).paymentCompleted(any(Payment.class)); // 결제 완료 이벤트를 같은 트랜잭션에 저장 (#42)
     }
 
     @Test
@@ -180,6 +190,7 @@ class PaymentServiceTest {
                 .isInstanceOf(InvalidOrderStatusException.class)
                 .hasMessage("주문요청 상태의 주문만 결제할 수 있습니다.");
         verify(paymentRepository, never()).saveAndFlush(any());
+        verify(outboxEventRecorder, never()).paymentCompleted(any()); // 결제가 안 되면 이벤트도 없음
     }
 
     @Test
@@ -220,6 +231,52 @@ class PaymentServiceTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessage("이미 결제된 주문입니다.")
                 .extracting("status").isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    // ===== DB 멱등성 기록 (V14) =====
+
+    @Test
+    void 멱등성_키가_있으면_결제와_함께_멱등성_기록을_저장한다() {
+        Order order = order(OrderStatus.ORDER_REQUEST);
+        givenCustomerAndOrder(order);
+        given(paymentRepository.existsByOrderId(10L)).willReturn(false);
+
+        paymentService.pay(new PaymentRequest(10L, "CARD"), "customer1", "key-1", "fingerprint-1");
+
+        ArgumentCaptor<com.sparta.springdeliverymini.entity.PaymentIdempotencyKey> captor =
+                ArgumentCaptor.forClass(com.sparta.springdeliverymini.entity.PaymentIdempotencyKey.class);
+        verify(idempotencyKeyRepository).saveAndFlush(captor.capture());
+        assertThat(captor.getValue().getUser()).isSameAs(customer);
+        assertThat(captor.getValue().getIdempotencyKey()).isEqualTo("key-1");
+        assertThat(captor.getValue().getFingerprint()).isEqualTo("fingerprint-1");
+        assertThat(captor.getValue().getPayment().getAmount()).isEqualTo(36000);
+        assertThat(captor.getValue().getCreatedAt()).isEqualTo(FIXED_NOW);
+    }
+
+    @Test
+    void 멱등성_키가_없으면_멱등성_기록을_저장하지_않는다() {
+        Order order = order(OrderStatus.ORDER_REQUEST);
+        givenCustomerAndOrder(order);
+        given(paymentRepository.existsByOrderId(10L)).willReturn(false);
+
+        paymentService.pay(new PaymentRequest(10L, "CARD"), "customer1");
+
+        verify(idempotencyKeyRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void 같은_키의_멱등성_기록이_이미_있으면_409이고_이벤트를_저장하지_않는다() {
+        // 같은 키로 다른 주문을 동시에 결제해 (user_id, idempotency_key) UNIQUE를 위반한 경우 → 예외로 결제도 롤백
+        Order order = order(OrderStatus.ORDER_REQUEST);
+        givenCustomerAndOrder(order);
+        given(paymentRepository.existsByOrderId(10L)).willReturn(false);
+        given(idempotencyKeyRepository.saveAndFlush(any()))
+                .willThrow(new DataIntegrityViolationException("duplicate key"));
+
+        assertThatThrownBy(() -> paymentService.pay(new PaymentRequest(10L, "CARD"), "customer1", "key-1", "fp"))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.CONFLICT);
+        verify(outboxEventRecorder, never()).paymentCompleted(any());
     }
 
     @Test

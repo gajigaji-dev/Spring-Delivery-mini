@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.scheduler;
 
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.entity.SettlementPeriod;
@@ -17,6 +19,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.concurrent.atomic.AtomicLong;
 
 // 일 정산 자동 집계 스케줄러 (활성화는 config.SchedulingConfig)
 //
@@ -32,6 +35,10 @@ import java.time.LocalDateTime;
 //   (락은 중복 실행을 줄이는 장치이고, 정산 중복을 막는 최종 근거는 위의 DB UNIQUE)
 // - 매장 집계 실패는 실패 기록(settlement_aggregation_failures)으로 남고, 이후 실행에서 성공하면 해결 처리됨
 //   catch-up 기간을 넘긴 누락·실패분은 관리자가 재집계 (AdminSettlementService.reaggregate, #39)
+// - 메트릭 (monitoring/alerts.yml, docs/architecture.md Redis 장)
+//   settlement.scheduler.runs{result}: executed / skipped_locked / skipped_redis_unavailable
+//   settlement.scheduler.last.duration.seconds · lock.at.most.seconds: 마지막 실행 시간과 락 TTL
+//     → 실행 시간이 TTL에 가까워지는지 실측으로 확인해 lock-at-most-for를 조정
 @Slf4j
 @Component
 public class SettlementScheduler {
@@ -45,10 +52,14 @@ public class SettlementScheduler {
     private final int catchUpDays;
     private final Duration lockAtMostFor;
     private final Duration lockAtLeastFor;
+    private final MeterRegistry meterRegistry;
+    // 마지막 실행의 소요 시간(ms) — 일 1회 실행이라 Timer의 최댓값(몇 분 뒤 사라짐) 대신 마지막 값을 그대로 유지
+    private final AtomicLong lastDurationMillis = new AtomicLong();
 
     public SettlementScheduler(SettlementAggregationService settlementAggregationService,
                                Clock clock,
                                DistributedLock distributedLock,
+                               MeterRegistry meterRegistry,
                                @Value("${settlement.scheduler.catch-up-days:7}") int catchUpDays,
                                @Value("${settlement.scheduler.lock-at-most-for:30m}") Duration lockAtMostFor,
                                @Value("${settlement.scheduler.lock-at-least-for:5m}") Duration lockAtLeastFor) {
@@ -67,6 +78,21 @@ public class SettlementScheduler {
         this.catchUpDays = catchUpDays;
         this.lockAtMostFor = lockAtMostFor;
         this.lockAtLeastFor = lockAtLeastFor;
+        this.meterRegistry = meterRegistry;
+        Gauge.builder("settlement.scheduler.last.duration.seconds", lastDurationMillis, v -> v.get() / 1000.0)
+                .description("마지막 일 정산 자동 집계 소요 시간 (실행 전에는 0)")
+                .register(meterRegistry);
+        Gauge.builder("settlement.scheduler.lock.at.most.seconds", lockAtMostFor, Duration::toSeconds)
+                .description("일 정산 스케줄러 분산 락 최대 유지 시간 (settlement.scheduler.lock-at-most-for)")
+                .register(meterRegistry);
+        // 처음 건너뛰기 전에도 0으로 노출 → 알림 규칙(increase)이 첫 건너뜀부터 잡음
+        for (String result : new String[]{"executed", "skipped_locked", "skipped_redis_unavailable"}) {
+            meterRegistry.counter("settlement.scheduler.runs", "result", result);
+        }
+    }
+
+    private void countRun(String result) {
+        meterRegistry.counter("settlement.scheduler.runs", "result", result).increment();
     }
 
     @Scheduled(cron = "${settlement.scheduler.cron:0 10 1 * * *}", zone = TimeConfig.ZONE_ID)
@@ -79,10 +105,12 @@ public class SettlementScheduler {
         try {
             boolean executed = distributedLock.executeIfAcquired(
                     LOCK_NAME, lockAtMostFor, lockAtLeastFor, this::aggregateRecentDays);
+            countRun(executed ? "executed" : "skipped_locked");
             if (!executed) {
                 log.info("일 정산 자동 집계 건너뜀 — 다른 인스턴스가 실행 중이거나 방금 실행함 lock={}", LOCK_NAME);
             }
         } catch (LockUnavailableException e) {
+            countRun("skipped_redis_unavailable");
             // 락 없이 실행하면 모든 인스턴스가 함께 실행될 수 있어 건너뜀 (데이터는 DB 제약이 지키지만 실행 원칙을 우선)
             log.error("일 정산 자동 집계 건너뜀 — Redis 장애로 분산 락 확인 불가. 다음 실행에서 최근 {}일을 다시 집계함", catchUpDays, e);
         } finally {
@@ -99,6 +127,8 @@ public class SettlementScheduler {
     private void aggregateRecentDays() {
         LocalDate lastClosed = SettlementPeriod.lastConfirmedDate(LocalDateTime.now(clock));
         log.info("일 정산 자동 집계 시작 lastClosed={}, catchUpDays={}", lastClosed, catchUpDays);
+        // 경과 시간은 시스템 시계 변경에 영향받지 않는 nanoTime으로 측정 (업무 시각이 아니므로 Clock 대상 아님)
+        long startedAt = System.nanoTime();
 
         // 오래된 날짜부터 순서대로
         for (int daysAgo = catchUpDays - 1; daysAgo >= 0; daysAgo--) {
@@ -112,5 +142,10 @@ public class SettlementScheduler {
                 log.error("일 정산 집계 실패 date={}", date, e);
             }
         }
+
+        // 락 TTL 실측 근거 — 실행 시간이 lock-at-most-for의 절반을 넘으면 알림 (monitoring/alerts.yml)
+        long elapsedMillis = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
+        lastDurationMillis.set(elapsedMillis);
+        log.info("일 정산 자동 집계 종료 elapsedMs={}, lockAtMostFor={}", elapsedMillis, lockAtMostFor);
     }
 }

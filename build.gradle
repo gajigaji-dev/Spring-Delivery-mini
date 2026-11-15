@@ -27,6 +27,8 @@ dependencies {
     // Redis: 결제 멱등성 키 저장·스케줄러 분산 락 (#41). 클라이언트는 기본값 Lettuce
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    // Kafka: Transactional Outbox 이벤트 발행·알림 기록 Consumer (#42)
+    implementation 'org.springframework.boot:spring-boot-starter-kafka'
     // 관측성: 헬스체크·메트릭 엔드포인트(Actuator) + Prometheus 형식 메트릭 노출
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
@@ -45,6 +47,9 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-testcontainers'
     testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
     testImplementation 'org.testcontainers:testcontainers-postgresql'
+    testImplementation 'org.testcontainers:testcontainers-kafka'
+    // 비동기(Kafka 수신) 결과를 기다리는 검증용
+    testImplementation 'org.awaitility:awaitility'
     testCompileOnly 'org.projectlombok:lombok'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testAnnotationProcessor 'org.projectlombok:lombok'

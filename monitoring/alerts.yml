@@ -1,0 +1,88 @@
+# Prometheus 알림 규칙 — Redis·Kafka 장애를 로그가 아닌 메트릭으로 알아채기 위한 기준 (docs/architecture.md Redis 장·Kafka 장)
+# prometheus.yml의 rule_files로 읽음. Alertmanager는 붙이지 않았으므로 발생 여부는 Prometheus UI(/alerts)에서 확인
+# 임계값은 실측 전의 초기값 → 운영 데이터가 쌓이면 조정
+groups:
+  - name: redis
+    rules:
+      # 결제 멱등성·분산 락의 Redis 명령 실패 (연결 실패·타임아웃). 헬스체크를 꺼 두었으므로 이 카운터가 Redis 장애의 1차 신호
+      - alert: RedisCommandFailures
+        expr: sum by (operation) (increase(redis_failures_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis 명령 실패 ({{ $labels.operation }})"
+          description: "최근 5분간 Redis 명령이 실패함. 키 있는 결제는 503(이미 결제된 요청은 DB 기록으로 재전송), 스케줄러는 실행을 건너뜀"
+
+      # Redis 장애로 일 정산 자동 집계를 건너뜀 → 다음 실행의 catch-up(최근 7일)으로 보충되는지 확인
+      - alert: SettlementSchedulerSkippedByRedis
+        expr: increase(settlement_scheduler_runs_total{result="skipped_redis_unavailable"}[1d]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis 장애로 일 정산 자동 집계를 건너뜀"
+          description: "분산 락을 확인할 수 없어 실행하지 않음. 다음 실행에서 최근 7일을 다시 집계하며, 그보다 오래된 날짜는 관리자 재집계 필요"
+
+      # 집계 시간이 락 TTL의 절반을 넘음 → TTL(lock-at-most-for)을 늘리거나 집계를 나눠야 함 (TTL 실측 근거)
+      - alert: SettlementSchedulerNearLockTtl
+        expr: settlement_scheduler_last_duration_seconds > 0.5 * settlement_scheduler_lock_at_most_seconds
+        labels:
+          severity: warning
+        annotations:
+          summary: "일 정산 집계 시간이 분산 락 TTL의 절반을 넘음"
+          description: "마지막 실행 {{ $value }}초. 실행 중 락이 풀리면 다른 인스턴스가 함께 실행할 수 있음 (정산 중복은 DB UNIQUE가 막음)"
+
+      # 실행이 락 TTL보다 오래 걸림 (실행 중 락 만료)
+      - alert: DistributedLockOverrun
+        expr: increase(distributed_lock_overrun_total[1d]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "분산 락 유지 시간보다 오래 실행됨 ({{ $labels.lock }})"
+
+  - name: outbox
+    rules:
+      # 발행이 멈춤: 가장 오래된 PENDING 이벤트가 5분 넘게 대기 (Kafka 장애·Publisher 중단)
+      - alert: OutboxPublishDelayed
+        expr: outbox_oldest_pending_age_seconds > 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox 이벤트 발행 지연"
+          description: "가장 오래된 발행 대기 이벤트가 {{ $value }}초째 대기 중"
+
+      # 재시도 한도를 넘겨 자동 발행이 중단된 이벤트 → 원인 해결 후 관리자 재발행 (POST /api/admin/outbox-events/republish)
+      - alert: OutboxEventsFailed
+        expr: outbox_events{status="failed"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "발행 실패(FAILED) Outbox 이벤트 {{ $value }}건"
+
+      # Consumer가 처리하지 못해 DLT로 보낸 메시지
+      - alert: OutboxDeadLetters
+        expr: increase(outbox_dlt_records_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "DLT 유입 발생"
+          description: "알림 Consumer가 처리에 실패한 메시지가 delivery-events-dlt로 이동함"
+
+      # Consumer 지연 (Kafka 클라이언트 메트릭)
+      - alert: NotificationConsumerLag
+        expr: max(kafka_consumer_fetch_manager_records_lag_max) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "알림 Consumer lag {{ $value }}건"
+
+      # 재시도 한도를 넘겨 발송을 포기한 알림
+      - alert: NotificationSendFailed
+        expr: increase(notification_send_total{result="failed"}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "알림 발송 실패(FAILED) 발생"

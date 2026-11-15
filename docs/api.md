@@ -80,6 +80,7 @@
 | 주문 취소 (결제 취소 포함) | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
 | 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 매장 주문) | 204 |
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
+| 내 알림 목록 | GET | `/api/notifications?page=&size=` | O | 로그인 사용자 | 200 |
 | 정산 목록 조회 (관리자) | GET | `/api/admin/settlements?date=&status=` | O | ADMIN | 200 |
 | 정산 확정 (관리자) | PATCH | `/api/admin/settlements/{id}/confirm` | O | ADMIN | 200 |
 | 정산 지급 (관리자) | PATCH | `/api/admin/settlements/{id}/pay` | O | ADMIN | 200 |
@@ -87,6 +88,9 @@
 | 정산 재집계 (관리자) | POST | `/api/admin/settlements/reaggregate?date=&storeId=` | O | ADMIN | 200 |
 | 정산 집계 실패 기록 (관리자) | GET | `/api/admin/settlements/aggregation-failures?status=` | O | ADMIN | 200 |
 | 결제 환불 (관리자) | PATCH | `/api/admin/payments/{id}/refund` | O | ADMIN | 200 |
+| Outbox 이벤트 목록 (관리자) | GET | `/api/admin/outbox-events?status=&page=&size=` | O | ADMIN | 200 |
+| Outbox 이벤트 재발행 (관리자) | POST | `/api/admin/outbox-events/{id}/republish` | O | ADMIN | 200 |
+| Outbox FAILED 일괄 재발행 (관리자) | POST | `/api/admin/outbox-events/republish?limit=` | O | ADMIN | 200 |
 | 매장 수수료율 설정 (관리자) | PUT | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
 | 매장 수수료율 해제 (관리자) | DELETE | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
 
@@ -494,13 +498,13 @@ Idempotency-Key: 3f6c1e0a-8d2b-4c7e-9a51-2b7d0c9e4f13
 ```
 - 값: 영문·숫자·`-`·`_` 1~64자 (UUID 권장). 사용자별로 구분 → 다른 사용자의 같은 키와 섞이지 않음
 - 같은 키 + 같은 요청(`orderId`·`paymentMethod`)이 다시 오면 결제하지 않고 **처음 응답(201·본문)을 그대로** 돌려주고 `Idempotent-Replayed: true` 헤더를 붙임
-  - 보관 기간: 결제 **완료 시점부터 24시간**. 지난 뒤 같은 키로 보내면 새 요청으로 처리되어, 이미 결제된 주문이므로 409
-  - 처리 중 기록은 최대 1분 — 그 사이 같은 키 요청은 409(처리 중), 1분 안에 끝나지 않은 결제는 처음 응답을 보관하지 못해 이후 재시도는 409
+  - 보관 기간: 결제 **완료 시점부터 30일** (Redis 완료 기록 24시간 + 결제와 함께 저장한 DB 기록 30일). 지난 뒤 같은 키로 보내면 새 요청으로 처리되어, 이미 결제된 주문이므로 409
+  - 재전송하는 본문은 **결제 직후의 응답** — 그 뒤 주문이 배달완료·환불됐어도 처음 값(`PAYMENT_COMPLETED`·`COMPLETED`)이므로, 현재 상태는 주문 조회로 확인
+  - 처리 중 기록은 최대 1분 — 그 사이 같은 키 요청은 409(처리 중). 결제가 커밋된 뒤라면 처리 중 기록이 남아 있어도 DB 기록으로 처음 응답을 재전송
 - 결제가 실패한 요청(4xx·5xx)은 기록하지 않음 → 같은 키로 다시 시도 가능 (같은 이유면 같은 오류)
 - 키와 관계없이 **주문당 결제는 1건** — 다른 키로 이미 결제된 주문을 결제하면 기존처럼 409
-- 저장소(Redis)를 쓸 수 없으면 결제하지 않고 503 → 잠시 뒤 같은 키로 재시도 (키 없는 요청은 영향 없음)
-  - 결제가 이미 끝난 키라면 재시도 결과는 처음 응답(재전송) 또는 409(이미 결제됨)이고 결제가 다시 되지는 않음
-  - 409를 받은 클라이언트는 주문 조회로 결제 상태(`PAYMENT_COMPLETED`)를 확인
+- 저장소(Redis)를 쓸 수 없으면 새 결제는 하지 않고 503 → 잠시 뒤 같은 키로 재시도 (키 없는 요청은 영향 없음)
+  - 결제가 이미 끝난 키라면 Redis 장애 중에도 DB 기록으로 처음 응답을 재전송 (결제가 다시 되지는 않음)
 - TTL·장애 시 동작 상세는 [프로젝트 구조 — Redis](architecture.md#redis-41)
 
 | 코드 | 상황 |
@@ -509,9 +513,9 @@ Idempotency-Key: 3f6c1e0a-8d2b-4c7e-9a51-2b7d0c9e4f13
 | 401 | 토큰 없음 |
 | 403 | OWNER가 요청, 본인 주문이 아님 |
 | 404 | 주문 없음 |
-| 409 | 주문요청 상태가 아님 (이미 결제됨·취소됨), 중복 결제, 같은 `Idempotency-Key`의 결제가 처리 중 |
+| 409 | 주문요청 상태가 아님 (이미 결제됨·취소됨), 중복 결제, 같은 `Idempotency-Key`의 결제가 처리 중이거나 같은 키로 다른 주문이 동시에 결제됨 |
 | 422 | 같은 `Idempotency-Key`로 다른 결제 요청 (`orderId`·`paymentMethod`가 처음과 다름) |
-| 503 | `Idempotency-Key`가 있는데 Redis 장애·타임아웃 (결제하지 않음) |
+| 503 | `Idempotency-Key`가 있는데 Redis 장애·타임아웃이고, 그 키로 완료된 결제가 없음 (결제하지 않음) |
 
 ---
 
@@ -729,3 +733,85 @@ Response `200 OK` — 수수료율 응답 (`feeRate: null`, `defaultFeeRateAppli
 | 401 | 토큰 없음 |
 | 403 | ADMIN이 아님 |
 | 404 | 매장 없음 |
+
+---
+
+## 알림
+
+### 내 알림 목록 `GET /api/notifications`
+로그인한 사용자 본인이 받는 알림만 조회 (역할 무관). 결제 완료·환불은 고객과 사장님, 배달 완료는 고객에게 알림이 생김
+- 페이지 단위: `?page=0&size=20` (size 최대 100), id 오름차순. 본문은 배열, 페이지 정보는 `X-Page`·`X-Size`·`X-Has-Next` 헤더
+- 알림은 이벤트가 Kafka를 거쳐 처리된 뒤 생기므로 결제 직후에는 아직 없을 수 있음
+
+Response `200 OK`
+```json
+[
+  {
+    "id": 1,
+    "eventType": "PAYMENT_COMPLETED",
+    "orderId": 10,
+    "message": "주문 #10 결제가 완료되었습니다. (36,000원)",
+    "createdAt": "2026-11-14T12:00:01",
+    "sendStatus": "SENT",
+    "sentAt": "2026-11-14T12:00:05"
+  }
+]
+```
+- `sendStatus`: `PENDING`(발송 대기·재시도 중) / `SENT` / `FAILED`(재시도 한도 초과) / `SKIPPED`(발송 기능 도입 전 기록)
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `page`·`size` 범위 오류 |
+| 401 | 토큰 없음, 삭제된 회원 |
+
+---
+
+## 관리자 — Outbox 이벤트
+
+Kafka 발행에 계속 실패해 `FAILED`가 된 이벤트를 확인하고 다시 발행 대상으로 되돌림 ([프로젝트 구조 — Kafka](architecture.md#kafka--transactional-outbox-42))
+
+### 이벤트 목록 `GET /api/admin/outbox-events`
+- `status`: `PENDING` / `PUBLISHED` / `FAILED` (기본 `FAILED`)
+- 페이지 단위: `?page=0&size=20` (size 최대 100), id 오름차순. 페이지 정보는 응답 헤더
+
+Response `200 OK`
+```json
+[
+  {
+    "id": 12,
+    "eventId": "0b0c7c0e-3c56-4a57-9a55-7b6f0d0a2f11",
+    "eventType": "PAYMENT_COMPLETED",
+    "aggregateType": "ORDER",
+    "aggregateId": 10,
+    "status": "FAILED",
+    "attemptCount": 10,
+    "lastError": "org.apache.kafka.common.errors.TimeoutException: ...",
+    "nextAttemptAt": "2026-11-14T12:08:31",
+    "createdAt": "2026-11-14T12:00:00",
+    "publishedAt": null
+  }
+]
+```
+
+### 이벤트 재발행 `POST /api/admin/outbox-events/{id}/republish`
+`FAILED` → `PENDING`, 실패 횟수를 0으로 되돌림(마지막 실패 원인은 남김). 요청 본문 없음
+- 여기서 Kafka로 바로 보내지 않음 → 다음 발행 주기(1초)에 Publisher가 발행하고, 다시 실패하면 같은 재시도 규칙을 따름
+- 이벤트 내용·`eventId`는 그대로 → 이미 전달됐던 이벤트라면 Consumer가 중복으로 걸러 알림이 두 번 생기지 않음
+
+Response `200 OK` — 이벤트 응답 (`status: PENDING`, `attemptCount: 0`)
+
+### FAILED 일괄 재발행 `POST /api/admin/outbox-events/republish`
+`FAILED` 이벤트를 오래된 순으로 `limit`건(기본·최대 100) 재발행
+
+Response `200 OK`
+```json
+{ "republished": 3 }
+```
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `status` 값 오류, `page`·`size`·`limit` 범위 오류 |
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | 이벤트 없음 |
+| 409 | `FAILED`가 아닌 이벤트 재발행 (동시에 재발행하면 한 번만 성공) |
