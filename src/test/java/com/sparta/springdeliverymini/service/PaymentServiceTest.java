@@ -309,4 +309,76 @@ class PaymentServiceTest {
                 .isInstanceOf(ApiException.class)
                 .extracting("status").isEqualTo(HttpStatus.FORBIDDEN);
     }
+
+    // ===== 결제 단건 조회 (#53) =====
+
+    // customer의 주문(id 10)에 대한 결제 (id 100)
+    private Payment payment(Order order) {
+        Payment payment = new Payment(order, order.getTotalPrice(), new BigDecimal("0.05"), PaymentMethod.CARD, FIXED_NOW);
+        ReflectionTestUtils.setField(payment, "id", 100L);
+        return payment;
+    }
+
+    @Test
+    void 본인_결제를_조회하면_현재_결제_상태와_금액을_돌려준다() {
+        Order order = order(OrderStatus.ORDER_REQUEST);
+        order.pay();
+        Payment payment = payment(order);
+        payment.cancel(FIXED_NOW.plusMinutes(5)); // 결제 직후가 아닌 현재 상태를 돌려주는지 확인
+        order.cancel();
+        given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
+        given(paymentRepository.findWithOrderById(100L)).willReturn(Optional.of(payment));
+
+        PaymentResponse response = paymentService.getPayment(100L, "customer1");
+
+        assertThat(response.id()).isEqualTo(100L);
+        assertThat(response.orderId()).isEqualTo(10L);
+        assertThat(response.amount()).isEqualTo(36000);
+        assertThat(response.paymentMethod()).isEqualTo(PaymentMethod.CARD);
+        assertThat(response.paidAt()).isEqualTo(FIXED_NOW);
+        assertThat(response.status()).isEqualTo(PaymentStatus.CANCELLED);
+        assertThat(response.cancelledAt()).isEqualTo(FIXED_NOW.plusMinutes(5));
+        assertThat(response.orderStatus()).isEqualTo(OrderStatus.ORDER_CANCELLED);
+    }
+
+    @Test
+    void 없는_결제를_조회하면_404() {
+        given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
+        given(paymentRepository.findWithOrderById(999L)).willReturn(Optional.empty());
+
+        assertThatThrownBy(() -> paymentService.getPayment(999L, "customer1"))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void 다른_CUSTOMER의_결제를_조회하면_403() {
+        Order order = order(OrderStatus.PAYMENT_COMPLETED);
+        given(userRepository.findByUsername("customer2")).willReturn(Optional.of(otherCustomer));
+        given(paymentRepository.findWithOrderById(100L)).willReturn(Optional.of(payment(order)));
+
+        assertThatThrownBy(() -> paymentService.getPayment(100L, "customer2"))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    @Test
+    void OWNER는_서비스에서도_결제_조회가_막힌다() {
+        given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
+
+        assertThatThrownBy(() -> paymentService.getPayment(100L, "owner1"))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.FORBIDDEN);
+        // 역할 확인에서 끝나야 함 — 결제 존재 여부를 드러내지 않음
+        verify(paymentRepository, never()).findWithOrderById(any());
+    }
+
+    @Test
+    void 삭제된_회원이_결제를_조회하면_401() {
+        given(userRepository.findByUsername("ghost")).willReturn(Optional.empty());
+
+        assertThatThrownBy(() -> paymentService.getPayment(100L, "ghost"))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
 }
