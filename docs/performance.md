@@ -64,6 +64,7 @@ DB_USERNAME=perf DB_PASSWORD=perf JWT_SECRET=... java -Xmx1g -jar build/libs/Spr
 docker exec -i delivery-perf-db psql -U perf -d delivery -v ON_ERROR_STOP=1 < perf/seed.sql
 
 # 4. 측정 — TARGET: stores | menus | orders-customer | orders-owner | store-orders
+# keyset(#54)은 QUERY="?afterId=299106&size=20"처럼 지정 (afterId 산출은 9장)
 TARGET=orders-customer BASE_URL=http://localhost:18080 k6 run --quiet perf/k6/list-api.js
 TARGET=store-orders QUERY="?page=74&size=20" BASE_URL=http://localhost:18080 k6 run --quiet perf/k6/list-api.js
 ```
@@ -146,8 +147,8 @@ TARGET=store-orders QUERY="?page=74&size=20" BASE_URL=http://localhost:18080 k6 
 
 | 항목 | 내용 | 방향 |
 |---|---|---|
-| 점주 전체 주문의 뒤쪽 페이지 | 마지막 페이지 평균 538ms. 쿼리 1번이 68ms(7,969 버퍼, 병렬 워커 2개)인데 주문 전체를 id 순서로 읽으며 본인 매장만 걸러냄 → 주문 테이블 크기에 비례, 동시 요청이 몰리면 CPU 경합 | 첫 페이지는 6ms라 일반적인 사용에는 문제없음. 매장별 주문(`/api/stores/{id}/orders`)으로 유도하거나 아래 keyset 방식 |
-| OFFSET 페이징 공통 | 뒤쪽 페이지일수록 건너뛸 행을 읽고 버림 (매장별 마지막 페이지 1,508 버퍼 vs 첫 페이지 24). 지금 규모에서는 응답 시간 차이가 거의 없음 | `?afterId=` 방식(keyset)으로 바꾸면 페이지 위치와 무관하게 일정. 요청 형식이 바뀌므로 이번 범위에서는 제외 |
+| 점주 전체 주문의 뒤쪽 페이지 | 마지막 페이지 평균 538ms. 쿼리 1번이 68ms(7,969 버퍼, 병렬 워커 2개)인데 주문 전체를 id 순서로 읽으며 본인 매장만 걸러냄 → 주문 테이블 크기에 비례, 동시 요청이 몰리면 CPU 경합 | **#54에서 해결**: `?afterId=` keyset 페이징 추가 → 마지막 페이지 17.6ms (9장) |
+| OFFSET 페이징 공통 | 뒤쪽 페이지일수록 건너뛸 행을 읽고 버림 (매장별 마지막 페이지 1,508 버퍼 vs 첫 페이지 24). 지금 규모에서는 응답 시간 차이가 거의 없음 | 고객·매장별 주문·매장·메뉴 목록은 차이가 작아 OFFSET 유지. keyset은 병목이 확인된 주문 목록에만 적용(#54, 고객도 같은 API라 함께 지원) |
 | 요청마다 회원 조회 | 인증이 필요한 목록은 `findByUsername` 1번이 항상 추가됨 (DB 기준 역할 재확인 규칙) | `username` UNIQUE 인덱스로 1행만 읽는 조회라 유지. 캐시는 도입하지 않음 |
 | 정산 목록 | 페이징 없음. 관리자 날짜별 목록은 매장 수만큼, 사장님 목록은 최대 31건 | 매장 수가 크게 늘면 같은 방식(`PageQuery`)으로 적용 |
 
@@ -184,3 +185,74 @@ TARGET=store-orders QUERY="?page=74&size=20" BASE_URL=http://localhost:18080 k6 
 
 - 쿼리 수는 Hibernate `Statistics.getPrepareStatementCount()`로 실제 PostgreSQL에서 측정
 - 나머지 테스트(결제·정산·환불·수수료 등)는 수정 없이 통과 → 기존 비즈니스 로직에 영향 없음
+
+## 9. 점주 전체 주문 keyset 페이징 (#54)
+
+6장의 남은 병목(점주 전체 주문 마지막 페이지 538ms)을 해결하기 위해 주문 목록에 keyset 페이징을 추가함.
+
+### 변경 내용
+
+| 항목 | 내용 |
+|---|---|
+| 요청 | `GET /api/orders?afterId={마지막으로 받은 주문 id}&size=20` (`dto.KeysetQuery`, `afterId` 0 이상·`size` 1~100, `page`와 함께 보내면 400) |
+| 쿼리 | `WHERE s.owner_id = ? AND o.id > ? ORDER BY o.id LIMIT size + 1` (`OrderRepository.findAllByStoreOwnerIdAndIdGreaterThan`), 고객은 `(user_id, id)` 인덱스 범위만 읽음 |
+| 응답 | 본문은 기존과 같은 배열. 헤더 `X-Size`·`X-Has-Next`·`X-Next-After-Id`(다음 페이지가 있을 때만) — `X-Page`는 보내지 않음 |
+| 호환성 | `?page=` 방식은 그대로 유지, 응답에 `X-Next-After-Id`만 추가 → 기존 클라이언트는 변경 없이 동작하고 원하면 keyset으로 이어갈 수 있음 |
+| 조회 조건·정렬 | 대상(고객 본인 주문 / 점주 본인 모든 매장 주문)·권한·id 오름차순 정렬은 기존과 같음, 쿼리 수 3번(N+1 없음)도 같음 |
+| 인덱스 | 추가하지 않음 — 주문 PK를 `afterId` 다음부터 읽고 첫 21건에서 멈추므로 기존 인덱스로 충분 (아래 EXPLAIN) |
+
+중복·누락이 없는 이유: 정렬 기준 id가 고유하고 매번 "마지막으로 받은 id보다 큰 것"만 조회하므로 페이지 경계에 같은 행이 두 번 오거나 빠지지 않음. OFFSET과 달리 넘기는 중 새 주문이 들어와도(새 id는 항상 더 큼) 앞 페이지 행이 밀려 다시 나오지 않고 마지막에 이어짐.
+
+### DB 측정 (EXPLAIN ANALYZE, 같은 데이터)
+
+점주(`perf_owner`, 주문 7,500건) — 중간은 3,741번째, 마지막은 7,481번째 주문부터 21건 조회. 각 6회 실행 범위
+
+| 요청 | 계획 | 읽은 버퍼 | 실행 시간 |
+|---|---|---|---|
+| OFFSET 첫 페이지 (`OFFSET 0`) | 주문 PK 순서로 읽으며 매장 join | 419 | 0.6ms |
+| OFFSET 중간 (`OFFSET 3740`) | 점주 주문 전체를 읽고 정렬(Gather Merge + Sort) | 5,198 | 26.3 ~ 30.8ms |
+| OFFSET 마지막 (`OFFSET 7480`) | 같음 | 5,198 | 27.2 ~ 29.4ms |
+| keyset 중간 (`id > 149456`) | 주문 PK를 afterId 다음부터 읽다가 21건에서 멈춤 | 427 | 0.7ms |
+| keyset 마지막 (`id > 299106`) | 남은 주문만 읽음 | 30 | 0.4ms |
+
+- OFFSET은 뒤쪽 페이지일수록 앞의 행을 모두 읽고 버리므로 점주 주문 수에 비례, keyset은 위치와 무관하게 첫 페이지 수준
+- 6장 수치(68ms, 7,969 버퍼)와 차이는 실행 계획 선택 차이(이번 측정은 새로 만든 DB + `ANALYZE` 직후). 결론(뒤쪽 페이지 = 전체 스캔)은 같음
+
+afterId 산출 (OFFSET 페이지와 같은 위치 비교용)
+
+```sql
+SELECT id FROM (SELECT o.id, row_number() OVER (ORDER BY o.id) rn
+                FROM orders o JOIN stores s ON s.id = o.store_id WHERE s.owner_id = 1001) t
+WHERE rn IN (3740, 7480);   -- 149456, 299106
+```
+
+### 부하 측정 (k6, 동시 사용자 20명 · 워밍업 10초 후 30초)
+
+| 위치 | 방식 | 평균 | p95 | 처리량 | 오류율 |
+|---|---|---|---|---|---|
+| 첫 페이지 | OFFSET `?page=0` | 18.9ms | 30.1ms | 1,034 req/s | 0% |
+| | keyset `?afterId=0` | 18.0ms | 26.7ms | 1,087 req/s | 0% |
+| 중간 (3,741번째~) | OFFSET `?page=187` | 215.7ms | 273.1ms | 92 req/s | 0% |
+| | keyset `?afterId=149456` | **19.3ms** | **29.2ms** | **1,015 req/s** | 0% |
+| 마지막 (7,481번째~) | OFFSET `?page=374` | 426.2ms | 538.7ms | 47 req/s | 0% |
+| | keyset `?afterId=299106` | **17.6ms** | **24.3ms** | **1,111 req/s** | 0% |
+
+- 마지막 페이지: 평균 1/24, 처리량 24배. keyset은 첫·중간·마지막 페이지 응답 시간이 거의 같음
+- 첫 페이지는 두 방식이 같은 계획이라 차이 없음 (오차 범위)
+- 환경은 3장과 같음(같은 노트북·seed·k6 v1.3.0, 커밋 전 작업 트리로 빌드한 jar). 이번 OFFSET 마지막 페이지(426ms)와 5장(538ms)의 차이는 실행마다의 편차·계획 차이 — 비교는 같은 실행 안의 OFFSET·keyset끼리만 의미 있음 (7장)
+
+### 한계
+
+- 임의 페이지로 바로 이동(예: 50페이지)은 keyset으로 할 수 없음 → 필요하면 기존 `?page=` 사용
+- 정렬 기준이 id 하나라 가능한 방식. 다른 정렬(예: 상태별·금액순)을 추가하면 `(정렬 컬럼, id)` 복합 조건과 인덱스가 필요
+- 특정 점주의 주문이 전체 중 아주 적으면(예: 0.1%) 주문 PK를 읽으며 걸러내는 행이 늘어남 → 그때는 `(store_id, id)` 인덱스를 매장별로 읽어 합치는 방식 검토. 지금 분포(점주당 2.5%)에서는 페이지당 약 400 버퍼
+
+### 테스트
+
+`./gradlew test` (2026-11-15) — 전체 73개 클래스 · **637건 통과** (실패 0, 오류 0, 건너뜀 0)
+
+| 테스트 | 건수 | 확인한 내용 |
+|---|---|---|
+| `StoreOrderIntegrationTest` | 14 (4건 추가) | 점주 keyset으로 끝까지 넘기면 OFFSET과 같은 순서·내용으로 중복·누락 없음(다른 점주 주문이 사이에 섞인 상태), 경계(`afterId=0`=첫 페이지, 마지막 id 다음은 빈 결과, 다른 점주 주문 id를 afterId로 줘도 그 다음 본인 주문부터, 정확히 size건 남으면 `hasNext=false`), 넘기는 중 새 주문이 들어와도 이미 받은 주문이 다시 나오지 않고 뒤에 이어짐, 고객 keyset은 본인 주문만·고객·점주 모두 쿼리 3번 |
+| `OrderListPagingTest` (신규) | 8 | 파라미터 없으면 기존처럼 배열 + `X-Page`·`X-Size`·`X-Has-Next` + `X-Next-After-Id`, keyset 응답은 `X-Page` 없음, 마지막·빈 페이지는 `X-Next-After-Id` 없음, `page`+`afterId` 400, `afterId=-1`·`abc`·`size=0`·`101` 400, 토큰 없으면 401 |
+| `OrderServiceTest` | 35 (2건 추가) | keyset은 OFFSET 0 + id 오름차순 `Pageable`로 조회, 고객은 본인 주문 쿼리·ADMIN은 빈 목록 |

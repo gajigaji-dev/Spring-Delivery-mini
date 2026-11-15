@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.dto.OrderCreateRequest;
 import com.sparta.springdeliverymini.dto.OrderItemRequest;
 import com.sparta.springdeliverymini.dto.OrderResponse;
+import com.sparta.springdeliverymini.dto.KeysetQuery;
 import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.event.OutboxEventRecorder;
@@ -63,6 +64,32 @@ public class OrderService {
         // 3. OWNER는 본인의 모든 매장에 들어온 주문만 조회
         if (currentUser.getRole() == Role.OWNER) {
             return orderRepository.findAllByStoreOwnerId(currentUser.getId(), pageQuery.toPageable())
+                    .map(OrderResponse::from);
+        }
+
+        return new SliceImpl<>(List.of());
+    }
+
+    // 주문 목록 조회 — keyset 페이징 (#54, ?afterId=)
+    // 조회 대상·권한·정렬(id 오름차순)은 getOrders와 같고, 위치만 OFFSET 대신 마지막으로 받은 id로 지정
+    public Slice<OrderResponse> getOrdersAfter(String username, KeysetQuery keysetQuery) {
+        User currentUser = userRepository.findByUsername(username)
+                .orElseThrow(() ->
+                        new ApiException(
+                                HttpStatus.UNAUTHORIZED,
+                                "존재하지 않는 회원입니다."
+                        )
+                );
+
+        if (currentUser.getRole() == Role.CUSTOMER) {
+            return orderRepository.findAllByUserIdAndIdGreaterThan(
+                            currentUser.getId(), keysetQuery.afterId(), keysetQuery.toPageable())
+                    .map(OrderResponse::from);
+        }
+
+        if (currentUser.getRole() == Role.OWNER) {
+            return orderRepository.findAllByStoreOwnerIdAndIdGreaterThan(
+                            currentUser.getId(), keysetQuery.afterId(), keysetQuery.toPageable())
                     .map(OrderResponse::from);
         }
 

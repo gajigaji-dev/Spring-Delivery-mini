@@ -26,6 +26,16 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     @EntityGraph(attributePaths = "store")
     Slice<Order> findAllByStoreOwnerId(Long ownerId, Pageable pageable);
 
+    // keyset 페이징 (#54) — ?afterId= 이후의 주문만 id 오름차순으로 조회 (Pageable은 첫 페이지 + 크기 + id 정렬만 사용)
+    // OFFSET처럼 앞 페이지의 행을 읽고 버리지 않으므로 몇 번째 페이지든 응답 시간이 일정 (docs/performance.md 9장)
+    // 점주: 주문 PK를 afterId 다음부터 읽으며 본인 매장 주문만 걸러냄 → 읽는 행 수가 페이지 위치와 무관
+    @EntityGraph(attributePaths = "store")
+    Slice<Order> findAllByStoreOwnerIdAndIdGreaterThan(Long ownerId, Long afterId, Pageable pageable);
+
+    // 고객: 인덱스 idx_orders_user_id_id (V12)의 (user_id, id > afterId) 범위만 읽음
+    @EntityGraph(attributePaths = "store")
+    Slice<Order> findAllByUserIdAndIdGreaterThan(Long userId, Long afterId, Pageable pageable);
+
     // 특정 매장에 들어온 주문 조회 (소유권 검증은 Service에서 먼저 처리)
     // 매장은 소유권 검증 때 이미 조회되어 있으므로 함께 조회하지 않음 — 인덱스 idx_orders_store_id_id (V12)
     Slice<Order> findAllByStoreId(Long storeId, Pageable pageable);

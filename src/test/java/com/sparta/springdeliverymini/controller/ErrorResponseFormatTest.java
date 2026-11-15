@@ -13,6 +13,9 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.QueryTimeoutException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -23,6 +26,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -119,6 +123,29 @@ class ErrorResponseFormatTest {
                 .contains("java.lang.IllegalStateException: 내부 구현 상세 메시지");
         // 요청 로그도 같은 traceId로 남음 (요청 → 예외 로그 연결)
         assertThat(output).contains("HTTP PATCH " + REFUND_URL + " status=500");
+    }
+
+    // 잠금 대기 초과(lock_timeout)·문장 실행 초과(statement_timeout)·커넥션 풀 고갈 → 500이 아니라 재시도 가능한 503
+    @Test
+    void DB_잠금_대기_초과와_커넥션_부족은_503_공통_형식으로_응답한다() throws Exception {
+        RuntimeException[] failures = {
+                new CannotAcquireLockException("could not obtain lock on row in relation \"stores\""),
+                new QueryTimeoutException("canceling statement due to statement timeout"),
+                new CannotCreateTransactionException("Could not open JPA EntityManager for transaction")
+        };
+        for (RuntimeException failure : failures) {
+            // 앞 반복에서 이미 예외를 던지도록 지정돼 있으므로 호출 없이 다시 지정 (willThrow().given() 형식)
+            willThrow(failure).given(adminPaymentService).refund(anyLong(), anyString());
+
+            MvcResult result = mockMvc.perform(patch(REFUND_URL).header(HttpHeaders.AUTHORIZATION, adminBearer()))
+                    .andExpect(status().isServiceUnavailable())
+                    .andExpect(jsonPath("$.status").value(503))
+                    .andExpect(jsonPath("$.message").value("일시적으로 요청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요."))
+                    .andExpect(jsonPath("$.traceId").isNotEmpty())
+                    .andReturn();
+            // DB 오류 메시지(테이블 이름 등)는 응답에 노출하지 않음
+            assertThat(result.getResponse().getContentAsString()).doesNotContain("stores").doesNotContain("statement");
+        }
     }
 
     @Test
