@@ -1,16 +1,22 @@
 package com.sparta.springdeliverymini.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.dto.OrderCreateRequest;
 import com.sparta.springdeliverymini.dto.OrderItemRequest;
 import com.sparta.springdeliverymini.dto.OrderResponse;
+import com.sparta.springdeliverymini.dto.KeysetQuery;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
+import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.SliceImpl;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,6 +30,7 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @Transactional(readOnly = true)
 @RequiredArgsConstructor // final 필드를 받는 생성자 자동 생성 (생성자 주입)
@@ -35,8 +42,10 @@ public class OrderService {
     private final StoreService storeService;
     private final PaymentRepository paymentRepository;
     private final Clock clock; // 배달완료·결제 취소 시각 기준 (config.TimeConfig, Asia/Seoul)
+    private final OutboxEventRecorder outboxEventRecorder; // 배달완료 이벤트 (#42)
 
-    public List<OrderResponse> getOrders(String username) {
+    // 주문 목록 조회 — 페이지 단위, id 오름차순 (#40)
+    public Slice<OrderResponse> getOrders(String username, PageQuery pageQuery) {
         // 1. 현재 로그인한 사용자 찾기
         User currentUser = userRepository.findByUsername(username)
                 .orElseThrow(() ->
@@ -48,25 +57,47 @@ public class OrderService {
 
         // 2. CUSTOMER는 본인의 주문만 조회
         if (currentUser.getRole() == Role.CUSTOMER) {
-            return orderRepository.findAllByUserId(currentUser.getId())
-                    .stream()
-                    .map(OrderResponse::from)
-                    .toList();
+            return orderRepository.findAllByUserId(currentUser.getId(), pageQuery.toPageable())
+                    .map(OrderResponse::from);
         }
 
         // 3. OWNER는 본인의 모든 매장에 들어온 주문만 조회
         if (currentUser.getRole() == Role.OWNER) {
-            return orderRepository.findAllByStoreOwnerId(currentUser.getId())
-                    .stream()
-                    .map(OrderResponse::from)
-                    .toList();
+            return orderRepository.findAllByStoreOwnerId(currentUser.getId(), pageQuery.toPageable())
+                    .map(OrderResponse::from);
         }
 
-        return List.of();
+        return new SliceImpl<>(List.of());
+    }
+
+    // 주문 목록 조회 — keyset 페이징 (#54, ?afterId=)
+    // 조회 대상·권한·정렬(id 오름차순)은 getOrders와 같고, 위치만 OFFSET 대신 마지막으로 받은 id로 지정
+    public Slice<OrderResponse> getOrdersAfter(String username, KeysetQuery keysetQuery) {
+        User currentUser = userRepository.findByUsername(username)
+                .orElseThrow(() ->
+                        new ApiException(
+                                HttpStatus.UNAUTHORIZED,
+                                "존재하지 않는 회원입니다."
+                        )
+                );
+
+        if (currentUser.getRole() == Role.CUSTOMER) {
+            return orderRepository.findAllByUserIdAndIdGreaterThan(
+                            currentUser.getId(), keysetQuery.afterId(), keysetQuery.toPageable())
+                    .map(OrderResponse::from);
+        }
+
+        if (currentUser.getRole() == Role.OWNER) {
+            return orderRepository.findAllByStoreOwnerIdAndIdGreaterThan(
+                            currentUser.getId(), keysetQuery.afterId(), keysetQuery.toPageable())
+                    .map(OrderResponse::from);
+        }
+
+        return new SliceImpl<>(List.of());
     }
 
     // 매장별 주문 조회 — 본인 매장의 주문만 조회 가능
-    public List<OrderResponse> getStoreOrders(Long storeId, String username) {
+    public Slice<OrderResponse> getStoreOrders(Long storeId, String username, PageQuery pageQuery) {
         // 1. 현재 로그인한 사용자 찾기
         // 토큰은 유효하지만 그 사이 회원이 삭제된 경우 → 401
         User currentUser = userRepository.findByUsername(username)
@@ -80,11 +111,9 @@ public class OrderService {
         // 3. 매장 소유권 확인 — 매장이 없으면 404, 다른 OWNER의 매장이면 403
         Store store = storeService.getOwnedStore(storeId, currentUser);
 
-        // 4. 해당 매장에 들어온 주문 조회
-        return orderRepository.findAllByStoreId(store.getId())
-                .stream()
-                .map(OrderResponse::from)
-                .toList();
+        // 4. 해당 매장에 들어온 주문 조회 (페이지 단위, id 오름차순)
+        return orderRepository.findAllByStoreId(store.getId(), pageQuery.toPageable())
+                .map(OrderResponse::from);
     }
 
     @Transactional
@@ -187,7 +216,11 @@ public class OrderService {
         if (paid) {
             Payment payment = paymentRepository.findByOrderId(order.getId())
                     .orElseThrow(() -> new IllegalStateException("결제완료 주문에 결제 내역이 없습니다: " + order.getId()));
+            PaymentStatus before = payment.getStatus();
             payment.cancel(LocalDateTime.now(clock));
+            // 결제 취소 상태 변경 로그 — 식별자·금액·상태만 기록 (회원 아이디 등 개인정보는 남기지 않음)
+            log.info("결제 취소 paymentId={}, orderId={}, amount={}, status={}->{}",
+                    payment.getId(), order.getId(), payment.getAmount(), before, payment.getStatus());
         }
     }
 
@@ -239,7 +272,11 @@ public class OrderService {
         // 현재 상태에서 허용되는지는 Order가 확인 (예: 결제 전 주문 수락, 배달완료 주문 변경 → 409)
         switch (newStatus) {
             case ORDER_ACCEPTED -> order.accept();         // PAYMENT_COMPLETED → ORDER_ACCEPTED
-            case DELIVERY_COMPLETED -> order.complete(LocalDateTime.now(clock)); // ORDER_ACCEPTED → DELIVERY_COMPLETED, 배달완료 시각 기록
+            case DELIVERY_COMPLETED -> {
+                order.complete(LocalDateTime.now(clock)); // ORDER_ACCEPTED → DELIVERY_COMPLETED, 배달완료 시각 기록
+                // 배달완료 이벤트를 같은 트랜잭션에 저장 (Transactional Outbox, #42) — 상태 전이가 성공한 뒤에만
+                outboxEventRecorder.deliveryCompleted(order);
+            }
             // OWNER가 요청할 수 없는 상태(주문요청·주문취소·결제완료) → 409
             default -> throw new InvalidOrderStatusException("허용되지 않는 주문 상태 변경입니다.");
         }

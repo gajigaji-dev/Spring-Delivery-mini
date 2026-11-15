@@ -1,0 +1,28 @@
+# dlt-reprocess 프로필 — DLT 재처리 CLI (#52, event.DltReprocessRunner, docs/architecture.md Kafka 장)
+# 실행 환경 프로필과 함께 켬: --spring.profiles.active=local,dlt-reprocess (docker-compose는 dev,dlt-reprocess)
+# 재처리만 하고 종료하도록 HTTP 포트·알림 Consumer·주기 작업을 모두 끔 (운영 중인 서버의 처리와 섞이지 않도록)
+# web-application-type: none 대신 포트 -1: 웹 컨텍스트는 그대로 만들어 보안 설정 등 웹 빈을 바꾸지 않고, 포트만 열지 않음
+server:
+  port: -1
+management:
+  server:
+    port: -1
+
+spring:
+  kafka:
+    admin:
+      auto-create: false
+    listener:
+      auto-startup: false
+
+settlement:
+  scheduler:
+    enabled: false
+outbox:
+  publisher:
+    enabled: false
+notification:
+  dispatcher:
+    enabled: false
+retention:
+  enabled: false

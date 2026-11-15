@@ -4,17 +4,17 @@ import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.MenuCreateRequest;
 import com.sparta.springdeliverymini.dto.MenuResponse;
 import com.sparta.springdeliverymini.dto.MenuUpdateRequest;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.Menu;
 import com.sparta.springdeliverymini.entity.Store;
 import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
+import org.springframework.data.domain.Slice;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
-import java.util.List;
 
 @Service
 @Transactional(readOnly = true)
@@ -54,14 +54,12 @@ public class MenuService {
         return MenuResponse.from(menuRepository.save(menu));
     }
 
-    public List<MenuResponse> getMenus() {
+    public Slice<MenuResponse> getMenus(PageQuery pageQuery) {
 
-        // 삭제되지 않은 메뉴만 조회
+        // 삭제되지 않은 메뉴만 조회 — 페이지 단위, id 오름차순 (#40)
         // deleted = true인 메뉴는 목록에서 제외
-        return menuRepository.findAllByDeletedFalse()
-                .stream()
-                .map(MenuResponse::from)
-                .toList();
+        return menuRepository.findAllByDeletedFalse(pageQuery.toPageable())
+                .map(MenuResponse::from);
     }
 
     public MenuResponse getMenu(Long id) {

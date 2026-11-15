@@ -1,0 +1,32 @@
+# test 프로필 — ./gradlew test에서 자동 활성화 (build.gradle의 test 설정)
+# 테스트 전용 설정이라 main jar에는 포함되지 않음
+# DB는 TestcontainersConfiguration(@ServiceConnection)이 연결하므로 datasource URL을 두지 않음
+
+# 테스트 전용 JWT 키 (Base64, 256비트 이상). 테스트에서 토큰을 만들고 검증하는 데만 쓰이며 운영에 사용 금지
+# 통합 테스트는 같은 테스트 안에서 스케줄러를 여러 번 호출함 → 최소 유지 시간 없이 끝나면 바로 락 해제
+# (최소 유지 시간 동작은 RedisDistributedLockTest에서 따로 검증)
+settlement:
+  scheduler:
+    lock-at-least-for: 0s
+
+# Kafka(#42)는 Kafka 통합 테스트(KafkaTestcontainersConfiguration을 쓰는 클래스)에서만 켬
+# 나머지 테스트는 Kafka 컨테이너 없이 실행 → 기동 시 토픽 생성·Consumer 접속·주기 발행을 끔 (결제 등에서 이벤트 저장은 그대로)
+spring:
+  kafka:
+    admin:
+      auto-create: false
+    listener:
+      auto-startup: false
+outbox:
+  publisher:
+    enabled: false
+
+# 알림 발송·보관 기간 정리의 주기 실행을 끔 → 테스트가 직접 호출해 결과를 확인 (백그라운드 실행과 섞이지 않도록)
+notification:
+  dispatcher:
+    enabled: false
+retention:
+  enabled: false
+
+jwt:
+  secret: dGVzdC1vbmx5LXNlY3JldC1rZXktZm9yLXNwcmluZy1kZWxpdmVyeS1taW5pLWp3dC0yNTZiaXQ=

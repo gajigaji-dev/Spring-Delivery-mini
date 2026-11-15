@@ -57,6 +57,8 @@ class SettlementAggregationIntegrationTest {
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
     @Autowired private SettlementRepository settlementRepository;
+    @Autowired private SettlementStatusHistoryRepository settlementStatusHistoryRepository;
+    @Autowired private SettlementAggregationFailureRepository settlementAggregationFailureRepository;
     @Autowired private JdbcTemplate jdbc;
 
     private StoreResponse chickenStore;
@@ -78,6 +80,9 @@ class SettlementAggregationIntegrationTest {
     @AfterEach
     void tearDown() {
         // FK 순서대로 삭제: settlements → payments → orders(order_items는 CASCADE) → menus → stores → users
+        // 정산을 참조하는 감사 이력·실패 기록(V11)을 먼저 삭제
+        settlementStatusHistoryRepository.deleteAllInBatch();
+        settlementAggregationFailureRepository.deleteAllInBatch();
         settlementRepository.deleteAllInBatch();
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();

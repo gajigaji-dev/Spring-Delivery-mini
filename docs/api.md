@@ -8,10 +8,40 @@
   ```
   Authorization: Bearer {accessToken}
   ```
-- 에러 응답은 모두 같은 형식
+- 에러 응답은 모두 같은 형식 (`exception.ApiErrorResponse`, Security의 401/403과 Spring MVC 표준 404/405 포함)
   ```json
-  { "message": "에러 메시지" }
+  {
+    "status": 409,
+    "error": "Conflict",
+    "message": "에러 메시지",
+    "path": "/api/admin/payments/1/refund",
+    "traceId": "5af890963e74404eb8ac559bfc252067"
+  }
   ```
+  - `message`는 기존과 같은 필드·문구 (기존 클라이언트는 그대로 동작), 나머지 필드는 #38에서 추가
+  - 500은 내부 예외 메시지를 숨기고 공통 문구로 응답 → `traceId`로 서버 로그 확인
+  - 503(모든 API 공통): DB가 제때 응답하지 못함 — 행 잠금 대기 초과(5초)·문장 실행 초과(30초)·커넥션 부족. 요청은 반영되지 않았으므로 잠시 후 다시 시도 ([운영 프로필 6장](operations.md))
+- 추적 헤더 `X-Trace-Id`
+  - 모든 응답에 포함. 요청에 `X-Trace-Id`(영문·숫자·하이픈 8~64자)를 보내면 그 값을 그대로 사용, 없거나 형식이 다르면 서버가 생성
+  - 같은 값이 에러 응답 `traceId`, 서버 로그 각 줄의 `[traceId]`에 들어감
+- API 문서(Swagger UI): local·dev 프로필에서 `/swagger-ui.html`, 명세 `/v3/api-docs` (기본 설정·prod 프로필은 비활성 → 404, [운영 설정](operations.md))
+  - Authorize 버튼에 로그인 응답의 `accessToken`을 넣으면 Bearer 헤더가 자동으로 붙음
+- 목록 페이지네이션 (#40) — 매장·메뉴·주문·매장별 주문 목록 공통
+  - 요청: `?page=0&size=20` (`page` 0부터, `size` 기본 20 · 최대 100). 범위를 벗어나거나 숫자가 아니면 400
+  - 응답 본문은 JSON 배열 그대로이고, 페이지 정보는 응답 헤더로 전달
+
+    | 헤더 | 내용 |
+    |---|---|
+    | `X-Page` | 현재 페이지 번호 |
+    | `X-Size` | 요청한 페이지 크기 |
+    | `X-Has-Next` | 다음 페이지가 있으면 `true` (전체 개수는 제공하지 않음) |
+  - 정렬은 id 오름차순(등록순) 고정. 범위를 넘은 페이지는 빈 배열 `[]`
+  - 파라미터 없이 호출하면 첫 20건만 응답 (이전에는 전체) — 배경·측정 결과는 [성능 개선](performance.md)
+- keyset 페이징 (#54) — 주문 목록(`GET /api/orders`)만 추가 지원, `page` 방식도 그대로 사용 가능
+  - 요청: `?afterId={마지막으로 받은 주문 id}&size=20` (`afterId` 0 이상, 0이면 처음부터). `page`와 함께 보내면 400
+  - 응답 헤더: `X-Size`, `X-Has-Next`, `X-Next-After-Id`(다음 페이지가 있을 때만, 다음 요청의 `afterId` 값). 페이지 번호가 없으므로 `X-Page`는 보내지 않음
+  - `page` 방식 응답에도 `X-Next-After-Id`가 붙음 → 첫 페이지를 파라미터 없이 받고 이어서 keyset으로 넘길 수 있음
+  - 뒤쪽 페이지도 응답 시간이 일정하고, 넘기는 중 새 주문이 들어와도 이미 받은 주문이 다시 나오지 않음 — 측정 결과는 [성능 개선](performance.md) 9장
 - 공통 에러 코드
 
   | 코드 | 상황 |
@@ -21,6 +51,16 @@
   | 403 | 권한 없음 (역할이 다르거나 본인 데이터가 아님) |
   | 404 | 대상(매장·메뉴·주문·정산)이 없음 |
   | 409 | 중복(아이디, 결제) 또는 현재 상태에서 할 수 없는 요청 (주문·정산 상태 전이) |
+  | 405 | 지원하지 않는 HTTP 메서드 (`Allow` 헤더 포함) |
+  | 500 | 예상하지 못한 서버 오류 (`traceId`로 로그 확인) |
+
+- 운영 엔드포인트 (Actuator)
+
+  | 경로 | 노출 | 권한 |
+  |---|---|---|
+  | `GET /actuator/health` | 모든 프로필 (UP/DOWN만, 상세 숨김) | 공개 |
+  | `GET /actuator/prometheus` | local(8080) · dev(관리 포트 8081, 호스트 비공개) | 공개 (수집기용) |
+  | 그 밖의 `/actuator/**` (metrics 등) | local만 metrics·info | ADMIN |
 
 ## API 목록
 
@@ -30,26 +70,34 @@
 | 로그인 | POST | `/api/users/login` | X | - | 200 |
 | 내 토큰 정보 조회 | GET | `/api/users/me` | O | 로그인 사용자 | 200 |
 | 매장 생성 | POST | `/api/stores` | O | OWNER | 201 |
-| 매장 목록 조회 | GET | `/api/stores` | X | - | 200 |
+| 매장 목록 조회 | GET | `/api/stores?page=&size=` | X | - | 200 |
 | 매장 단건 조회 | GET | `/api/stores/{id}` | X | - | 200 |
-| 매장별 주문 조회 | GET | `/api/stores/{id}/orders` | O | OWNER (본인 매장) | 200 |
+| 매장별 주문 조회 | GET | `/api/stores/{id}/orders?page=&size=` | O | OWNER (본인 매장) | 200 |
 | 매장별 정산 조회 | GET | `/api/stores/{id}/settlements?from=&to=` | O | OWNER (본인 매장) | 200 |
 | 매장별 일 정산 기록 목록 | GET | `/api/stores/{id}/daily-settlements?from=&to=&status=` | O | OWNER (본인 매장) | 200 |
 | 매장별 일 정산 기록 상세 | GET | `/api/stores/{id}/daily-settlements/{settlementId}` | O | OWNER (본인 매장) | 200 |
 | 메뉴 등록 | POST | `/api/menus` | O | OWNER (본인 매장) | 201 |
-| 메뉴 목록 조회 | GET | `/api/menus` | X | - | 200 |
+| 메뉴 목록 조회 | GET | `/api/menus?page=&size=` | X | - | 200 |
 | 메뉴 단건 조회 | GET | `/api/menus/{id}` | X | - | 200 |
 | 메뉴 수정 | PUT | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 200 |
 | 메뉴 삭제 | DELETE | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 204 |
 | 주문 생성 | POST | `/api/orders` | O | CUSTOMER | 201 |
-| 주문 목록 조회 | GET | `/api/orders` | O | CUSTOMER / OWNER | 200 |
+| 주문 목록 조회 | GET | `/api/orders?page=&size=` / `?afterId=&size=` | O | CUSTOMER / OWNER | 200 |
 | 주문 취소 (결제 취소 포함) | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
 | 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 매장 주문) | 204 |
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
+| 결제 단건 조회 | GET | `/api/payments/{id}` | O | CUSTOMER (본인 결제) | 200 |
+| 내 알림 목록 | GET | `/api/notifications?page=&size=` | O | 로그인 사용자 | 200 |
 | 정산 목록 조회 (관리자) | GET | `/api/admin/settlements?date=&status=` | O | ADMIN | 200 |
 | 정산 확정 (관리자) | PATCH | `/api/admin/settlements/{id}/confirm` | O | ADMIN | 200 |
 | 정산 지급 (관리자) | PATCH | `/api/admin/settlements/{id}/pay` | O | ADMIN | 200 |
+| 정산 상태 변경 이력 (관리자) | GET | `/api/admin/settlements/{id}/histories` | O | ADMIN | 200 |
+| 정산 재집계 (관리자) | POST | `/api/admin/settlements/reaggregate?date=&storeId=` | O | ADMIN | 200 |
+| 정산 집계 실패 기록 (관리자) | GET | `/api/admin/settlements/aggregation-failures?status=` | O | ADMIN | 200 |
 | 결제 환불 (관리자) | PATCH | `/api/admin/payments/{id}/refund` | O | ADMIN | 200 |
+| Outbox 이벤트 목록 (관리자) | GET | `/api/admin/outbox-events?status=&page=&size=` | O | ADMIN | 200 |
+| Outbox 이벤트 재발행 (관리자) | POST | `/api/admin/outbox-events/{id}/republish` | O | ADMIN | 200 |
+| Outbox FAILED 일괄 재발행 (관리자) | POST | `/api/admin/outbox-events/republish?limit=` | O | ADMIN | 200 |
 | 매장 수수료율 설정 (관리자) | PUT | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
 | 매장 수수료율 해제 (관리자) | DELETE | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
 
@@ -147,17 +195,19 @@ Response `201 Created`
 | 403 | CUSTOMER가 요청 |
 
 ### 매장 목록 조회 `GET /api/stores` / 단건 조회 `GET /api/stores/{id}`
-Response `200 OK` — 매장 생성 응답 형식 (목록은 배열)
+Response `200 OK` — 매장 생성 응답 형식 (목록은 배열, [페이지네이션](#공통-사항) `?page=&size=`)
 
 | 코드 | 상황 |
 |---|---|
+| 400 | `page`·`size` 범위 초과 (목록) |
 | 404 | 매장 없음 (단건 조회) |
 
 ### 매장별 주문 조회 `GET /api/stores/{id}/orders`
-Response `200 OK` — 주문 생성 응답 형식의 배열, 해당 매장에 들어온 주문만
+Response `200 OK` — 주문 생성 응답 형식의 배열, 해당 매장에 들어온 주문만 ([페이지네이션](#공통-사항) `?page=&size=`)
 
 | 코드 | 상황 |
 |---|---|
+| 400 | `page`·`size` 범위 초과 |
 | 401 | 토큰 없음 |
 | 403 | CUSTOMER가 요청, 본인 매장이 아님 |
 | 404 | 매장 없음 |
@@ -301,7 +351,7 @@ Response `201 Created`
 | 404 | 매장 없음 |
 
 ### 메뉴 목록 조회 `GET /api/menus`
-Response `200 OK` — 삭제되지 않은 메뉴만 반환
+Response `200 OK` — 삭제되지 않은 메뉴만 반환 ([페이지네이션](#공통-사항) `?page=&size=`, 범위 초과 시 400)
 ```json
 [
   { "id": 1, "storeId": 1, "name": "후라이드 치킨", "price": 18000, "description": "바삭한 치킨",
@@ -385,12 +435,13 @@ Response `201 Created`
 | 404 | 항목 중 하나라도 메뉴가 없거나 삭제됨 |
 
 ### 주문 목록 조회 `GET /api/orders`
-Response `200 OK` — 주문 생성 응답 형식의 배열
+Response `200 OK` — 주문 생성 응답 형식의 배열 ([페이지네이션](#공통-사항) `?page=&size=` 또는 keyset `?afterId=&size=`)
 - CUSTOMER: 본인이 한 주문만
 - OWNER: 본인의 모든 매장에 들어온 주문만 (매장 하나만 보려면 `GET /api/stores/{id}/orders`)
 
 | 코드 | 상황 |
 |---|---|
+| 400 | `page`·`size`·`afterId` 범위 초과·형식 오류, `page`와 `afterId`를 함께 보냄 |
 | 401 | 토큰 없음 |
 
 ### 주문 취소 `PATCH /api/orders/{id}/cancel`
@@ -447,13 +498,52 @@ Response `201 Created` — 결제 내역 저장 후 주문 상태를 `PAYMENT_CO
 ```
 - `status`: 결제 상태 `COMPLETED` / `CANCELLED`(배달 전 취소) / `REFUNDED`(배달 후 환불)
 
+#### 멱등성 키 (선택) — `Idempotency-Key` 헤더 (#41)
+응답을 받지 못해(타임아웃 등) 다시 보내는 요청을 같은 결제로 처리하기 위한 헤더. 없으면 기존과 똑같이 동작
+```
+Idempotency-Key: 3f6c1e0a-8d2b-4c7e-9a51-2b7d0c9e4f13
+```
+- 값: 영문·숫자·`-`·`_` 1~64자 (UUID 권장). 사용자별로 구분 → 다른 사용자의 같은 키와 섞이지 않음
+- 같은 키 + 같은 요청(`orderId`·`paymentMethod`)이 다시 오면 결제하지 않고 **처음 응답(201·본문)을 그대로** 돌려주고 `Idempotent-Replayed: true` 헤더를 붙임
+  - 보관 기간: 결제 **완료 시점부터 30일** (Redis 완료 기록 24시간 + 결제와 함께 저장한 DB 기록 30일). 지난 뒤 같은 키로 보내면 새 요청으로 처리되어, 이미 결제된 주문이므로 409
+  - 재전송하는 본문은 **결제 직후의 응답** — 그 뒤 주문이 배달완료·환불됐어도 처음 값(`PAYMENT_COMPLETED`·`COMPLETED`)이므로, 현재 상태는 [결제 단건 조회](#결제-단건-조회-get-apipaymentsid)로 확인
+  - 처리 중 기록은 최대 1분 — 그 사이 같은 키 요청은 409(처리 중). 결제가 커밋된 뒤라면 처리 중 기록이 남아 있어도 DB 기록으로 처음 응답을 재전송
+- 결제가 실패한 요청(4xx·5xx)은 기록하지 않음 → 같은 키로 다시 시도 가능 (같은 이유면 같은 오류)
+- 키와 관계없이 **주문당 결제는 1건** — 다른 키로 이미 결제된 주문을 결제하면 기존처럼 409
+- 저장소(Redis)를 쓸 수 없으면 새 결제는 하지 않고 503 → 잠시 뒤 같은 키로 재시도 (키 없는 요청은 영향 없음)
+  - 결제가 이미 끝난 키라면 Redis 장애 중에도 DB 기록으로 처음 응답을 재전송 (결제가 다시 되지는 않음)
+- TTL·장애 시 동작 상세는 [프로젝트 구조 — Redis](architecture.md#redis-41)
+
 | 코드 | 상황 |
 |---|---|
-| 400 | 입력 값 누락, 결제 수단이 CARD가 아님 |
+| 400 | 입력 값 누락, 결제 수단이 CARD가 아님, `Idempotency-Key` 형식 오류 |
 | 401 | 토큰 없음 |
 | 403 | OWNER가 요청, 본인 주문이 아님 |
 | 404 | 주문 없음 |
-| 409 | 주문요청 상태가 아님 (이미 결제됨·취소됨), 중복 결제 |
+| 409 | 주문요청 상태가 아님 (이미 결제됨·취소됨), 중복 결제, 같은 `Idempotency-Key`의 결제가 처리 중이거나 같은 키로 다른 주문이 동시에 결제됨 |
+| 422 | 같은 `Idempotency-Key`로 다른 결제 요청 (`orderId`·`paymentMethod`가 처음과 다름) |
+| 503 | `Idempotency-Key`가 있는데 Redis 장애·타임아웃이고, 그 키로 완료된 결제가 없음 (결제하지 않음) |
+
+### 결제 단건 조회 `GET /api/payments/{id}`
+결제의 **현재** 상태 조회 (#53). 결제 응답을 받지 못했을 때(타임아웃 등) 같은 `Idempotency-Key`로 재전송하기 전에 결과를 확인하는 용도
+
+Response `200 OK` — 결제 응답과 같은 형식(`PaymentResponse`)
+```json
+{
+  "id": 1, "orderId": 1, "amount": 36000, "paymentMethod": "CARD",
+  "orderStatus": "DELIVERY_COMPLETED", "paidAt": "2026-10-08T14:05:00",
+  "status": "REFUNDED", "cancelledAt": null, "refundedAt": "2026-10-09T10:00:00"
+}
+```
+- 멱등성 재전송 본문(결제 직후 값)과 달리 취소·환불·배달 진행이 반영된 현재 값 (`orderStatus`·`status`·`cancelledAt`·`refundedAt`)
+- 수수료·정산액은 포함하지 않음 (결제 응답과 같음)
+- 본인 주문의 결제만 조회 — 결제자 = 주문자. OWNER는 매장 주문 조회·정산 조회 사용
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음, 회원이 삭제됨 |
+| 403 | OWNER·ADMIN이 요청, 본인 결제가 아님 |
+| 404 | 결제 없음 |
 
 ---
 
@@ -473,8 +563,11 @@ PENDING(확정 대기) ── PATCH .../confirm ──▶ CONFIRMED(확정) ─�
     "refundCount": 1, "refundAmount": 10000, "refundFee": 500, "refundSettlementAmount": 9500,
     "carriedInAmount": 0, "carriedOutAmount": 0, "settlementAmount": 26609,
     "status": "CONFIRMED",
-    "aggregatedAt": "2026-11-06T01:10:00", "confirmedAt": "2026-11-06T09:00:00", "paidAt": null }
+    "aggregatedAt": "2026-11-06T01:10:00", "confirmedAt": "2026-11-06T09:00:00", "paidAt": null,
+    "confirmedBy": { "id": 7, "username": "admin" }, "paidBy": null }
   ```
+  - `confirmedBy`, `paidBy` (#39): 확정·지급한 관리자. 해당 단계 전이거나 V11 적용 전에 처리된 정산이면 `null`. 기존 필드는 그대로이고 뒤에 추가만 됨
+  - 처리자는 요청으로 받지 않고 **토큰의 인증 정보**로 기록 ([정산 기준 10장](settlement-policy.md#10-감사-이력과-누락실패분-재집계-39))
   - `aggregatedAt`: 스케줄러 집계 시각, `confirmedAt`: 확정 시각(`PENDING`이면 `null`), `paidAt`: 지급 시각(`PAID`가 아니면 `null`)
   - `settlementAmount`: **실제 지급액** = max(판매 정산액 - 환불 정산액 - 이월받은 금액, 0). 모자라면 `carriedOutAmount`로 다음 정산에 이월
 
@@ -519,6 +612,89 @@ Response `200 OK` — 지급된 정산
 | 409 | `CONFIRMED`가 아님 — 확정 전(`PENDING`)이거나 이미 지급됨(`PAID`, 지급 시각은 처음 값 유지) |
 
 - 같은 정산에 지급 요청이 동시에 들어와도 행 잠금으로 한 번만 성공, 나머지는 409
+- 확정·지급에 성공하면 처리자·시각이 상태 변경 이력에 기록됨 (409로 거부된 요청은 기록되지 않음)
+
+### 정산 상태 변경 이력 `GET /api/admin/settlements/{id}/histories`
+정산 1건이 언제 누구에 의해 집계·확정·지급됐는지 기록 순으로 조회
+
+Response `200 OK`
+```json
+[
+  { "id": 1, "fromStatus": null, "toStatus": "PENDING", "actor": null, "changedAt": "2026-11-06T01:10:00" },
+  { "id": 2, "fromStatus": "PENDING", "toStatus": "CONFIRMED",
+    "actor": { "id": 7, "username": "admin" }, "changedAt": "2026-11-06T09:00:00" },
+  { "id": 3, "fromStatus": "CONFIRMED", "toStatus": "PAID",
+    "actor": { "id": 8, "username": "admin2" }, "changedAt": "2026-11-07T10:00:00" }
+]
+```
+- `fromStatus`가 `null`인 첫 행은 집계. `actor`가 `null`이면 스케줄러, 값이 있으면 재집계한 관리자
+- V11 적용 전에 일어난 전이는 이력이 없음 (빈 배열이거나 이후 전이만 나옴)
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | 정산 없음 |
+
+### 정산 재집계 `POST /api/admin/settlements/reaggregate`
+집계 실패나 스케줄러 누락(catch-up 기간 초과)으로 **정산이 없는 매장·날짜**를 새로 집계해 `PENDING` 정산을 만든다. 이미 있는 정산은 상태와 관계없이 다시 계산하지 않음. 요청 본문 없음
+
+Request — 쿼리 파라미터
+```
+POST /api/admin/settlements/reaggregate?date=2026-11-05            # 그 날짜의 집계 대상 매장 전체
+POST /api/admin/settlements/reaggregate?date=2026-11-05&storeId=1  # 매장 1곳만
+```
+- `date`: 필수, `yyyy-MM-dd` — 집계 가능 시각(다음 날 01:00)이 지난 날짜
+- `storeId`: 선택 — 없으면 그 날짜에 판매 또는 미차감 환불이 있는 매장 전체
+
+Response `200 OK`
+```json
+{ "date": "2026-11-05", "created": 1, "skipped": 1, "failed": 1,
+  "results": [
+    { "storeId": 1, "outcome": "CREATED", "settlementId": 12, "error": null },
+    { "storeId": 2, "outcome": "ALREADY_EXISTS", "settlementId": null, "error": null },
+    { "storeId": 3, "outcome": "FAILED", "settlementId": null,
+      "error": "DataIntegrityViolationException constraint=settlements_net_amount_check" }
+  ] }
+```
+- `outcome`: `CREATED`(새 정산) / `ALREADY_EXISTS`(이미 정산이 있어 건너뜀) / `NO_TARGET`(집계할 판매·환불 없음) / `FAILED`(다시 실패 — 실패 기록에 남음)
+- 일부 매장이 실패해도 200이며 매장별 결과로 구분 (매장 1곳 = 트랜잭션 1개)
+- 같은 요청을 반복하거나 스케줄러와 동시에 실행돼도 매장·날짜당 정산은 1건 (뒤 요청은 `ALREADY_EXISTS`)
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `date` 누락·형식 오류, `storeId` 형식 오류, 아직 집계할 수 없는 날짜 |
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | `storeId`의 매장 없음 |
+| 409 | `storeId`를 지정했는데 그 매장·날짜에 이미 정산이 있음 (`PENDING`·`CONFIRMED`·`PAID` 모두) |
+
+### 정산 집계 실패 기록 `GET /api/admin/settlements/aggregation-failures`
+Request — 쿼리 파라미터
+```
+GET /api/admin/settlements/aggregation-failures?status=FAILED
+```
+- `status`: 선택, `FAILED`(재집계 대상) / `RESOLVED` — 없으면 전체
+
+Response `200 OK` — 최근 실패 순, 없으면 빈 배열
+```json
+[
+  { "id": 1, "storeId": 3, "storeName": "분식집", "settlementDate": "2026-11-05",
+    "status": "RESOLVED", "failureCount": 2,
+    "lastError": "DataIntegrityViolationException constraint=settlements_net_amount_check",
+    "firstFailedAt": "2026-11-06T01:10:00", "lastFailedAt": "2026-11-06T09:10:00",
+    "lastFailedBy": { "id": 7, "username": "admin" },
+    "resolvedAt": "2026-11-06T10:10:00", "resolvedBy": { "id": 8, "username": "admin2" }, "settlementId": 12 }
+]
+```
+- `lastFailedBy`·`resolvedBy`가 `null`이면 스케줄러 실행. `settlementId`는 재집계로 만들어진 정산 (`FAILED`이거나 대상 없음으로 해결되면 `null`)
+- `lastError`는 예외 종류와 제약 조건 이름만 담음. 상세 원인은 서버 로그
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `status`가 정의되지 않은 값 |
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
 
 ---
 
@@ -585,3 +761,85 @@ Response `200 OK` — 수수료율 응답 (`feeRate: null`, `defaultFeeRateAppli
 | 401 | 토큰 없음 |
 | 403 | ADMIN이 아님 |
 | 404 | 매장 없음 |
+
+---
+
+## 알림
+
+### 내 알림 목록 `GET /api/notifications`
+로그인한 사용자 본인이 받는 알림만 조회 (역할 무관). 결제 완료·환불은 고객과 사장님, 배달 완료는 고객에게 알림이 생김
+- 페이지 단위: `?page=0&size=20` (size 최대 100), id 오름차순. 본문은 배열, 페이지 정보는 `X-Page`·`X-Size`·`X-Has-Next` 헤더
+- 알림은 이벤트가 Kafka를 거쳐 처리된 뒤 생기므로 결제 직후에는 아직 없을 수 있음
+
+Response `200 OK`
+```json
+[
+  {
+    "id": 1,
+    "eventType": "PAYMENT_COMPLETED",
+    "orderId": 10,
+    "message": "주문 #10 결제가 완료되었습니다. (36,000원)",
+    "createdAt": "2026-11-14T12:00:01",
+    "sendStatus": "SENT",
+    "sentAt": "2026-11-14T12:00:05"
+  }
+]
+```
+- `sendStatus`: `PENDING`(발송 대기·재시도 중) / `SENT` / `FAILED`(재시도 한도 초과) / `SKIPPED`(발송 기능 도입 전 기록)
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `page`·`size` 범위 오류 |
+| 401 | 토큰 없음, 삭제된 회원 |
+
+---
+
+## 관리자 — Outbox 이벤트
+
+Kafka 발행에 계속 실패해 `FAILED`가 된 이벤트를 확인하고 다시 발행 대상으로 되돌림 ([프로젝트 구조 — Kafka](architecture.md#kafka--transactional-outbox-42))
+
+### 이벤트 목록 `GET /api/admin/outbox-events`
+- `status`: `PENDING` / `PUBLISHED` / `FAILED` (기본 `FAILED`)
+- 페이지 단위: `?page=0&size=20` (size 최대 100), id 오름차순. 페이지 정보는 응답 헤더
+
+Response `200 OK`
+```json
+[
+  {
+    "id": 12,
+    "eventId": "0b0c7c0e-3c56-4a57-9a55-7b6f0d0a2f11",
+    "eventType": "PAYMENT_COMPLETED",
+    "aggregateType": "ORDER",
+    "aggregateId": 10,
+    "status": "FAILED",
+    "attemptCount": 10,
+    "lastError": "org.apache.kafka.common.errors.TimeoutException: ...",
+    "nextAttemptAt": "2026-11-14T12:08:31",
+    "createdAt": "2026-11-14T12:00:00",
+    "publishedAt": null
+  }
+]
+```
+
+### 이벤트 재발행 `POST /api/admin/outbox-events/{id}/republish`
+`FAILED` → `PENDING`, 실패 횟수를 0으로 되돌림(마지막 실패 원인은 남김). 요청 본문 없음
+- 여기서 Kafka로 바로 보내지 않음 → 다음 발행 주기(1초)에 Publisher가 발행하고, 다시 실패하면 같은 재시도 규칙을 따름
+- 이벤트 내용·`eventId`는 그대로 → 이미 전달됐던 이벤트라면 Consumer가 중복으로 걸러 알림이 두 번 생기지 않음
+
+Response `200 OK` — 이벤트 응답 (`status: PENDING`, `attemptCount: 0`)
+
+### FAILED 일괄 재발행 `POST /api/admin/outbox-events/republish`
+`FAILED` 이벤트를 오래된 순으로 `limit`건(기본·최대 100) 재발행
+
+Response `200 OK`
+```json
+{ "republished": 3 }
+```
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `status` 값 오류, `page`·`size`·`limit` 범위 오류 |
+| 401 | 토큰 없음 |
+| 403 | ADMIN이 아님 |
+| 404 | 이벤트 없음 |
+| 409 | `FAILED`가 아닌 이벤트 재발행 (동시에 재발행하면 한 번만 성공) |

@@ -51,6 +51,8 @@ class OwnerSettlementIntegrationTest {
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
     @Autowired private SettlementRepository settlementRepository;
+    @Autowired private SettlementStatusHistoryRepository settlementStatusHistoryRepository;
+    @Autowired private SettlementAggregationFailureRepository settlementAggregationFailureRepository;
     @Autowired private SettlementRefundRepository settlementRefundRepository;
     @Autowired private SettlementCarryoverRepository settlementCarryoverRepository;
 
@@ -70,6 +72,9 @@ class OwnerSettlementIntegrationTest {
 
     @AfterEach
     void tearDown() {
+        // 정산을 참조하는 감사 이력·실패 기록(V11)을 먼저 삭제
+        settlementStatusHistoryRepository.deleteAllInBatch();
+        settlementAggregationFailureRepository.deleteAllInBatch();
         settlementCarryoverRepository.deleteAllInBatch();
         settlementRefundRepository.deleteAllInBatch();
         settlementRepository.deleteAllInBatch();

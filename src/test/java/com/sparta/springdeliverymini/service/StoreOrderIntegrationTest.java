@@ -9,14 +9,19 @@ import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
+import jakarta.persistence.EntityManagerFactory;
+import org.hibernate.SessionFactory;
+import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.Slice;
 import org.springframework.http.HttpStatus;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,6 +46,11 @@ class StoreOrderIntegrationTest {
     private StoreResponse chickenStore;
     private StoreResponse pizzaStore;
     private StoreResponse otherOwnerStore;
+
+    // 목록 조회의 기본 페이지 (첫 페이지, 20건)
+    private static final PageQuery PAGE = PageQuery.of(0, PageQuery.DEFAULT_SIZE);
+
+    @Autowired private EntityManagerFactory entityManagerFactory;
 
     @BeforeEach
     void setUp() {
@@ -86,7 +96,7 @@ class StoreOrderIntegrationTest {
         menuService.deleteMenu(coke.id(), "owner1");
 
         // DB에서 다시 읽어도 주문 당시 이름·단가와 총액 그대로
-        OrderResponse reloaded = orderService.getOrders("customer1").get(0);
+        OrderResponse reloaded = orderService.getOrders("customer1", PAGE).getContent().get(0);
         assertThat(reloaded.id()).isEqualTo(created.id());
         assertThat(reloaded.totalPrice()).isEqualTo(18000L * 2 + 2000L * 3);
         assertThat(reloaded.items())
@@ -119,13 +129,187 @@ class StoreOrderIntegrationTest {
         assertThat(order.storeName()).isEqualTo("치킨집");
     }
 
+    // ===== 목록 페이징 (#40) =====
+
+    @Test
+    void 주문_목록은_id_오름차순으로_페이지_단위로_조회되고_페이지끼리_겹치지_않는다() {
+        List<Long> created = List.of(
+                order(chickenStore, "후라이드 치킨", "owner1").id(),
+                order(pizzaStore, "치즈 피자", "owner1").id(),
+                order(chickenStore, "양념 치킨", "owner1").id(),
+                order(otherOwnerStore, "떡볶이", "owner2").id(),
+                order(pizzaStore, "페퍼로니 피자", "owner1").id());
+
+        Slice<OrderResponse> first = orderService.getOrders("customer1", PageQuery.of(0, 2));
+        Slice<OrderResponse> second = orderService.getOrders("customer1", PageQuery.of(1, 2));
+        Slice<OrderResponse> last = orderService.getOrders("customer1", PageQuery.of(2, 2));
+
+        assertThat(first).extracting(OrderResponse::id).containsExactly(created.get(0), created.get(1));
+        assertThat(second).extracting(OrderResponse::id).containsExactly(created.get(2), created.get(3));
+        assertThat(last).extracting(OrderResponse::id).containsExactly(created.get(4));
+        assertThat(first.hasNext()).isTrue();
+        assertThat(second.hasNext()).isTrue();
+        assertThat(last.hasNext()).isFalse();
+        // 범위를 넘은 페이지는 빈 배열
+        assertThat(orderService.getOrders("customer1", PageQuery.of(3, 2))).isEmpty();
+    }
+
+    @Test
+    void 주문_목록은_주문_수와_상관없이_쿼리_3번으로_조회한다() {
+        // 개선 전: 주문마다 매장 1번 + 주문 항목 1번씩 추가 조회 (N+1)
+        // 개선 후: 회원 1 + 주문·매장(join) 1 + 주문 항목(IN) 1
+        for (int i = 0; i < 4; i++) {
+            order(chickenStore, "치킨 " + i, "owner1");
+            order(pizzaStore, "피자 " + i, "owner1");
+        }
+        Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        statistics.setStatisticsEnabled(true);
+        statistics.clear();
+
+        Slice<OrderResponse> customerOrders = orderService.getOrders("customer1", PAGE);
+        long customerQueries = statistics.getPrepareStatementCount();
+        statistics.clear();
+        Slice<OrderResponse> ownerOrders = orderService.getOrders("owner1", PAGE);
+        long ownerQueries = statistics.getPrepareStatementCount();
+        statistics.setStatisticsEnabled(false);
+
+        assertThat(customerOrders).hasSize(8).allSatisfy(order -> {
+            assertThat(order.storeName()).isNotBlank();
+            assertThat(order.items()).hasSize(1);
+        });
+        assertThat(ownerOrders).hasSize(8);
+        assertThat(customerQueries).isEqualTo(3);
+        assertThat(ownerQueries).isEqualTo(3);
+    }
+
+    // 점주 전체 주문을 keyset으로 끝까지 넘김 — X-Next-After-Id 대신 마지막 id를 그대로 다음 afterId로 사용
+    private List<List<Long>> keysetPages(String username, int size) {
+        List<List<Long>> pages = new ArrayList<>();
+        long afterId = 0;
+        while (true) {
+            Slice<OrderResponse> slice = orderService.getOrdersAfter(username, KeysetQuery.of(afterId, size));
+            List<Long> ids = slice.getContent().stream().map(OrderResponse::id).toList();
+            pages.add(ids);
+            if (!slice.hasNext()) {
+                return pages;
+            }
+            afterId = ids.get(ids.size() - 1);
+        }
+    }
+
+    @Test
+    void 점주_keyset_페이징은_OFFSET과_같은_순서로_중복_누락_없이_끝까지_조회된다() {
+        // owner1의 주문 사이사이에 owner2의 주문을 섞어 id가 연속되지 않게 함
+        List<Long> owner1Orders = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            owner1Orders.add(order(i % 2 == 0 ? chickenStore : pizzaStore, "메뉴 " + i, "owner1").id());
+            order(otherOwnerStore, "분식 " + i, "owner2");
+        }
+
+        List<List<Long>> pages = keysetPages("owner1", 3);
+
+        // 3 + 3 + 1 — 마지막 페이지에서만 hasNext=false (keysetPages가 그때 멈춤)
+        assertThat(pages).extracting(List::size).containsExactly(3, 3, 1);
+        assertThat(pages.stream().flatMap(List::stream).toList()).containsExactlyElementsOf(owner1Orders);
+        // 같은 크기의 OFFSET 페이지와 순서·내용이 같음
+        for (int page = 0; page < pages.size(); page++) {
+            assertThat(orderService.getOrders("owner1", PageQuery.of(page, 3)))
+                    .extracting(OrderResponse::id).containsExactlyElementsOf(pages.get(page));
+        }
+    }
+
+    @Test
+    void keyset_경계_afterId가_0이면_첫_페이지_마지막_id면_빈_결과_다른_점주의_id여도_그_다음부터_조회된다() {
+        long first = order(chickenStore, "후라이드", "owner1").id();
+        long otherOwners = order(otherOwnerStore, "떡볶이", "owner2").id();
+        long second = order(pizzaStore, "피자", "owner1").id();
+
+        assertThat(orderService.getOrdersAfter("owner1", KeysetQuery.of(0, 20)))
+                .extracting(OrderResponse::id).containsExactly(first, second);
+        // 본인 주문이 아닌 id(다른 점주 주문·삭제된 주문)도 위치로만 쓰이므로 그 다음 본인 주문부터
+        assertThat(orderService.getOrdersAfter("owner1", KeysetQuery.of(otherOwners, 20)))
+                .extracting(OrderResponse::id).containsExactly(second);
+        Slice<OrderResponse> afterLast = orderService.getOrdersAfter("owner1", KeysetQuery.of(second, 20));
+        assertThat(afterLast).isEmpty();
+        assertThat(afterLast.hasNext()).isFalse();
+        // 정확히 size건만 남았을 때 hasNext=false (size + 1건 조회로 판단)
+        Slice<OrderResponse> exact = orderService.getOrdersAfter("owner1", KeysetQuery.of(0, 2));
+        assertThat(exact).hasSize(2);
+        assertThat(exact.hasNext()).isFalse();
+    }
+
+    @Test
+    void keyset_페이징_중에_새_주문이_들어와도_이미_받은_주문이_다시_나오지_않고_새_주문은_뒤에_이어진다() {
+        List<Long> before = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            before.add(order(chickenStore, "치킨 " + i, "owner1").id());
+        }
+        Slice<OrderResponse> first = orderService.getOrdersAfter("owner1", KeysetQuery.of(0, 2));
+
+        long added = order(pizzaStore, "새 피자", "owner1").id();
+        long afterId = first.getContent().get(1).id();
+        Slice<OrderResponse> second = orderService.getOrdersAfter("owner1", KeysetQuery.of(afterId, 2));
+        Slice<OrderResponse> third = orderService.getOrdersAfter(
+                "owner1", KeysetQuery.of(second.getContent().get(1).id(), 2));
+
+        assertThat(first).extracting(OrderResponse::id).containsExactly(before.get(0), before.get(1));
+        assertThat(second).extracting(OrderResponse::id).containsExactly(before.get(2), before.get(3));
+        assertThat(third).extracting(OrderResponse::id).containsExactly(added);
+    }
+
+    @Test
+    void keyset_고객_조회는_본인_주문만_포함하고_쿼리_3번으로_조회한다() {
+        for (int i = 0; i < 4; i++) {
+            order(chickenStore, "치킨 " + i, "owner1");
+            order(otherOwnerStore, "분식 " + i, "owner2");
+        }
+        userRepository.save(new User("customer2", "encoded-password", Role.CUSTOMER));
+        Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        statistics.setStatisticsEnabled(true);
+        statistics.clear();
+
+        Slice<OrderResponse> customerOrders = orderService.getOrdersAfter("customer1", KeysetQuery.of(0, 20));
+        long customerQueries = statistics.getPrepareStatementCount();
+        statistics.clear();
+        Slice<OrderResponse> ownerOrders = orderService.getOrdersAfter("owner1", KeysetQuery.of(0, 20));
+        long ownerQueries = statistics.getPrepareStatementCount();
+        statistics.setStatisticsEnabled(false);
+
+        assertThat(customerOrders).hasSize(8).allSatisfy(order -> assertThat(order.items()).hasSize(1));
+        assertThat(ownerOrders).hasSize(4).allSatisfy(order -> assertThat(order.storeName()).isEqualTo("치킨집"));
+        assertThat(customerQueries).isEqualTo(3);
+        assertThat(ownerQueries).isEqualTo(3);
+        assertThat(orderService.getOrdersAfter("customer2", KeysetQuery.of(0, 20))).isEmpty();
+    }
+
+    @Test
+    void 매장과_메뉴_목록도_id_오름차순으로_페이지_단위로_조회되고_삭제된_메뉴는_빠진다() {
+        Slice<StoreResponse> stores = storeService.getStores(PageQuery.of(0, 2));
+        assertThat(stores).extracting(StoreResponse::id).containsExactly(chickenStore.id(), pizzaStore.id());
+        assertThat(stores.hasNext()).isTrue();
+        assertThat(storeService.getStores(PageQuery.of(1, 2)))
+                .extracting(StoreResponse::id).containsExactly(otherOwnerStore.id());
+
+        MenuResponse chicken = menuService.createMenu(
+                new MenuCreateRequest(chickenStore.id(), "후라이드 치킨", 18000L, null), "owner1");
+        MenuResponse deleted = menuService.createMenu(
+                new MenuCreateRequest(chickenStore.id(), "단종 메뉴", 1000L, null), "owner1");
+        MenuResponse pizza = menuService.createMenu(
+                new MenuCreateRequest(pizzaStore.id(), "치즈 피자", 20000L, null), "owner1");
+        menuService.deleteMenu(deleted.id(), "owner1");
+
+        Slice<MenuResponse> menus = menuService.getMenus(PageQuery.of(0, 2));
+        assertThat(menus).extracting(MenuResponse::id).containsExactly(chicken.id(), pizza.id());
+        assertThat(menus.hasNext()).isFalse();
+    }
+
     @Test
     void 매장별_주문은_해당_매장의_주문만_조회된다() {
         OrderResponse chickenOrder = order(chickenStore, "후라이드 치킨", "owner1");
         order(pizzaStore, "치즈 피자", "owner1");
         order(otherOwnerStore, "떡볶이", "owner2");
 
-        List<OrderResponse> orders = orderService.getStoreOrders(chickenStore.id(), "owner1");
+        List<OrderResponse> orders = orderService.getStoreOrders(chickenStore.id(), "owner1", PAGE).getContent();
 
         assertThat(orders).extracting(OrderResponse::id).containsExactly(chickenOrder.id());
     }
@@ -136,7 +320,7 @@ class StoreOrderIntegrationTest {
         order(pizzaStore, "치즈 피자", "owner1");
         order(otherOwnerStore, "떡볶이", "owner2");
 
-        List<OrderResponse> orders = orderService.getOrders("owner1");
+        List<OrderResponse> orders = orderService.getOrders("owner1", PAGE).getContent();
 
         assertThat(orders).extracting(OrderResponse::storeId)
                 .containsExactlyInAnyOrder(chickenStore.id(), pizzaStore.id());
@@ -146,7 +330,7 @@ class StoreOrderIntegrationTest {
     void 다른_OWNER의_매장_주문은_조회할_수_없다() {
         order(chickenStore, "후라이드 치킨", "owner1");
 
-        assertThatThrownBy(() -> orderService.getStoreOrders(chickenStore.id(), "owner2"))
+        assertThatThrownBy(() -> orderService.getStoreOrders(chickenStore.id(), "owner2", PAGE))
                 .isInstanceOf(ApiException.class)
                 .extracting("status").isEqualTo(HttpStatus.FORBIDDEN);
     }

@@ -24,7 +24,16 @@ dependencies {
     implementation 'org.flywaydb:flyway-database-postgresql'
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
+    // Redis: 결제 멱등성 키 저장·스케줄러 분산 락 (#41). 클라이언트는 기본값 Lettuce
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    // Kafka: Transactional Outbox 이벤트 발행·알림 기록 Consumer (#42)
+    implementation 'org.springframework.boot:spring-boot-starter-kafka'
+    // 관측성: 헬스체크·메트릭 엔드포인트(Actuator) + Prometheus 형식 메트릭 노출
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+    // API 문서화: OpenAPI 명세 + Swagger UI (3.x = Spring Boot 4 지원 라인, 운영 기본값은 비활성)
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.2.0'
     implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
     runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
     runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
@@ -38,6 +47,9 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-testcontainers'
     testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
     testImplementation 'org.testcontainers:testcontainers-postgresql'
+    testImplementation 'org.testcontainers:testcontainers-kafka'
+    // 비동기(Kafka 수신) 결과를 기다리는 검증용
+    testImplementation 'org.awaitility:awaitility'
     testCompileOnly 'org.projectlombok:lombok'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testAnnotationProcessor 'org.projectlombok:lombok'
@@ -47,4 +59,6 @@ tasks.named('test') {
     useJUnitPlatform()
     // 테스트는 main()을 거치지 않으므로 JVM 기본 시간대를 여기서 고정 (SpringDeliveryMiniApplication.main과 동일)
     systemProperty 'user.timezone', 'Asia/Seoul'
+    // 테스트 전용 설정(src/test/resources/application-test.yml, 테스트 JWT 키 등) 사용
+    systemProperty 'spring.profiles.active', 'test'
 }

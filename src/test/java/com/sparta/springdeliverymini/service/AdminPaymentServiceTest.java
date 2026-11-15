@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.service;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidPaymentStatusException;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
@@ -12,6 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -33,6 +36,7 @@ class AdminPaymentServiceTest {
 
     @Mock private PaymentRepository paymentRepository;
     @Mock private UserRepository userRepository;
+    @Mock private OutboxEventRecorder outboxEventRecorder;
 
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 11, 7, 10, 0);
     private static final LocalDateTime DELIVERED_AT = LocalDateTime.of(2026, 11, 5, 12, 0);
@@ -42,7 +46,7 @@ class AdminPaymentServiceTest {
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
-        service = new AdminPaymentService(paymentRepository, userRepository, clock);
+        service = new AdminPaymentService(paymentRepository, userRepository, clock, outboxEventRecorder);
     }
 
     private static Payment payment(OrderStatus orderStatus) {
@@ -74,6 +78,20 @@ class AdminPaymentServiceTest {
         assertThat(response.amount()).isEqualTo(18009);
         assertThat(response.orderStatus()).isEqualTo(OrderStatus.DELIVERY_COMPLETED); // 주문 상태는 그대로
         assertThat(payment.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+        verify(outboxEventRecorder).paymentRefunded(payment); // 환불 이벤트를 같은 트랜잭션에 저장 (#42)
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void 환불하면_식별자와_상태_변경이_로그에_남고_개인정보는_남지_않는다(CapturedOutput output) {
+        givenUser("admin", Role.ADMIN);
+        given(paymentRepository.findByIdForUpdate(1L)).willReturn(Optional.of(payment(OrderStatus.DELIVERY_COMPLETED)));
+
+        service.refund(1L, "admin");
+
+        assertThat(output).contains("결제 환불 paymentId=1, orderId=10, amount=18009, status=COMPLETED->REFUNDED");
+        // 회원 아이디·배달 주소는 로그에 남기지 않음
+        assertThat(output).doesNotContain("customer1").doesNotContain("서울시");
     }
 
     @Test
@@ -122,5 +140,6 @@ class AdminPaymentServiceTest {
 
         assertThatThrownBy(() -> service.refund(1L, "admin")).isInstanceOf(InvalidPaymentStatusException.class);
         assertThat(payment.getRefundedAt()).isEqualTo(NOW.minusDays(1)); // 처음 환불 시각 유지
+        verify(outboxEventRecorder, never()).paymentRefunded(payment); // 중복 환불 이벤트 없음
     }
 }

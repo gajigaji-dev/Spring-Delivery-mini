@@ -4,7 +4,10 @@ import com.sparta.springdeliverymini.dto.OrderCreateRequest;
 import com.sparta.springdeliverymini.dto.OrderItemRequest;
 import com.sparta.springdeliverymini.dto.OrderItemResponse;
 import com.sparta.springdeliverymini.dto.OrderResponse;
+import com.sparta.springdeliverymini.dto.KeysetQuery;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
@@ -21,6 +24,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.SliceImpl;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -57,6 +65,9 @@ class OrderServiceTest {
     @Mock
     private PaymentRepository paymentRepository;
 
+    @Mock
+    private OutboxEventRecorder outboxEventRecorder;
+
     // 배달완료 시각을 고정해 deliveredAt이 Clock 기준으로 기록되는지 확인
     private static final LocalDateTime FIXED_NOW = LocalDateTime.of(2026, 11, 5, 23, 59, 59);
     private final Clock fixedClock = Clock.fixed(FIXED_NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
@@ -67,7 +78,7 @@ class OrderServiceTest {
     @BeforeEach
     void setUp() {
         orderService = new OrderService(orderRepository, menuRepository, userRepository, storeService,
-                paymentRepository, fixedClock);
+                paymentRepository, fixedClock, outboxEventRecorder);
     }
 
     private final User customer = user(1L, "customer1", Role.CUSTOMER);
@@ -358,6 +369,7 @@ class OrderServiceTest {
         orderService.statusOrder(10L, "owner1", OrderStatus.ORDER_ACCEPTED);
 
         assertThat(order.getStatus()).isEqualTo(OrderStatus.ORDER_ACCEPTED);
+        verify(outboxEventRecorder, never()).deliveryCompleted(any()); // 수락은 이벤트 대상 아님 (#42)
     }
 
     @Test
@@ -370,6 +382,7 @@ class OrderServiceTest {
 
         assertThat(order.getStatus()).isEqualTo(OrderStatus.DELIVERY_COMPLETED);
         assertThat(order.getDeliveredAt()).isEqualTo(FIXED_NOW); // JVM 시간대가 아닌 Clock(Asia/Seoul) 기준
+        verify(outboxEventRecorder).deliveryCompleted(order); // 배달완료 이벤트를 같은 트랜잭션에 저장 (#42)
     }
 
     @Test
@@ -433,12 +446,58 @@ class OrderServiceTest {
 
     // ===== 주문 목록 조회 =====
 
+    // 목록 조회의 기본 페이지 (첫 페이지, 20건)
+    private static final PageQuery PAGE = PageQuery.of(0, PageQuery.DEFAULT_SIZE);
+
     @Test
     void OWNER는_본인의_모든_매장_주문을_조회한다() {
         given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
-        given(orderRepository.findAllByStoreOwnerId(3L)).willReturn(List.of(order(OrderStatus.ORDER_REQUEST)));
+        given(orderRepository.findAllByStoreOwnerId(3L, PAGE.toPageable()))
+                .willReturn(new SliceImpl<>(List.of(order(OrderStatus.ORDER_REQUEST))));
 
-        assertThat(orderService.getOrders("owner1")).hasSize(1);
+        assertThat(orderService.getOrders("owner1", PAGE)).hasSize(1);
+    }
+
+    @Test
+    void 주문_목록은_요청한_페이지를_id_오름차순으로_조회한다() {
+        // 정렬 기준이 고유(id)해야 페이지 사이에 같은 주문이 중복·누락되지 않음
+        given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
+        Pageable expected = PageRequest.of(2, 50, Sort.by(Sort.Direction.ASC, "id"));
+        given(orderRepository.findAllByUserId(customer.getId(), expected))
+                .willReturn(new SliceImpl<>(List.of(order(OrderStatus.ORDER_REQUEST)), expected, true));
+
+        Slice<OrderResponse> orders = orderService.getOrders("customer1", PageQuery.of(2, 50));
+
+        assertThat(orders.getContent()).hasSize(1);
+        assertThat(orders.hasNext()).isTrue();
+    }
+
+    @Test
+    void keyset_주문_목록은_afterId_이후를_첫_페이지_id_오름차순으로_조회한다() {
+        // 위치는 afterId 조건이 정하므로 OFFSET은 항상 0
+        given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
+        Pageable expected = PageRequest.of(0, 30, Sort.by(Sort.Direction.ASC, "id"));
+        given(orderRepository.findAllByStoreOwnerIdAndIdGreaterThan(3L, 120L, expected))
+                .willReturn(new SliceImpl<>(List.of(order(OrderStatus.ORDER_REQUEST)), expected, true));
+
+        Slice<OrderResponse> orders = orderService.getOrdersAfter("owner1", KeysetQuery.of(120L, 30));
+
+        assertThat(orders.getContent()).hasSize(1);
+        assertThat(orders.hasNext()).isTrue();
+    }
+
+    @Test
+    void keyset_고객은_본인_주문만_ADMIN은_빈_목록() {
+        given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
+        given(orderRepository.findAllByUserIdAndIdGreaterThan(
+                customer.getId(), 0L, KeysetQuery.of(0L, 20).toPageable()))
+                .willReturn(new SliceImpl<>(List.of(order(OrderStatus.ORDER_REQUEST))));
+        given(userRepository.findByUsername("admin1"))
+                .willReturn(Optional.of(new User("admin1", "encoded", Role.ADMIN)));
+
+        assertThat(orderService.getOrdersAfter("customer1", KeysetQuery.of(0L, 20))).hasSize(1);
+        assertThat(orderService.getOrdersAfter("admin1", KeysetQuery.of(0L, 20))).isEmpty();
+        verify(orderRepository, never()).findAllByStoreOwnerIdAndIdGreaterThan(any(), any(), any());
     }
 
     // ===== 매장별 주문 조회 =====
@@ -447,9 +506,10 @@ class OrderServiceTest {
     void 본인_매장의_주문을_조회한다() {
         given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
         given(storeService.getOwnedStore(20L, owner)).willReturn(store);
-        given(orderRepository.findAllByStoreId(20L)).willReturn(List.of(order(OrderStatus.ORDER_REQUEST)));
+        given(orderRepository.findAllByStoreId(20L, PAGE.toPageable()))
+                .willReturn(new SliceImpl<>(List.of(order(OrderStatus.ORDER_REQUEST))));
 
-        List<OrderResponse> orders = orderService.getStoreOrders(20L, "owner1");
+        List<OrderResponse> orders = orderService.getStoreOrders(20L, "owner1", PAGE).getContent();
 
         assertThat(orders).hasSize(1);
         assertThat(orders.get(0).storeId()).isEqualTo(20L);
@@ -462,17 +522,17 @@ class OrderServiceTest {
         given(storeService.getOwnedStore(20L, otherOwner))
                 .willThrow(new ApiException(HttpStatus.FORBIDDEN, "본인 매장이 아닙니다."));
 
-        assertThatThrownBy(() -> orderService.getStoreOrders(20L, "owner2"))
+        assertThatThrownBy(() -> orderService.getStoreOrders(20L, "owner2", PAGE))
                 .isInstanceOf(ApiException.class)
                 .extracting("status").isEqualTo(HttpStatus.FORBIDDEN);
-        verify(orderRepository, never()).findAllByStoreId(any());
+        verify(orderRepository, never()).findAllByStoreId(any(), any());
     }
 
     @Test
     void CUSTOMER는_서비스에서도_매장_주문_조회가_막힌다() {
         given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
 
-        assertThatThrownBy(() -> orderService.getStoreOrders(20L, "customer1"))
+        assertThatThrownBy(() -> orderService.getStoreOrders(20L, "customer1", PAGE))
                 .isInstanceOf(ApiException.class)
                 .extracting("status").isEqualTo(HttpStatus.FORBIDDEN);
         verify(storeService, never()).getOwnedStore(any(), any());

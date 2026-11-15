@@ -2,11 +2,61 @@ spring:
   application:
     name: delivery
 
-  # DB 연결 — 3-3의 docker run 값과 똑같이
+  # 프로필 — local(기본, 개발 PC에서 직접 실행) / dev(docker-compose) / test(테스트, src/test/resources)
+  # 프로필을 지정하지 않으면 local로 실행. 프로필별 설정은 application-{프로필}.yml
+  profiles:
+    default: local
+
+  # DB 연결 — URL은 프로필별 파일에서 지정, 계정은 환경변수로만 받음 (코드·설정 파일에 계정을 두지 않기 위해)
   datasource:
-    url: jdbc:postgresql://localhost:5432/delivery
-    username: ${DB_USERNAME} # 환경변수로 지정
+    username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
+    # 커넥션 풀·DB 타임아웃 — 기다림에 상한을 둬 한 요청의 지연이 요청 스레드 전체로 번지지 않게 함 (docs/operations.md 6장)
+    hikari:
+      # 풀 크기: Hikari 기본값(10)을 명시. 인스턴스 수 × 이 값이 PostgreSQL max_connections(기본 100)를 넘지 않아야 함
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      # 풀이 바닥났을 때 커넥션을 기다리는 시간 (기본 30초) — 아래 lock_timeout(5초)보다 길게 둬 잠금 대기 중인 요청이 먼저 정리되도록
+      connection-timeout: 10000
+      # 세션 타임아웃 — 접속할 때 PostgreSQL에 전달 (pgjdbc options), 풀의 모든 커넥션에 적용
+      #   lock_timeout: 행 잠금(SELECT ... FOR UPDATE 등)을 기다리는 최대 시간. 넘으면 그 문장만 실패 → 503 (GlobalExceptionHandler)
+      #     지정하지 않으면 무제한 대기 → 긴 트랜잭션 하나가 같은 주문·매장을 건드리는 요청을 모두 붙잡음
+      #   statement_timeout: 문장 1개의 최대 실행 시간 (잠금 대기 포함). 트랜잭션 전체 시간이 아님
+      # Flyway도 같은 풀을 쓰므로 마이그레이션 문장에도 적용됨
+      #   → 오래 걸리는 마이그레이션(큰 테이블 인덱스·백필)은 그 파일 안에서 SET LOCAL statement_timeout = 0 (docs/database.md)
+      data-source-properties:
+        options: "-c lock_timeout=${DB_LOCK_TIMEOUT:5s} -c statement_timeout=${DB_STATEMENT_TIMEOUT:30s}"
+
+  # Redis — 결제 멱등성 키·스케줄러 분산 락 (#41). 접속 주소는 환경변수(기본 localhost:6379)
+  # timeout을 짧게 두는 이유: Lettuce 기본 명령 타임아웃(60초) 동안 결제 요청이 멈춰 있지 않도록
+  #   → 장애·지연 시 빨리 503(결제) / 실행 건너뜀(스케줄러)으로 끝냄
+  # 연결은 처음 명령을 보낼 때 맺으므로 Redis가 없어도 애플리케이션은 기동됨
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 1s
+      connect-timeout: 1s
+
+  # Kafka — Outbox 이벤트 발행·알림 Consumer (#42, docs/architecture.md Kafka 장)
+  # 접속 주소는 환경변수(기본 localhost:9094 = docker-compose kafka의 호스트용 리스너)
+  # Kafka에 접속하지 못해도 애플리케이션은 기동되고 결제 등 업무 처리는 그대로 됨 (이벤트는 outbox_events에 쌓였다가 회복 후 발행)
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    producer:
+      # 모든 복제본 저장 확인 후 성공 + 프로듀서 멱등성(재전송으로 인한 브로커 중복 저장 방지)
+      acks: all
+      properties:
+        enable.idempotence: true
+        # 기본값(60초·2분) 대신 짧게: Kafka 장애 시 발행 batch가 행 잠금을 오래 쥐지 않고 빨리 실패 기록 → 백오프 재시도
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+    consumer:
+      # 그룹이 처음 붙을 때 토픽 처음부터 읽음 → Consumer가 늦게 떠도 그 사이 발행된 이벤트를 놓치지 않음
+      auto-offset-reset: earliest
+    admin:
+      # 기동 시 토픽 확인·생성 대기 시간 (기본 30초) — Kafka 장애 때 기동이 오래 멈추지 않도록
+      operation-timeout: 5s
 
   # JPA
   jpa:
@@ -14,10 +64,8 @@ spring:
       # 스키마 변경은 Flyway(db/migration)만 담당, Hibernate는 엔티티와 테이블이 맞는지 검사만 함
       # 맞지 않으면 기동 실패 → 엔티티를 바꿨다면 마이그레이션 파일도 함께 추가
       ddl-auto: validate
-    show-sql: true
     properties:
       hibernate:
-        format_sql: true
         # hibernate.jdbc.time_zone은 일부러 지정하지 않음
         #   지정하면 JVM 시간대와 다를 때 LocalDateTime을 저장하면서 시간대 변환이 한 번 더 일어나 값이 밀림
         #   (예: JVM UTC + time_zone Asia/Seoul → 23:59가 다음 날 08:59로 저장, TimeZoneIntegrationTest로 확인)
@@ -37,18 +85,111 @@ spring:
 payment:
   fee:
     rate: "0.05" # 문자열로 지정 → double을 거치지 않고 BigDecimal로 그대로 바인딩
+  # 결제 멱등성(Idempotency-Key 헤더) 기록 보관 시간 — config.PaymentIdempotencyProperties
+  # processing-ttl: 처리 중 기록 유지 시간 (결제 1건 처리 시간보다 넉넉하게, 서버가 처리 중 죽으면 이 시간 뒤 재시도 가능)
+  # completed-ttl: 완료 응답 보관 시간 (이 시간 안의 같은 키 재시도는 처음 응답을 그대로 받음)
+  idempotency:
+    processing-ttl: 1m
+    completed-ttl: 24h
 
 # 일 정산 자동 확정 — scheduler.SettlementScheduler
 # enabled: false면 스케줄 실행 안 함 (config.SchedulingConfig)
 # cron: 초 분 시 일 월 요일, Asia/Seoul 기준. D일은 D+1 01:00에 확정 가능 → 10분 여유를 두고 01:10
 # catch-up-days: 실행할 때마다 최근 N일을 확정 (실행을 놓친 날 보충, 이미 확정된 날은 건너뜀)
+# lock-at-most-for / lock-at-least-for: 여러 서버 중 한 대만 실행하는 Redis 분산 락 (#41, lock.RedisDistributedLock)
+#   at-most: 락 최대 유지 시간 — 서버가 실행 중 죽어도 이 시간 뒤 풀림. 집계 최대 실행 시간보다 넉넉하게
+#   at-least: 빨리 끝나도 이 시간까지 락 유지 — 시계가 늦은 서버가 끝난 작업을 다시 실행하지 않도록
 settlement:
   scheduler:
     enabled: true
     cron: "0 10 1 * * *"
     catch-up-days: 7
+    lock-at-most-for: 30m
+    lock-at-least-for: 5m
 
-# JWT — secret은 Base64 인코딩된 256비트 이상 키. 운영에서는 JWT_SECRET 환경변수로 주입
+# Transactional Outbox (#42) — config.OutboxProperties, docs/architecture.md Kafka 장
+# topic: 업무 이벤트 토픽 (DLT는 {topic}-dlt). 파티션 수는 config.KafkaConfig
+# publisher: outbox_events → Kafka 발행 (event.OutboxPublisher / OutboxPublishScheduler)
+#   enabled: false면 이 인스턴스는 발행하지 않음 (이벤트 저장은 계속, 여러 인스턴스가 켜져 있어도 SKIP LOCKED로 나눠 발행)
+#   fixed-delay: 발행 주기 / batch-size: 한 번에 발행하는 최대 건수 / send-timeout: batch 발행 결과 대기 시간
+#   max-attempts: 이 횟수만큼 실패하면 FAILED (자동 재시도 중단, 운영자 확인 대상)
+#   재시도 간격 = min(initial-backoff × 2^(실패 횟수-1), max-backoff) → 1s, 2s, 4s ... 최대 5분 (10번이면 약 13분간 재시도)
+# consumer: 알림 Consumer 처리 실패 시 retry-interval 간격으로 retry-attempts번 재시도 후 DLT
+outbox:
+  topic: delivery-events
+  publisher:
+    enabled: true
+    fixed-delay: 1s
+    batch-size: 100
+    send-timeout: 10s
+    max-attempts: 10
+    initial-backoff: 1s
+    max-backoff: 5m
+  consumer:
+    retry-attempts: 3
+    retry-interval: 1s
+
+# 알림 발송 (V14) — config.NotificationProperties, event.NotificationDispatcher
+# 알림 기록(notifications)의 PENDING 행을 읽어 발송기(event.NotificationSender, 기본은 로그 출력)로 보냄
+#   enabled: false면 이 인스턴스는 발송하지 않음 (기록 저장은 계속, 여러 인스턴스가 켜져 있어도 SKIP LOCKED로 나눠 발송)
+#   fixed-delay: 발송 주기 / batch-size: 한 번에 발송하는 최대 건수
+#   max-attempts: 이 횟수만큼 실패하면 FAILED (자동 발송 중단) / retry-delay: 실패 후 재시도 간격
+notification:
+  dispatcher:
+    enabled: true
+    fixed-delay: 5s
+    batch-size: 100
+    max-attempts: 5
+    retry-delay: 1m
+
+# 보관 기간이 지난 기록 정리 (V14) — config.RetentionProperties, maintenance.RetentionCleaner
+#   enabled: false면 이 인스턴스는 정리하지 않음 / fixed-delay: 정리 주기
+#   batch-size: DELETE 한 번에 지우는 행 수 / max-batches-per-run: 한 주기에 테이블당 DELETE 횟수 (주기당 최대 10만 행)
+#   outbox-published: 발행 완료(PUBLISHED) 이벤트 보관 기간 — PENDING·FAILED는 지우지 않음
+#   consumed-events: Consumer 처리 기록 보관 기간 — Kafka 토픽 보관 기간(기본 7일)보다 길어야 재전달된 메시지를 중복으로 걸러냄
+#   payment-idempotency-keys: DB 결제 멱등성 기록 보관 기간 — 지난 뒤 같은 키 재시도는 처음 응답 대신 409(이미 결제됨)
+retention:
+  enabled: true
+  fixed-delay: 1h
+  batch-size: 1000
+  max-batches-per-run: 100
+  outbox-published: 7d
+  consumed-events: 30d
+  payment-idempotency-keys: 30d
+
+# JWT — secret은 Base64 인코딩된 256비트 이상 키, JWT_SECRET 환경변수로만 주입
+# 기본값을 두지 않음: 저장소에 공개된 키로 운영 토큰이 서명되는 일을 막기 위해, 값이 없으면 기동 실패
+# 테스트는 src/test/resources/application-test.yml의 테스트 전용 키 사용
 jwt:
-  secret: ${JWT_SECRET:ZGV2LW9ubHktc2VjcmV0LWtleS1mb3Itc3ByaW5nLWRlbGl2ZXJ5LW1pbmktand0LTI1NmJpdA==}
+  secret: ${JWT_SECRET}
   expiration-ms: 3600000  # 1시간
+
+# 로그 — 모든 로그 줄에 요청별 traceId(logging.TraceIdFilter가 MDC에 넣은 값)를 출력
+# 요청 밖(스케줄러 등)에서는 빈 값. 응답 헤더 X-Trace-Id·에러 응답 traceId와 같은 값으로 로그를 찾을 수 있음
+logging:
+  pattern:
+    correlation: "[%X{traceId:-}] "
+
+# Actuator — 기본값은 운영 기준으로 최소 노출: 헬스체크만, 상세(DB 상태 등) 없이 UP/DOWN만
+# 메트릭(prometheus)은 local·dev 프로필에서만 노출 (application-local.yml, application-dev.yml)
+# 노출된 엔드포인트의 접근 권한은 SecurityConfig (health·prometheus는 공개, 나머지는 ADMIN)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+  # Redis 헬스체크는 끔: Redis 장애 때도 키 없는 결제·조회 등 나머지 API는 정상이므로
+  # 헬스체크가 DOWN이 되어 인스턴스 전체가 트래픽에서 빠지거나 재시작되지 않도록 (Redis 장애는 로그·503으로 드러남)
+  health:
+    redis:
+      enabled: false
+
+# API 문서(springdoc) — 기본 비활성: 운영에서 API 구조가 공개되지 않도록 local·dev 프로필에서만 켬
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

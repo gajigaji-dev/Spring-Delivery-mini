@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import jakarta.persistence.*;
+import org.hibernate.annotations.BatchSize;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -38,6 +39,9 @@ public class Order extends BaseEntity {
     // 주문 항목 (메뉴 1종 × 수량)
     // 항목은 주문 없이 존재할 수 없음 → 주문 저장·삭제 시 함께 저장·삭제(cascade), 목록에서 빠지면 삭제(orphanRemoval)
     // 외부에는 읽기 전용으로만 노출 → 항목 추가는 addItem()으로만
+    // 목록 조회에서 주문마다 항목을 따로 조회(N+1)하지 않도록, 한 페이지의 주문 항목을 IN 쿼리 한 번으로 조회 (#40)
+    //   size = 목록 한 페이지의 최대 크기 (dto.PageQuery.MAX_SIZE와 같은 값)
+    @BatchSize(size = 100)
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<OrderItem> orderItems = new ArrayList<>();
 

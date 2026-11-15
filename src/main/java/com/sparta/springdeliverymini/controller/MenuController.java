@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.MenuCreateRequest;
 import com.sparta.springdeliverymini.dto.MenuResponse;
 import com.sparta.springdeliverymini.dto.MenuUpdateRequest;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.service.MenuService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -37,10 +38,13 @@ public class MenuController {
         return ResponseEntity.status(HttpStatus.CREATED).body(menu);
     }
 
-    // 삭제되지 않은 전체 메뉴 목록 조회
+    // 삭제되지 않은 메뉴 목록 조회
+    // 페이지 단위 (?page=0&size=20, size 최대 100), 본문은 배열 그대로이고 페이지 정보는 응답 헤더
     @GetMapping("/menus")
-    public List<MenuResponse> getMenus() {
-        return menuService.getMenus();
+    public ResponseEntity<List<MenuResponse>> getMenus(
+            @RequestParam(defaultValue = PageQuery.DEFAULT_PAGE_PARAM) int page,
+            @RequestParam(defaultValue = PageQuery.DEFAULT_SIZE_PARAM) int size) {
+        return SliceResponse.of(menuService.getMenus(PageQuery.of(page, size)));
     }
 
     // 메뉴 ID로 특정 메뉴 조회

@@ -1,10 +1,13 @@
 package com.sparta.springdeliverymini.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.Payment;
+import com.sparta.springdeliverymini.entity.PaymentStatus;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.entity.User;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
@@ -18,6 +21,7 @@ import java.time.LocalDateTime;
 // 관리자 결제 관리 — 배달완료 주문의 전액 환불 (docs/settlement-policy.md 9장)
 // - 환불 규칙(완료된 결제만, 배달완료 주문만, 중복 환불 불가)은 Payment.refund()가 판단 (위반 시 409)
 // - 정산에는 여기서 손대지 않음 → 다음에 집계되는 정산이 미차감 환불로 찾아 차감 (이미 만들어진 정산은 바뀌지 않음)
+@Slf4j
 @Service
 @Transactional(readOnly = true)
 @RequiredArgsConstructor // final 필드를 받는 생성자 자동 생성 (생성자 주입)
@@ -26,6 +30,7 @@ public class AdminPaymentService {
     private final PaymentRepository paymentRepository;
     private final UserRepository userRepository;
     private final Clock clock; // 환불 시각 기준 (config.TimeConfig, Asia/Seoul)
+    private final OutboxEventRecorder outboxEventRecorder; // 환불 이벤트 (#42)
 
     // 전액 환불 — COMPLETED → REFUNDED, 환불 시각 기록
     // 고객 결제액·플랫폼 수수료·매장 정산액이 모두 취소됨 (차감액은 결제에 저장된 금액 그대로)
@@ -37,7 +42,13 @@ public class AdminPaymentService {
         Payment payment = paymentRepository.findByIdForUpdate(paymentId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "결제가 없습니다."));
 
+        PaymentStatus before = payment.getStatus();
         payment.refund(LocalDateTime.now(clock));
+        // 환불 이벤트를 같은 트랜잭션에 저장 (Transactional Outbox, #42) — Kafka 발행은 커밋 후 별도로
+        outboxEventRecorder.paymentRefunded(payment);
+        // 환불 상태 변경 로그 — 식별자·금액·상태만 기록 (관리자·고객 아이디 등 개인정보는 남기지 않음)
+        log.info("결제 환불 paymentId={}, orderId={}, amount={}, status={}->{}",
+                payment.getId(), payment.getOrder().getId(), payment.getAmount(), before, payment.getStatus());
         return PaymentResponse.from(payment);
     }
 

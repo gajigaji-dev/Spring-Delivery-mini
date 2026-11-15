@@ -1,9 +1,12 @@
 package com.sparta.springdeliverymini.controller;
 
 import lombok.RequiredArgsConstructor;
+import com.sparta.springdeliverymini.dto.KeysetQuery;
 import com.sparta.springdeliverymini.dto.OrderCreateRequest;
 import com.sparta.springdeliverymini.dto.OrderResponse;
 import com.sparta.springdeliverymini.dto.OrderStatusUpdateRequest;
+import com.sparta.springdeliverymini.dto.PageQuery;
+import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.service.OrderService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -34,12 +37,30 @@ public class OrderController {
         return ResponseEntity.status(HttpStatus.CREATED).body(order);
     }
 
+    // 주문 목록 — 페이지 단위 (?page=0&size=20, size 최대 100), 본문은 배열 그대로이고 페이지 정보는 응답 헤더
+    // ?afterId=를 주면 keyset 페이징 (#54): 마지막으로 받은 주문 id 다음부터 조회 → 뒤쪽 페이지도 응답 시간이 일정
+    //   다음 요청 위치는 응답 헤더 X-Next-After-Id (다음 페이지가 있을 때만). page와 함께 주면 어느 쪽 기준인지 모호해 400
+    //   page 방식은 기존 클라이언트 호환을 위해 그대로 유지
     @GetMapping("/orders")
-    public List<OrderResponse> getOrders(
+    public ResponseEntity<List<OrderResponse>> getOrders(
+            @RequestParam(required = false) Integer page,
+            @RequestParam(defaultValue = PageQuery.DEFAULT_SIZE_PARAM) int size,
+            @RequestParam(required = false) Long afterId,
             Authentication authentication
     ) {
         // JWT에서 현재 로그인한 사용자의 username을 가져와 주문 조회
-        return orderService.getOrders(authentication.getName());
+        if (afterId != null) {
+            if (page != null) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "page와 afterId는 함께 사용할 수 없습니다.");
+            }
+            return SliceResponse.ofKeyset(
+                    orderService.getOrdersAfter(authentication.getName(), KeysetQuery.of(afterId, size)),
+                    OrderResponse::id);
+        }
+        int pageNumber = page == null ? Integer.parseInt(PageQuery.DEFAULT_PAGE_PARAM) : page;
+        return SliceResponse.of(
+                orderService.getOrders(authentication.getName(), PageQuery.of(pageNumber, size)),
+                OrderResponse::id);
     }
 
     // Patch: 주문 삭제가 아닌 주문요청 -> 주문취소로 상태 변경 위함
