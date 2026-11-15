@@ -4,6 +4,8 @@ import com.sparta.springdeliverymini.event.InvalidEventMessageException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -37,24 +39,35 @@ public class KafkaConfig {
 
     // Consumer 처리 실패 → retry-interval 간격으로 retry-attempts번 재시도 → 그래도 실패하면 DLT({topic}-dlt)로 보내고 다음 메시지 처리
     // - 형식이 잘못된 메시지(InvalidEventMessageException)는 재시도해도 결과가 같아 바로 DLT
-    // - DLT 메시지에는 원래 토픽·파티션·오프셋·예외 정보가 헤더(kafka_dlt-*)로 붙음 → 원인 확인 후 수동 재처리
+    // - DLT 메시지에는 원래 토픽·파티션·오프셋·예외 정보가 헤더(kafka_dlt-*)로 붙음 → 원인 확인 후 수동 재처리 (event.DltReprocessor)
     // - DLT 전송까지 실패하면(Kafka 장애) 오프셋을 넘기지 않고 같은 메시지를 다시 시도 → 메시지를 잃지 않음
     // Boot가 이 빈을 자동 설정된 리스너 컨테이너 팩토리에 연결함
     @Bean
     CommonErrorHandler kafkaErrorHandler(KafkaOperations<?, ?> kafkaOperations, OutboxProperties properties,
                                          MeterRegistry meterRegistry) {
-        // DLT로 보내는 메시지 수 — 처음 유입 전에도 0으로 노출 (monitoring/alerts.yml)
-        Counter deadLetters = meterRegistry.counter("outbox.dlt.records");
-        // 보낼 토픽을 직접 지정 (원래 파티션 번호 유지) — 기본 이름 규칙에 기대지 않고 위에서 만든 DLT로 보냄
-        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaOperations,
-                (record, exception) -> {
-                    deadLetters.increment();
-                    return new TopicPartition(properties.deadLetterTopic(), record.partition());
-                });
         OutboxProperties.Consumer consumer = properties.consumer();
-        DefaultErrorHandler handler = new DefaultErrorHandler(recoverer,
+        DefaultErrorHandler handler = new DefaultErrorHandler(deadLetterRecoverer(kafkaOperations, properties, meterRegistry),
                 new FixedBackOff(consumer.retryInterval().toMillis(), consumer.retryAttempts()));
         handler.addNotRetryableExceptions(InvalidEventMessageException.class);
         return handler;
+    }
+
+    // DLT 전송기 — 보낼 토픽을 직접 지정 (원래 파티션 번호 유지), 기본 이름 규칙에 기대지 않고 위에서 만든 DLT로 보냄
+    // outbox.dlt.records(DLT 적재 수)는 전송이 성공한 뒤에만 증가 (#52)
+    // - 토픽을 정하는 시점(destination resolver)에 세면 전송 실패 → 같은 메시지 재시도 때마다 다시 세어 과다 집계됨
+    // - publish()는 전송 결과를 기다리고(failIfSendResultIsError 기본 true) 실패면 예외 → 증가 코드까지 오지 않음
+    static DeadLetterPublishingRecoverer deadLetterRecoverer(KafkaOperations<?, ?> kafkaOperations,
+                                                             OutboxProperties properties, MeterRegistry meterRegistry) {
+        // 처음 유입 전에도 0으로 노출 (monitoring/alerts.yml)
+        Counter deadLetters = meterRegistry.counter("outbox.dlt.records");
+        return new DeadLetterPublishingRecoverer(kafkaOperations,
+                (record, exception) -> new TopicPartition(properties.deadLetterTopic(), record.partition())) {
+            @Override
+            protected void publish(ProducerRecord<Object, Object> outRecord, KafkaOperations<Object, Object> kafkaTemplate,
+                                   ConsumerRecord<?, ?> inRecord) {
+                super.publish(outRecord, kafkaTemplate, inRecord);
+                deadLetters.increment();
+            }
+        };
     }
 }

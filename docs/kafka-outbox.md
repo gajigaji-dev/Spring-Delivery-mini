@@ -121,4 +121,57 @@
 | 순서 | 같은 주문의 앞 이벤트가 `PENDING`이면 뒤 이벤트를 발행하지 않음 (`FAILED`는 막지 않음) |
 | 알림 발송·조회 API | `NotificationDispatcher`(PENDING → SENT / FAILED) + 로그 발송기, `GET /api/notifications` |
 
-남은 것: DLT 재처리 도구, 실제 발송 채널(이메일·SMS·푸시) 연동, Alertmanager 연동, 대용량 시 파티셔닝
+남은 것은 7장(DLT 재처리, #52)에서 반영한 것을 빼면: 실제 발송 채널(이메일·SMS·푸시) 연동, Alertmanager 연동, 대용량 시 파티셔닝
+
+## 7. DLT 재처리 · DLT 적재 카운터 (#52)
+
+동작 규칙·사용법의 기준 문서는 [프로젝트 구조 · Kafka 장 "DLT 재처리"](architecture.md#dlt-재처리-52), 로컬 수동 절차는 [로컬 확인 가이드 2-4](local-verification.md#2-4-kafka--dlt-재처리-52)
+
+### 7-1. 문제
+- DLT로 간 메시지를 원래 토픽으로 되돌리는 수단이 없음 → 원인(DB 장애 등)을 고쳐도 알림이 영영 저장되지 않음
+- `outbox.dlt.records`를 DLT 토픽을 정하는 시점(destination resolver)에 셈 → DLT 전송이 실패해 같은 메시지를 다시 시도할 때마다 또 세어 **과다 집계**, 알림 규칙(10분간 1건 이상)이 실제보다 크게 울림
+
+### 7-2. 결정
+| 결정 | 이유 |
+|---|---|
+| 관리자 API가 아닌 CLI(`dlt-reprocess` 프로필, `DltReprocessRunner`) | 원인을 고친 뒤 드물게 실행하는 운영 작업 → 상시 노출할 필요 없음. 웹 포트·Consumer·주기 작업을 끄고 재처리만 한 뒤 종료 코드로 결과를 알림(0/1/2) |
+| 키·본문·업무 헤더 유지, `kafka_dlt-*`만 제거, 파티션은 키로 | 다시 실패하면 새 원인으로 헤더가 다시 붙고, 같은 주문 이벤트는 원래처럼 한 파티션 |
+| 진행 위치 = Consumer 그룹 `dlt-reprocessor` 오프셋, 브로커 저장 확인 후 그 건만 커밋 | 별도 테이블(마이그레이션) 없이 재실행 시 이어서 처리. 커밋 전 종료로 한 번 더 보내는 경우는 Consumer 멱등성(`consumed_events`)이 최종 방어 |
+| 재발행 실패 시 그 건에서 멈춤 | 뒤 건만 먼저 가면 같은 파티션(같은 주문) 순서가 뒤바뀜 |
+| 시작 시점 끝 오프셋까지만 | 재처리 중 다시 실패해 DLT로 돌아온 메시지를 같은 실행에서 끝없이 반복하지 않음 |
+| 형식 오류는 건너뜀 (위치는 기록) | 본문이 그대로라 다시 보내도 같은 결과 |
+| Redis 분산 락, Redis 장애면 실행 안 함 | 두 실행이 같은 메시지를 보내고 진행 위치가 섞이는 것을 막음. 스케줄러와 같은 원칙(장애 시 데이터를 바꾸는 쪽으로 진행하지 않음) |
+| 카운터는 `DeadLetterPublishingRecoverer.publish()`를 감싸 전송 성공 후 증가 | `publish()`는 전송 결과를 기다리고 실패면 예외 → 성공한 건만 셈 |
+
+### 7-3. 구현 중 발견한 문제
+| 문제 | 원인 | 조치 |
+|---|---|---|
+| 로컬 Kafka에 파티션 1개짜리 `delivery-events-dlt`가 생김 | DLT가 없을 때 CLI의 Consumer 메타데이터 조회만으로 브로커가 기본 설정으로 자동 생성 → 오류 처리기가 원래 파티션 번호(0~2)로 보내지 못하게 됨 | Consumer에 `allow.auto.create.topics=false`, 토픽이 없으면 만들지 않고 종료 코드 1 (테스트로 고정) |
+| `web-application-type: none`으로 띄우면 기동 실패 | `SecurityConfig`가 웹 전용 `HttpSecurity`·`PasswordEncoder` 빈을 만듦 → 보안 설정까지 조건부로 바꿔야 함 | 웹 컨텍스트는 유지하고 `server.port: -1`(포트만 열지 않음) → 기존 설정 변경 없음 |
+| 로컬 수동 검증 3단계 첫 실행이 `exit=1`(이미 실행 중) | 14:03:55에 잡힌 `lock:dlt-reprocess`가 해제되지 않고 남음 (Redis AOF: 다른 실행은 모두 SET 뒤 DEL). 실행 중인 CLI는 없었음 → 강제 종료된 실행이 남긴 것으로 추정. 강제 종료(Ctrl+C·kill)는 `finally`의 락 해제를 건너뛰어 TTL 30분 동안 재실행이 막힘 | **코드 미수정**. 프로세스가 없음을 확인 후 `DEL`, 가이드 2-4에 확인·해제 절차 기록. 개선 후보: 종료 훅에서 내 토큰일 때만 해제하거나, 짧은 TTL + 실행 중 연장 |
+
+### 7-4. 검증
+| 요구사항 | 테스트 | 확인한 내용 |
+|---|---|---|
+| 재처리 성공 | `DltReprocessIntegrationTest` | 처리 실패 → DLT → 원인 해결 → 재처리 → 알림 저장, 원래 토픽에 같은 키·본문·업무 헤더, `kafka_dlt-*` 없음 |
+| 재처리 실패 | `DltReprocessIntegrationTest` | 다시 실패하면 DLT로 돌아오고 같은 실행에서 반복하지 않음, 다음 실행에서 새 건만 처리 |
+| 중복 실행 | `DltReprocessIntegrationTest`, `DltReprocessRunnerTest` | 두 번째 전체 재처리는 0건, 지정 재처리로 같은 건을 또 보내도 알림 1번, 이미 실행 중·Redis 장애면 실행 안 함 |
+| 부분 실패 | `DltReprocessIntegrationTest` | 두 번째 건 재발행 실패 → 그 건에서 멈춤(세 번째 미전송), 재실행 시 첫 건은 다시 보내지 않고 두 번째부터 |
+| 건너뜀·지정·오류 | `DltReprocessIntegrationTest`, `DltReprocessRunnerTest` | 형식 오류 건너뜀, 지정한 한 건만 재발행(전체 진행 위치 유지), 없는 파티션·오프셋, DLT 토픽 없음(생성 안 함), 인자 오류 종료 코드 2 |
+| 카운터 | `KafkaConfigTest`, `OutboxKafkaIntegrationTest` | 전송 실패 반복 중 0 → 성공 후 1, 실제 Kafka DLT 적재 시 1 증가 |
+| 기존 흐름 | 전체 테스트 | `OutboxKafkaIntegrationTest` 포함 기존 테스트 그대로 통과 |
+
+- 전체 테스트: **68개 클래스, 601건 통과, 실패·건너뜀 0** (2026-11-15)
+- jar로 CLI 실행: `--all` 종료 코드 0(포트 열지 않음), 인자 오류 2, DLT 토픽 없음 1 확인
+- 로컬 수동 시나리오(가이드 2-4, 2026-11-15): 11단계 중 1~10 통과, 11(재발행 부분 실패)은 수동 미검증(자동 테스트로만)
+  - DB 장애 → DLT 적재 **126.6초** (시도 4번 × DB 연결 대기 30초 + 재시도 간격 1초 × 3), 카운터 DLT 2건 = 2.0
+  - 재처리 → 약 70ms 뒤 알림 저장, 재실행 0건, 지정 재처리 중복은 `중복 무시`로 알림 1건 유지, 형식 오류 건너뜀, 락 점유·Redis 장애 `exit=1`, 인자 오류 `exit=2`
+  - 재시도 구간 중 카운터 값과 DLT 전송 실패 시 미집계는 수동으로 보지 않음 (`KafkaConfigTest`로만 확인)
+
+### 7-5. 변경 파일
+| 구분 | 파일 |
+|---|---|
+| 재처리 | 신규 `event/DltReprocessor`, `event/DltReprocessRunner`, `application-dlt-reprocess.yml` |
+| 카운터 | `config/KafkaConfig` (`deadLetterRecoverer`) |
+| 테스트 | 신규 `KafkaConfigTest`, `DltReprocessRunnerTest`, `DltReprocessIntegrationTest` / 수정 `OutboxKafkaIntegrationTest` |
+| 문서 | `docs/architecture.md`(Kafka 장), `docs/local-verification.md`(2-4), `README.md`, 이 문서 |

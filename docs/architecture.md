@@ -128,6 +128,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── NotificationDispatcher.java      # 알림 기록 → 발송 (SKIP LOCKED, 실패 시 재시도, 한도 초과 FAILED) (V14)
 │   ├── NotificationSender.java / LoggingNotificationSender.java # 발송 채널 인터페이스 / 기본 구현(로그 출력) (V14)
 │   ├── NotificationEventListener.java   # Kafka Consumer — 메시지 해석·검증 후 NotificationService 호출
+│   ├── DltReprocessor.java              # DLT → 원래 토픽 재발행 (kafka_dlt-* 헤더 제거, 그룹 오프셋으로 진행 위치 기록) (#52)
+│   ├── DltReprocessRunner.java          # DLT 재처리 CLI (dlt-reprocess 프로필, --all / --partition·--offset, 분산 락) (#52)
 │   ├── DeliveryEventMessage.java        # 이벤트 본문(payload) — 발생 시점 스냅샷
 │   └── InvalidEventMessageException.java # 형식이 잘못된 메시지 → 재시도 없이 DLT
 ├── scheduler
@@ -182,6 +184,7 @@ src/main/resources
 ├── application.yml                      # 공통 설정 (기본 프로필 local, DB 계정·JWT 키는 환경변수, Redis 주소·타임아웃, 멱등성 TTL·스케줄러 락, Kafka 주소·프로듀서 타임아웃, Outbox 발행·재시도, 로그 traceId, Actuator health만(Redis 헬스체크 제외)·springdoc 비활성)
 ├── application-local.yml                # local: localhost DB, 루트 .env 읽기, SQL 로그, prometheus·Swagger UI 노출
 ├── application-dev.yml                  # dev: docker-compose 실행 (DB_URL, REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS), Actuator 관리 포트 8081, Swagger UI
+├── application-dlt-reprocess.yml        # dlt-reprocess: DLT 재처리 CLI — HTTP 포트·Consumer·주기 작업 끔 (#52)
 └── db/migration                         # Flyway 마이그레이션 SQL (V{버전}__{설명}.sql)
 ```
 
@@ -380,13 +383,46 @@ sequenceDiagram
 |---|---|---|
 | `outbox.events{status=pending\|failed}` | 발행 대기·발행 포기 건수 (수집 때마다 DB에서 셈, 부분 인덱스) | `failed` > 0 |
 | `outbox.oldest.pending.age.seconds` | 가장 오래된 발행 대기 이벤트의 대기 시간 | 5분 초과 |
-| `outbox.dlt.records` | Consumer가 DLT로 보낸 메시지 수 | 10분간 1건 이상 |
+| `outbox.dlt.records` | Consumer가 DLT로 보낸 메시지 수 (DLT 전송 성공 후에만 증가 — 전송 실패 재시도는 세지 않음, #52) | 10분간 1건 이상 |
 | `kafka.consumer.fetch.manager.records.lag.max` | Consumer lag (Kafka 클라이언트 메트릭, Boot 자동 등록) | 1,000건 초과 5분 |
 | `notification.send{result}` | 발송 결과 — `sent` / `retry` / `failed` | `failed` 발생 |
 | `retention.deleted{table}` | 정리한 행 수 | - |
 
+### DLT 재처리 (#52)
+
+DLT 메시지는 원인(DB 장애·버그 등)을 고친 뒤 운영자가 CLI로 원래 토픽에 다시 발행 — `DltReprocessor`, `DltReprocessRunner`
+(발행 실패 쪽 `FAILED`는 관리자 재발행 API, Consumer 처리 실패 쪽 DLT는 이 CLI)
+
+```bash
+# 아직 처리하지 않은 DLT 메시지 전체 (local — DB·Redis·Kafka 필요)
+./gradlew bootRun --args='--spring.profiles.active=local,dlt-reprocess --all'
+# DLT 파티션 0의 오프셋 12 한 건
+./gradlew bootRun --args='--spring.profiles.active=local,dlt-reprocess --partition=0 --offset=12'
+# jar / docker-compose(dev)
+java -jar build/libs/Spring-Delivery-Mini-0.0.1-SNAPSHOT.jar --spring.profiles.active=local,dlt-reprocess --all
+docker compose run --rm app --spring.profiles.active=dev,dlt-reprocess --all
+```
+
+- 종료 코드: `0` 성공 / `1` 재처리 실패·이미 실행 중·Redis 장애·DLT 토픽 없음 / `2` 인자 오류. 결과(재발행·건너뜀 건수, 실패 위치)는 로그
+- `dlt-reprocess` 프로필은 HTTP 포트(`server.port: -1`)·알림 Consumer·주기 작업(발행·발송·정리·정산)을 끄고 재처리만 한 뒤 종료
+- 관리자 API로 두지 않은 이유: 원인을 고친 뒤 드물게 실행하는 운영 작업이라 상시 노출할 필요가 없음
+
+| 항목 | 동작 | 이유 |
+|---|---|---|
+| 재발행 내용 | 키·본문·업무 헤더(`eventId`·`eventType`)는 그대로, `kafka_dlt-*` 헤더만 제거. 파티션은 키로 결정 | 다시 실패하면 새 원인으로 헤더가 다시 붙음. 같은 주문 이벤트는 원래처럼 한 파티션 |
+| 진행 위치 (`--all`) | Consumer 그룹 `dlt-reprocessor`의 오프셋. 브로커 저장 확인 후에만 그 건을 커밋 | 다시 실행하면 처리한 건은 건너뛰고 이어서 처리 |
+| 부분 실패 | 재발행이 실패한 건에서 멈춤 (뒤 건·다른 파티션도 보내지 않음), 종료 코드 1 | 같은 파티션 순서 유지, 재실행 시 실패한 건부터 |
+| 실행 범위 (`--all`) | 시작 시점의 DLT 끝 오프셋까지 | 재처리 중 다시 실패해 DLT로 돌아온 메시지를 같은 실행에서 반복해 보내지 않음 |
+| 지정 재처리 | 그 한 건만 보내고 그룹 오프셋은 바꾸지 않음 | 앞의 미처리 건을 처리한 것으로 만들지 않음 |
+| 건너뜀 | 형식 오류(`InvalidEventMessageException`)·원래 토픽이 업무 토픽이 아닌 메시지 (위치는 기록) | 본문이 같아 다시 보내도 결과가 같음 |
+| 동시 실행 | Redis 분산 락 `lock:dlt-reprocess` (최대 30분) — 잡지 못하면 실행하지 않음, Redis 장애도 실행 안 함 | 두 실행이 같은 메시지를 보내고 진행 위치가 섞이는 것을 막음 |
+| 강제 종료 (한계) | Ctrl+C·kill로 끊으면 락이 해제되지 않고 TTL(30분)까지 남아 다음 실행이 `exit=1` (로컬 검증에서 실제 발생) | 해제는 `finally`에서만 함. 실행 중인 CLI가 없음을 확인한 뒤 `DEL` ([로컬 확인 가이드 2-4](local-verification.md#2-4-kafka--dlt-재처리-52) "주의") |
+| DLT 토픽 없음 | 만들지 않고 실패 (Consumer `allow.auto.create.topics=false`) | 조회만으로 브로커가 파티션 1개짜리 DLT를 자동 생성하면 오류 처리기가 원래 파티션 번호로 보내지 못함 |
+
+- **중복 알림 방지의 최종 근거는 Consumer의 `consumed_events`**: 전송 성공 후 커밋 전에 죽거나, 지정 재처리로 같은 건을 또 보내도 알림은 한 번
+- 재처리 대상(파티션·오프셋·`kafka_dlt-*` 헤더) 확인과 로컬 수동 시나리오는 [로컬 확인 가이드 2-4](local-verification.md#2-4-kafka--dlt-재처리-52)
+
 ### 후속 개선
-- **DLT 재처리 도구**: DLT 메시지는 원인 확인 후 수동 재처리 — 원래 토픽으로 되돌리는 도구는 없음 (발행 실패 쪽 `FAILED`는 관리자 재발행으로 해결)
 - **실제 발송 채널**: 이메일·SMS·푸시 연동, 발송 `FAILED` 알림의 재발송 API
 - **대용량 정리**: 행 수가 크게 늘면 주기 삭제 대신 테이블 파티셔닝(파티션 DROP)
 - **알림 전달**: Alertmanager 연동, Outbox·알림 대시보드 패널
@@ -440,7 +476,8 @@ sequenceDiagram
 - 통합 테스트는 `@Import(TestcontainersConfiguration.class)`를 붙이면 PostgreSQL 18·Redis 컨테이너가 뜨고 `@ServiceConnection`으로 자동 연결됨
 - Redis 테스트 (#41): `PaymentIdempotencyIntegrationTest`(같은 키 재전송·동시 요청 1건 처리·다른 요청 422·키 없는 기존 동작·실패 후 재시도·사용자별 분리·키 형식·TTL), `PaymentIdempotencyRedisFailureTest`(연결 실패·타임아웃 503, 결제 후 Redis 실패에도 응답 유지·재실행 없음), `RedisDistributedLockTest`(획득·해제·예외·최소/최대 유지 시간·만료 후 남의 락 보호·동시 경합·장애), `SettlementSchedulerLockTest`(여러 인스턴스 동시 실행 시 1번만 집계, 늦게 깨어난 인스턴스, 실패 후 해제, Redis 장애 시 미실행)
   - 장애 재현: `RedisTestSupport`의 별도 Redis 컨테이너에 `CLIENT PAUSE`(타임아웃) / 닫힌 포트(연결 실패) — 통합 테스트용 Redis에는 영향 없음
-- Kafka·Outbox 테스트 (#42): `OutboxEventTest`(PENDING → PUBLISHED / 실패 재시도 예약 → 한도 초과 FAILED), `OutboxPropertiesTest`(설정 검증, 지수 백오프), `OutboxPublisherTest`(키·헤더·본문, 일부 실패·send 즉시 예외·시간 초과, 한도 초과), `OutboxIntegrationTest`(Kafka 접속 불가 상태: 결제·배달완료·환불과 이벤트 원자성·함께 롤백·트랜잭션 밖 저장 거부, 결제 성공 + 재시도 대기 → 백오프 → FAILED, 여러 인스턴스 동시 발행 시 이벤트당 1번, 동시·반복 수신 시 알림 1번, 알림 저장 실패 시 처리 기록 롤백, 테이블 제약), `OutboxKafkaIntegrationTest`(실제 Kafka: 발행 → 알림 저장, 발행 실패 후 재시도 발행, 같은 이벤트 중복 전달, 처리 실패 재시도 후 DLT·다음 메시지 계속 처리, 형식 오류 즉시 DLT)
+- Kafka·Outbox 테스트 (#42): `OutboxEventTest`(PENDING → PUBLISHED / 실패 재시도 예약 → 한도 초과 FAILED), `OutboxPropertiesTest`(설정 검증, 지수 백오프), `OutboxPublisherTest`(키·헤더·본문, 일부 실패·send 즉시 예외·시간 초과, 한도 초과), `OutboxIntegrationTest`(Kafka 접속 불가 상태: 결제·배달완료·환불과 이벤트 원자성·함께 롤백·트랜잭션 밖 저장 거부, 결제 성공 + 재시도 대기 → 백오프 → FAILED, 여러 인스턴스 동시 발행 시 이벤트당 1번, 동시·반복 수신 시 알림 1번, 알림 저장 실패 시 처리 기록 롤백, 테이블 제약), `OutboxKafkaIntegrationTest`(실제 Kafka: 발행 → 알림 저장, 발행 실패 후 재시도 발행, 같은 이벤트 중복 전달, 처리 실패 재시도 후 DLT·다음 메시지 계속 처리, 형식 오류 즉시 DLT, DLT 적재 카운터)
+- DLT 재처리 테스트 (#52): `KafkaConfigTest`(DLT 전송 성공 시에만 카운터 증가), `DltReprocessRunnerTest`(인자 해석·종료 코드, 이미 실행 중·Redis 장애 시 실행 안 함), `DltReprocessIntegrationTest`(실제 Kafka: 재처리 → 알림 저장·헤더 제거, 재실행 시 재발행 없음·지정 재처리 중복에도 알림 1번, 다시 실패하면 DLT로 돌아오고 같은 실행에서 반복 안 함, 재발행 부분 실패 후 이어서 처리, 형식 오류 건너뜀, 지정 재처리, 없는 위치·DLT 토픽 없음)
 - 후속 개선 테스트 (V14): `OutboxFollowUpMigrationTest`(V13 데이터 위에 V14 적용 — 기존 알림 `SKIPPED`, 새 제약·인덱스), `OutboxFollowUpIntegrationTest`(같은 주문 발행 순서, FAILED 단건·일괄 재발행과 409·403, 알림 발송·재시도·FAILED·SKIPPED, 내 알림 목록, 보관 기간 정리, Outbox 게이지·발송 카운터), `NotificationTest`(발송 상태 전이), `AdminOutboxSecurityTest`(관리자 Outbox API·내 알림 API 권한), `PaymentIdempotencyIntegrationTest`·`PaymentIdempotencyRedisFailureTest`에 DB 기록 재전송(Redis 기록 유실·Redis 장애) 추가
   - test 프로필은 알림 발송·보관 기간 정리의 주기 실행을 끄고(`application-test.yml`) 테스트가 직접 호출
   - Kafka 컨테이너는 `KafkaTestcontainersConfiguration`을 함께 `@Import`한 클래스에서만 뜸. test 프로필은 토픽 생성·Consumer·주기 발행을 끄고(`application-test.yml`), Kafka 테스트 클래스가 속성으로 다시 켬. 발행은 `publishPending()`을 직접 호출해 시점을 고정
