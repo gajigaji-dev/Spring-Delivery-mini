@@ -80,6 +80,7 @@
 | 주문 취소 (결제 취소 포함) | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
 | 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 매장 주문) | 204 |
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
+| 결제 단건 조회 | GET | `/api/payments/{id}` | O | CUSTOMER (본인 결제) | 200 |
 | 내 알림 목록 | GET | `/api/notifications?page=&size=` | O | 로그인 사용자 | 200 |
 | 정산 목록 조회 (관리자) | GET | `/api/admin/settlements?date=&status=` | O | ADMIN | 200 |
 | 정산 확정 (관리자) | PATCH | `/api/admin/settlements/{id}/confirm` | O | ADMIN | 200 |
@@ -499,7 +500,7 @@ Idempotency-Key: 3f6c1e0a-8d2b-4c7e-9a51-2b7d0c9e4f13
 - 값: 영문·숫자·`-`·`_` 1~64자 (UUID 권장). 사용자별로 구분 → 다른 사용자의 같은 키와 섞이지 않음
 - 같은 키 + 같은 요청(`orderId`·`paymentMethod`)이 다시 오면 결제하지 않고 **처음 응답(201·본문)을 그대로** 돌려주고 `Idempotent-Replayed: true` 헤더를 붙임
   - 보관 기간: 결제 **완료 시점부터 30일** (Redis 완료 기록 24시간 + 결제와 함께 저장한 DB 기록 30일). 지난 뒤 같은 키로 보내면 새 요청으로 처리되어, 이미 결제된 주문이므로 409
-  - 재전송하는 본문은 **결제 직후의 응답** — 그 뒤 주문이 배달완료·환불됐어도 처음 값(`PAYMENT_COMPLETED`·`COMPLETED`)이므로, 현재 상태는 주문 조회로 확인
+  - 재전송하는 본문은 **결제 직후의 응답** — 그 뒤 주문이 배달완료·환불됐어도 처음 값(`PAYMENT_COMPLETED`·`COMPLETED`)이므로, 현재 상태는 [결제 단건 조회](#결제-단건-조회-get-apipaymentsid)로 확인
   - 처리 중 기록은 최대 1분 — 그 사이 같은 키 요청은 409(처리 중). 결제가 커밋된 뒤라면 처리 중 기록이 남아 있어도 DB 기록으로 처음 응답을 재전송
 - 결제가 실패한 요청(4xx·5xx)은 기록하지 않음 → 같은 키로 다시 시도 가능 (같은 이유면 같은 오류)
 - 키와 관계없이 **주문당 결제는 1건** — 다른 키로 이미 결제된 주문을 결제하면 기존처럼 409
@@ -516,6 +517,27 @@ Idempotency-Key: 3f6c1e0a-8d2b-4c7e-9a51-2b7d0c9e4f13
 | 409 | 주문요청 상태가 아님 (이미 결제됨·취소됨), 중복 결제, 같은 `Idempotency-Key`의 결제가 처리 중이거나 같은 키로 다른 주문이 동시에 결제됨 |
 | 422 | 같은 `Idempotency-Key`로 다른 결제 요청 (`orderId`·`paymentMethod`가 처음과 다름) |
 | 503 | `Idempotency-Key`가 있는데 Redis 장애·타임아웃이고, 그 키로 완료된 결제가 없음 (결제하지 않음) |
+
+### 결제 단건 조회 `GET /api/payments/{id}`
+결제의 **현재** 상태 조회 (#53). 결제 응답을 받지 못했을 때(타임아웃 등) 같은 `Idempotency-Key`로 재전송하기 전에 결과를 확인하는 용도
+
+Response `200 OK` — 결제 응답과 같은 형식(`PaymentResponse`)
+```json
+{
+  "id": 1, "orderId": 1, "amount": 36000, "paymentMethod": "CARD",
+  "orderStatus": "DELIVERY_COMPLETED", "paidAt": "2026-10-08T14:05:00",
+  "status": "REFUNDED", "cancelledAt": null, "refundedAt": "2026-10-09T10:00:00"
+}
+```
+- 멱등성 재전송 본문(결제 직후 값)과 달리 취소·환불·배달 진행이 반영된 현재 값 (`orderStatus`·`status`·`cancelledAt`·`refundedAt`)
+- 수수료·정산액은 포함하지 않음 (결제 응답과 같음)
+- 본인 주문의 결제만 조회 — 결제자 = 주문자. OWNER는 매장 주문 조회·정산 조회 사용
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음, 회원이 삭제됨 |
+| 403 | OWNER·ADMIN이 요청, 본인 결제가 아님 |
+| 404 | 결제 없음 |
 
 ---
 

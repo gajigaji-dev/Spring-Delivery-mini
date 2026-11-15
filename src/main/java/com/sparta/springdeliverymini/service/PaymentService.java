@@ -49,6 +49,31 @@ public class PaymentService {
                         record.getFingerprint(), PaymentResponse.atPayment(record.getPayment())));
     }
 
+    // 결제 단건 조회 (#53) — 응답을 못 받은 결제(타임아웃 등)를 재전송하기 전에 현재 결과를 확인하는 용도
+    // 멱등성 재전송 응답은 결제 직후 값이지만, 이 API는 현재 결제·주문 상태를 돌려줌
+    public PaymentResponse getPayment(Long paymentId, String username) {
+
+        // 토큰은 유효하지만 그 사이 회원이 삭제된 경우 → 401
+        User currentUser = userRepository.findByUsername(username)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "존재하지 않는 회원입니다."));
+
+        // SecurityConfig에서 1차로 막지만, 토큰 발급 후 역할이 바뀐 경우까지 대비 → 403
+        if (currentUser.getRole() != Role.CUSTOMER) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "CUSTOMER만 결제를 조회할 수 있습니다.");
+        }
+
+        Payment payment = paymentRepository.findWithOrderById(paymentId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "결제 내역이 없습니다."));
+
+        // 결제자 = 주문자 (결제는 본인 주문만 가능) → 주문자 기준으로 본인 결제인지 확인
+        // 다른 CUSTOMER의 결제면 → 403 (주문 취소·결제와 같은 기준)
+        if (!payment.getOrder().getUser().getId().equals(currentUser.getId())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "본인의 결제만 조회할 수 있습니다.");
+        }
+
+        return PaymentResponse.from(payment);
+    }
+
     @Transactional
     public PaymentResponse pay(PaymentRequest request, String username) {
         return pay(request, username, null, null);

@@ -5,10 +5,13 @@ import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.service.PaymentIdempotencyService;
 import com.sparta.springdeliverymini.service.PaymentIdempotencyService.PaymentResult;
+import com.sparta.springdeliverymini.service.PaymentService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -25,6 +28,14 @@ public class PaymentController {
     static final String REPLAYED_HEADER = "Idempotent-Replayed";
 
     private final PaymentIdempotencyService paymentIdempotencyService;
+    private final PaymentService paymentService;
+
+    // 결제 단건 조회 (#53) — CUSTOMER만 가능(SecurityConfig), 본인 결제인지·존재 여부는 Service에서 확인
+    // 결제 응답을 못 받았을 때 같은 키로 재전송하기 전에 현재 결제·주문 상태를 확인하는 용도
+    @GetMapping("/payments/{id}")
+    public PaymentResponse getPayment(@PathVariable Long id, Authentication authentication) {
+        return paymentService.getPayment(id, authentication.getName());
+    }
 
     // CUSTOMER만 결제 가능
     // CUSTOMER 권한 확인은 SecurityConfig에서 토큰의 role로 처리 (OWNER → 403)

@@ -20,6 +20,11 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     // 주문의 결제 (결제완료 주문을 취소할 때 결제도 함께 취소)
     Optional<Payment> findByOrderId(Long orderId);
 
+    // 결제 단건 조회용 (#53) — 응답에 주문 id·주문 상태가 들어가므로 주문을 함께 조회(fetch join)
+    // 소유권 확인(order.user.id)도 추가 쿼리 없이 처리됨
+    @Query("SELECT p FROM Payment p JOIN FETCH p.order WHERE p.id = :id")
+    Optional<Payment> findWithOrderById(@Param("id") Long id);
+
     // 환불용 조회 — 행 잠금(SELECT ... FOR UPDATE)
     // 같은 결제를 동시에 환불하면 뒤 요청은 앞 요청이 커밋될 때까지 기다린 뒤 REFUNDED를 읽고 409 → 환불은 한 번만 성공
     // (주문은 함께 조회하지 않음 — JOIN하면 orders 행까지 잠기므로. 배달완료 주문은 최종 상태라 잠글 필요 없음)
