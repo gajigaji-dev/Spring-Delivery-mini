@@ -7,6 +7,7 @@ import com.sparta.springdeliverymini.entity.Payment;
 import com.sparta.springdeliverymini.entity.PaymentStatus;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.entity.User;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
@@ -29,6 +30,7 @@ public class AdminPaymentService {
     private final PaymentRepository paymentRepository;
     private final UserRepository userRepository;
     private final Clock clock; // 환불 시각 기준 (config.TimeConfig, Asia/Seoul)
+    private final OutboxEventRecorder outboxEventRecorder; // 환불 이벤트 (#42)
 
     // 전액 환불 — COMPLETED → REFUNDED, 환불 시각 기록
     // 고객 결제액·플랫폼 수수료·매장 정산액이 모두 취소됨 (차감액은 결제에 저장된 금액 그대로)
@@ -42,6 +44,8 @@ public class AdminPaymentService {
 
         PaymentStatus before = payment.getStatus();
         payment.refund(LocalDateTime.now(clock));
+        // 환불 이벤트를 같은 트랜잭션에 저장 (Transactional Outbox, #42) — Kafka 발행은 커밋 후 별도로
+        outboxEventRecorder.paymentRefunded(payment);
         // 환불 상태 변경 로그 — 식별자·금액·상태만 기록 (관리자·고객 아이디 등 개인정보는 남기지 않음)
         log.info("결제 환불 paymentId={}, orderId={}, amount={}, status={}->{}",
                 payment.getId(), payment.getOrder().getId(), payment.getAmount(), before, payment.getStatus());

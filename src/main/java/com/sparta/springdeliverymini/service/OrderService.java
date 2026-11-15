@@ -7,6 +7,7 @@ import com.sparta.springdeliverymini.dto.OrderItemRequest;
 import com.sparta.springdeliverymini.dto.OrderResponse;
 import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
@@ -40,6 +41,7 @@ public class OrderService {
     private final StoreService storeService;
     private final PaymentRepository paymentRepository;
     private final Clock clock; // 배달완료·결제 취소 시각 기준 (config.TimeConfig, Asia/Seoul)
+    private final OutboxEventRecorder outboxEventRecorder; // 배달완료 이벤트 (#42)
 
     // 주문 목록 조회 — 페이지 단위, id 오름차순 (#40)
     public Slice<OrderResponse> getOrders(String username, PageQuery pageQuery) {
@@ -243,7 +245,11 @@ public class OrderService {
         // 현재 상태에서 허용되는지는 Order가 확인 (예: 결제 전 주문 수락, 배달완료 주문 변경 → 409)
         switch (newStatus) {
             case ORDER_ACCEPTED -> order.accept();         // PAYMENT_COMPLETED → ORDER_ACCEPTED
-            case DELIVERY_COMPLETED -> order.complete(LocalDateTime.now(clock)); // ORDER_ACCEPTED → DELIVERY_COMPLETED, 배달완료 시각 기록
+            case DELIVERY_COMPLETED -> {
+                order.complete(LocalDateTime.now(clock)); // ORDER_ACCEPTED → DELIVERY_COMPLETED, 배달완료 시각 기록
+                // 배달완료 이벤트를 같은 트랜잭션에 저장 (Transactional Outbox, #42) — 상태 전이가 성공한 뒤에만
+                outboxEventRecorder.deliveryCompleted(order);
+            }
             // OWNER가 요청할 수 없는 상태(주문요청·주문취소·결제완료) → 409
             default -> throw new InvalidOrderStatusException("허용되지 않는 주문 상태 변경입니다.");
         }

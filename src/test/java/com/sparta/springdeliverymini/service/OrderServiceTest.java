@@ -6,6 +6,7 @@ import com.sparta.springdeliverymini.dto.OrderItemResponse;
 import com.sparta.springdeliverymini.dto.OrderResponse;
 import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
+import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
@@ -63,6 +64,9 @@ class OrderServiceTest {
     @Mock
     private PaymentRepository paymentRepository;
 
+    @Mock
+    private OutboxEventRecorder outboxEventRecorder;
+
     // 배달완료 시각을 고정해 deliveredAt이 Clock 기준으로 기록되는지 확인
     private static final LocalDateTime FIXED_NOW = LocalDateTime.of(2026, 11, 5, 23, 59, 59);
     private final Clock fixedClock = Clock.fixed(FIXED_NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
@@ -73,7 +77,7 @@ class OrderServiceTest {
     @BeforeEach
     void setUp() {
         orderService = new OrderService(orderRepository, menuRepository, userRepository, storeService,
-                paymentRepository, fixedClock);
+                paymentRepository, fixedClock, outboxEventRecorder);
     }
 
     private final User customer = user(1L, "customer1", Role.CUSTOMER);
@@ -364,6 +368,7 @@ class OrderServiceTest {
         orderService.statusOrder(10L, "owner1", OrderStatus.ORDER_ACCEPTED);
 
         assertThat(order.getStatus()).isEqualTo(OrderStatus.ORDER_ACCEPTED);
+        verify(outboxEventRecorder, never()).deliveryCompleted(any()); // 수락은 이벤트 대상 아님 (#42)
     }
 
     @Test
@@ -376,6 +381,7 @@ class OrderServiceTest {
 
         assertThat(order.getStatus()).isEqualTo(OrderStatus.DELIVERY_COMPLETED);
         assertThat(order.getDeliveredAt()).isEqualTo(FIXED_NOW); // JVM 시간대가 아닌 Clock(Asia/Seoul) 기준
+        verify(outboxEventRecorder).deliveryCompleted(order); // 배달완료 이벤트를 같은 트랜잭션에 저장 (#42)
     }
 
     @Test

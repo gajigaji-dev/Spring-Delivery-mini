@@ -3,6 +3,10 @@
 global:
   scrape_interval: 15s
 
+# 알림 규칙 (Redis 장애·Outbox 발행 지연 등) — monitoring/alerts.yml
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: delivery-app
     metrics_path: /actuator/prometheus

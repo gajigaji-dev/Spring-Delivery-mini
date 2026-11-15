@@ -1,5 +1,6 @@
 package com.sparta.springdeliverymini.service;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.sparta.springdeliverymini.RedisTestSupport;
 import com.sparta.springdeliverymini.config.PaymentIdempotencyProperties;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
@@ -20,6 +21,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Optional;
+import com.sparta.springdeliverymini.service.PaymentService.IdempotentPayment;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -27,7 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.never;
 
 // Redis 장애·타임아웃에서 결제 멱등성 처리가 안전하게 실패하는지 검증 (#41)
 // - 결제 서비스는 Mock (DB 없이), Redis는 실제 클라이언트로 연결 실패·명령 타임아웃을 재현
@@ -41,11 +44,14 @@ class PaymentIdempotencyRedisFailureTest {
     private static final PaymentResponse RESPONSE = new PaymentResponse(10L, 1L, 36000, PaymentMethod.CARD,
             OrderStatus.PAYMENT_COMPLETED, LocalDateTime.of(2026, 11, 14, 12, 0), PaymentStatus.COMPLETED, null, null);
 
+    private static final String FINGERPRINT = PaymentIdempotencyService.fingerprint(REQUEST);
+
     @Mock
     private PaymentService paymentService;
 
     private PaymentIdempotencyService service(StringRedisTemplate redis) {
-        return new PaymentIdempotencyService(paymentService, redis, JsonMapper.builder().build(), PROPERTIES);
+        return new PaymentIdempotencyService(paymentService, redis, JsonMapper.builder().build(), PROPERTIES,
+                new SimpleMeterRegistry());
     }
 
     // 운영 설정처럼 짧은 명령 타임아웃 (테스트 시간을 줄이려 1초 대신 300ms)
@@ -65,7 +71,7 @@ class PaymentIdempotencyRedisFailureTest {
         assertThatThrownBy(() -> service.pay(REQUEST, "customer1", "key-1"))
                 .isInstanceOfSatisfying(ApiException.class,
                         e -> assertThat(e.getStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
-        verifyNoInteractions(paymentService);
+        verify(paymentService, never()).pay(any(), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -76,7 +82,7 @@ class PaymentIdempotencyRedisFailureTest {
         assertThatThrownBy(() -> service.pay(REQUEST, "customer1", "key-1"))
                 .isInstanceOfSatisfying(ApiException.class,
                         e -> assertThat(e.getStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
-        verifyNoInteractions(paymentService);
+        verify(paymentService, never()).pay(any(), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -93,7 +99,7 @@ class PaymentIdempotencyRedisFailureTest {
     @Test
     void 결제_후_완료_기록이_타임아웃돼도_결제_응답은_그대로_돌려준다() {
         // 결제(DB 커밋)는 끝났는데 그 직후 Redis가 멈춤 → 완료 기록 실패
-        given(paymentService.pay(REQUEST, "customer1")).willAnswer(inv -> {
+        given(paymentService.pay(REQUEST, "customer1", "key-1", FINGERPRINT)).willAnswer(inv -> {
             RedisTestSupport.pause(Duration.ofSeconds(1));
             return RESPONSE;
         });
@@ -106,7 +112,7 @@ class PaymentIdempotencyRedisFailureTest {
 
     @Test
     void 결제가_실패한_뒤_기록_삭제가_타임아웃돼도_원래_결제_오류를_그대로_던진다() {
-        given(paymentService.pay(any(), anyString())).willAnswer(inv -> {
+        given(paymentService.pay(any(), anyString(), anyString(), anyString())).willAnswer(inv -> {
             RedisTestSupport.pause(Duration.ofSeconds(1));
             throw new ApiException(HttpStatus.NOT_FOUND, "주문이 없습니다.");
         });
@@ -114,12 +120,12 @@ class PaymentIdempotencyRedisFailureTest {
         assertThatThrownBy(() -> serviceWithRunningRedis().pay(REQUEST, "customer1", "key-1"))
                 .isInstanceOfSatisfying(ApiException.class,
                         e -> assertThat(e.getStatus()).isEqualTo(HttpStatus.NOT_FOUND)); // 503으로 바뀌지 않음
-        verify(paymentService).pay(REQUEST, "customer1");
+        verify(paymentService).pay(REQUEST, "customer1", "key-1", FINGERPRINT);
     }
 
     @Test
     void 결제_후_완료_기록이_타임아웃된_키로_재시도해도_결제를_다시_실행하지_않는다() {
-        given(paymentService.pay(REQUEST, "customer1")).willAnswer(inv -> {
+        given(paymentService.pay(REQUEST, "customer1", "key-1", FINGERPRINT)).willAnswer(inv -> {
             RedisTestSupport.pause(Duration.ofSeconds(1));
             return RESPONSE;
         });
@@ -136,7 +142,47 @@ class PaymentIdempotencyRedisFailureTest {
         } catch (ApiException e) {
             assertThat(e.getStatus()).isEqualTo(HttpStatus.CONFLICT);
         }
-        verify(paymentService).pay(REQUEST, "customer1"); // 한 번만
+        verify(paymentService).pay(REQUEST, "customer1", "key-1", FINGERPRINT); // 한 번만
+    }
+
+    // ===== DB 멱등성 기록 (V14) — Redis를 쓸 수 없어도 커밋된 결제의 처음 응답을 재전송 =====
+
+    @Test
+    void Redis에_연결할_수_없어도_DB에_기록된_결제면_처음_응답을_재전송한다() {
+        given(paymentService.findIdempotentPayment("customer1", "key-1"))
+                .willReturn(Optional.of(new IdempotentPayment(FINGERPRINT, RESPONSE)));
+        PaymentIdempotencyService service = service(RedisTestSupport.unreachableTemplate());
+
+        PaymentResult result = service.pay(REQUEST, "customer1", "key-1");
+
+        assertThat(result.replayed()).isTrue();
+        assertThat(result.response()).isEqualTo(RESPONSE);
+        verify(paymentService, never()).pay(any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void Redis에_연결할_수_없을_때_DB_기록과_다른_요청이면_422() {
+        given(paymentService.findIdempotentPayment("customer1", "key-1"))
+                .willReturn(Optional.of(new IdempotentPayment("another-fingerprint", RESPONSE)));
+        PaymentIdempotencyService service = service(RedisTestSupport.unreachableTemplate());
+
+        assertThatThrownBy(() -> service.pay(REQUEST, "customer1", "key-1"))
+                .isInstanceOfSatisfying(ApiException.class,
+                        e -> assertThat(e.getStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_CONTENT));
+        verify(paymentService, never()).pay(any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void Redis_기록이_없어도_DB에_기록된_결제면_다시_결제하지_않고_재전송한다() {
+        // 완료 기록 TTL 만료·유실 뒤의 재시도: 처리 중 기록은 새로 잡히지만 DB 기록을 먼저 확인
+        given(paymentService.findIdempotentPayment("customer1", "key-1"))
+                .willReturn(Optional.of(new IdempotentPayment(FINGERPRINT, RESPONSE)));
+
+        PaymentResult result = serviceWithRunningRedis().pay(REQUEST, "customer1", "key-1");
+
+        assertThat(result.replayed()).isTrue();
+        assertThat(result.response()).isEqualTo(RESPONSE);
+        verify(paymentService, never()).pay(any(), anyString(), anyString(), anyString());
     }
 
     // 멈춤이 풀릴 때까지 대기 (키는 지우지 않음)

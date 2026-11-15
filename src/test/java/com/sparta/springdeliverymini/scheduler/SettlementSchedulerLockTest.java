@@ -1,5 +1,6 @@
 package com.sparta.springdeliverymini.scheduler;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.sparta.springdeliverymini.RedisTestSupport;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.lock.RedisDistributedLock;
@@ -47,7 +48,8 @@ class SettlementSchedulerLockTest {
     // 인스턴스 하나 = 자기 Redis 연결 + 자기 락 + 자기 스케줄러
     private SettlementScheduler instance(StringRedisTemplate redis, Duration lockAtLeastFor) {
         Clock clock = Clock.fixed(NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
-        return new SettlementScheduler(aggregationService, clock, new RedisDistributedLock(redis),
+        return new SettlementScheduler(aggregationService, clock,
+                new RedisDistributedLock(redis, new SimpleMeterRegistry()), new SimpleMeterRegistry(),
                 CATCH_UP_DAYS, Duration.ofMinutes(30), lockAtLeastFor);
     }
 

@@ -1,5 +1,6 @@
 package com.sparta.springdeliverymini.scheduler;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.lock.DistributedLock;
 import com.sparta.springdeliverymini.lock.LockUnavailableException;
@@ -50,7 +51,7 @@ class SettlementSchedulerTest {
 
     private SettlementScheduler scheduler(LocalDateTime now, int catchUpDays, DistributedLock lock) {
         Clock clock = Clock.fixed(now.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
-        return new SettlementScheduler(aggregationService, clock, lock, catchUpDays, AT_MOST, AT_LEAST);
+        return new SettlementScheduler(aggregationService, clock, lock, new SimpleMeterRegistry(), catchUpDays, AT_MOST, AT_LEAST);
     }
 
     private static DailyResult empty(LocalDate date) {
@@ -100,10 +101,10 @@ class SettlementSchedulerTest {
     @Test
     void 락_최소_유지_시간이_최대_유지_시간보다_길면_기동_실패() {
         Clock clock = Clock.systemDefaultZone();
-        assertThatThrownBy(() -> new SettlementScheduler(aggregationService, clock, ALWAYS_ACQUIRED, 7,
+        assertThatThrownBy(() -> new SettlementScheduler(aggregationService, clock, ALWAYS_ACQUIRED, new SimpleMeterRegistry(), 7,
                 Duration.ofMinutes(5), Duration.ofMinutes(10)))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new SettlementScheduler(aggregationService, clock, ALWAYS_ACQUIRED, 7,
+        assertThatThrownBy(() -> new SettlementScheduler(aggregationService, clock, ALWAYS_ACQUIRED, new SimpleMeterRegistry(), 7,
                 Duration.ZERO, Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
     }

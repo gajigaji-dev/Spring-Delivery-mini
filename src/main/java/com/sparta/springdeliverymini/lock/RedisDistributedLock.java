@@ -1,5 +1,6 @@
 package com.sparta.springdeliverymini.lock;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -38,9 +39,14 @@ public class RedisDistributedLock implements DistributedLock {
             """, Long.class);
 
     private final StringRedisTemplate redisTemplate;
+    private final MeterRegistry meterRegistry;
 
-    public RedisDistributedLock(StringRedisTemplate redisTemplate) {
+    public RedisDistributedLock(StringRedisTemplate redisTemplate, MeterRegistry meterRegistry) {
         this.redisTemplate = redisTemplate;
+        this.meterRegistry = meterRegistry;
+        // 처음 실패하기 전에도 0으로 노출 → 알림 규칙(increase)이 첫 실패부터 잡음
+        meterRegistry.counter("redis.failures", "operation", "lock.acquire");
+        meterRegistry.counter("redis.failures", "operation", "lock.release");
     }
 
     @Override
@@ -63,6 +69,7 @@ public class RedisDistributedLock implements DistributedLock {
         } catch (DataAccessException e) {
             // 연결 실패·명령 타임아웃 — 락을 잡았는지 알 수 없으므로 실행하지 않음
             // (타임아웃이면 SET이 Redis에서 늦게 실행돼 락이 남을 수 있지만, lockAtMostFor 뒤에 만료됨)
+            meterRegistry.counter("redis.failures", "operation", "lock.acquire").increment();
             throw new LockUnavailableException("분산 락 상태를 확인할 수 없습니다: " + name, e);
         }
         if (!Boolean.TRUE.equals(acquired)) {
@@ -76,6 +83,7 @@ public class RedisDistributedLock implements DistributedLock {
         } finally {
             long elapsedMillis = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
             if (elapsedMillis > lockAtMostFor.toMillis()) {
+                meterRegistry.counter("distributed.lock.overrun", "lock", name).increment();
                 log.warn("락 유지 시간보다 오래 실행됨 — 실행 중 락이 풀려 다른 인스턴스가 실행했을 수 있음 lock={}, elapsedMs={}, lockAtMostFor={}",
                         name, elapsedMillis, lockAtMostFor);
             }
@@ -89,6 +97,7 @@ public class RedisDistributedLock implements DistributedLock {
         try {
             redisTemplate.execute(RELEASE_SCRIPT, List.of(key), token, String.valueOf(holdMillis));
         } catch (DataAccessException e) {
+            meterRegistry.counter("redis.failures", "operation", "lock.release").increment();
             log.warn("분산 락 해제 실패 — TTL 만료로 풀림 lock={}", name, e);
         }
     }

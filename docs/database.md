@@ -21,11 +21,13 @@
 | `V10__add_store_fee_rate.sql` | `stores.fee_rate`(매장별 수수료율, NULL = 공통 수수료율) 추가 + 0~1 CHECK 제약. 기존 매장은 NULL(백필 없음), 기존 결제·정산은 변경 없음 |
 | `V11__add_settlement_status_histories_and_aggregation_failures.sql` | `settlement_status_histories`(정산 상태 변경 이력: 처리자·시각, 전이·처리자 CHECK, `(settlement_id, to_status)` UNIQUE), `settlement_aggregation_failures`(집계 실패 기록: `(store_id, settlement_date)` UNIQUE, 상태·해결 정보 CHECK) 테이블 추가. 기존 테이블·행은 변경 없음, 과거 전이 이력은 백필하지 않음 |
 | `V12__add_order_list_indexes.sql` | 주문 목록 페이지 조회용 인덱스: `orders (user_id, id)` 추가, `orders (store_id, id)` 추가 후 역할이 겹치는 `idx_orders_store_id (store_id)` 제거. 행은 변경 없음 (근거: [성능 개선 4장](performance.md#4-인덱스-근거-explain)) |
+| `V13__add_outbox_events_and_notifications.sql` | Kafka Transactional Outbox (#42): `outbox_events`(발행 대기 이벤트: `event_id` UNIQUE, 상태·종류·발행 시각 CHECK, `PENDING` 부분 인덱스), `consumed_events`(Consumer 처리 기록, `event_id` PK), `notifications`(알림 기록, `(event_id, recipient_user_id)` UNIQUE) 추가. 업무 테이블 FK 없음, 기존 행 변경 없음 |
+| `V14__add_idempotency_keys_and_notification_dispatch.sql` | Redis·Kafka 후속 개선: `payment_idempotency_keys`(DB 결제 멱등성 기록, `(user_id, idempotency_key)`·`payment_id` UNIQUE) 추가, `notifications`에 발송 상태 컬럼 추가(기존 알림은 `SKIPPED` — 뒤늦게 발송되지 않음), Outbox FAILED·순서 확인·정리용 인덱스와 `consumed_events`·알림 조회 인덱스 추가. 기존 결제·정산 행 변경 없음 |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V13__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V14__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -208,6 +210,67 @@
 
 > 미해결 실패 조회용 부분 인덱스 `idx_settlement_aggregation_failures_failed (settlement_date) WHERE status = 'FAILED'`
 > 정산 금액과 무관한 운영 기록이라 같은 행을 갱신함. 기록·해결 규칙은 [정산 기준 10장](settlement-policy.md#10-감사-이력과-누락실패분-재집계-39)
+
+### outbox_events — 발행 대기 이벤트 (V13)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | 발행 순서 기준 |
+| event_id | uuid | NOT NULL, **UNIQUE** | 이벤트 식별자 — Consumer 멱등성 기준 |
+| aggregate_type, aggregate_id | varchar(30), bigint | NOT NULL | 이벤트 대상 (지금은 `ORDER`, 주문 id = Kafka 메시지 키) |
+| event_type | varchar(50) | NOT NULL, `PAYMENT_COMPLETED` / `PAYMENT_REFUNDED` / `DELIVERY_COMPLETED` | 이벤트 종류 |
+| payload | text | NOT NULL | Kafka 메시지 본문(JSON) — 발생 시점 스냅샷 |
+| status | varchar(20) | NOT NULL, `PENDING` / `PUBLISHED` / `FAILED` | 발행 대기 / 발행됨 / 재시도 한도 초과 |
+| attempt_count | integer | NOT NULL, 0 이상 | 발행 실패 횟수 |
+| next_attempt_at | timestamp(6) | NOT NULL | 이 시각 이후 발행 시도 (실패하면 백오프만큼 뒤로) |
+| last_error | varchar(500) | | 마지막 실패 원인 요약 |
+| created_at | timestamp(6) | NOT NULL | 업무 트랜잭션에서 저장된 시각 |
+| published_at | timestamp(6) | `PUBLISHED`일 때만 NOT NULL (CHECK) | 발행 확인 시각 |
+
+> 발행 대상 조회용 부분 인덱스 `idx_outbox_events_pending (next_attempt_at, id) WHERE status = 'PENDING'` — 발행이 끝난 행은 인덱스에 들어가지 않음
+> V14 인덱스: `idx_outbox_events_failed (id) WHERE status = 'FAILED'`(FAILED 건수 메트릭·관리자 목록·재발행), `idx_outbox_events_pending_aggregate (aggregate_type, aggregate_id, id) WHERE status = 'PENDING'`(같은 주문의 앞 이벤트가 대기 중인지 확인 — 발행 순서), `idx_outbox_events_published_at (published_at) WHERE status = 'PUBLISHED'`(보관 기간 정리)
+> 상태 전이: `PENDING → PUBLISHED` / `PENDING → FAILED`(재시도 한도 초과) / `FAILED → PENDING`(관리자 재발행). `PUBLISHED`는 보관 기간(7일) 뒤 삭제
+> 결제·환불·배달완료 트랜잭션에서 업무 데이터와 함께 INSERT, 이후 발행 상태만 UPDATE (업무 금액 기록이 아니라 불변 규칙 대상 아님). 동작은 [프로젝트 구조 · Kafka](architecture.md#kafka--transactional-outbox-42)
+
+### consumed_events — Consumer 처리 기록 (V13)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| event_id | uuid | PK | 처리한 이벤트 — `INSERT ... ON CONFLICT DO NOTHING`으로 중복 처리 방지 |
+| event_type | varchar(50) | NOT NULL | 이벤트 종류 |
+| consumed_at | timestamp(6) | NOT NULL | 처리 시각 |
+
+> 보관 기간(30일) 뒤 삭제 — `idx_consumed_events_consumed_at (consumed_at)` (V14). 보관 기간은 같은 메시지가 다시 올 수 있는 기간(Kafka 토픽 보관 기간)보다 길어야 함
+
+### notifications — 알림 기록 (V13, 발송 상태 V14)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| event_id | uuid | NOT NULL, (event_id, recipient_user_id) **UNIQUE** | 알림을 만든 이벤트 |
+| event_type | varchar(50) | NOT NULL | 이벤트 종류 |
+| recipient_user_id | bigint | NOT NULL (FK 없음) | 받는 회원 id (이벤트 스냅샷 값) |
+| order_id | bigint | NOT NULL (FK 없음) | 관련 주문 |
+| message | varchar(255) | NOT NULL | 알림 문구 |
+| created_at | timestamp(6) | NOT NULL | 저장 시각 |
+| send_status | varchar(20) | NOT NULL, `PENDING` / `SENT` / `FAILED` / `SKIPPED` | 발송 대기 / 발송됨 / 재시도 한도 초과 / 발송 기능 도입 전 기록(발송 안 함) (V14) |
+| send_attempt_count | integer | NOT NULL, 0 이상 | 발송 실패 횟수 (V14) |
+| next_send_at | timestamp(6) | NOT NULL | 이 시각 이후 발송 시도 (V14) |
+| sent_at | timestamp(6) | `SENT`일 때만 NOT NULL (CHECK) | 발송 시각 (V14) |
+| last_send_error | varchar(500) | | 마지막 발송 실패 원인 (V14) |
+
+> 내용(받는 사람·문구)은 생성 후 바꾸지 않고 발송 상태만 UPDATE. 인덱스(V14): `idx_notifications_send_pending (next_send_at, id) WHERE send_status = 'PENDING'`(발송 대상), `idx_notifications_recipient (recipient_user_id, id)`(내 알림 목록)
+> 세 테이블 모두 업무 테이블에 FK를 두지 않음 — 이벤트는 발생 시점의 독립 기록이라 주문·회원이 지워져도 남아야 하고, FK가 업무 데이터 삭제를 막지 않도록
+
+### payment_idempotency_keys — DB 결제 멱등성 기록 (V14)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| user_id | bigint | NOT NULL, FK → users.id, (user_id, idempotency_key) **UNIQUE** | 결제한 회원 — 키는 사용자별로 구분 |
+| idempotency_key | varchar(64) | NOT NULL | `Idempotency-Key` 헤더 값 |
+| fingerprint | varchar(64) | NOT NULL | 요청 본문(`orderId`·`paymentMethod`)의 SHA-256 — 같은 키에 다른 요청이면 422 |
+| payment_id | bigint | NOT NULL, FK → payments.id, **UNIQUE** | 이 키로 만들어진 결제 |
+| created_at | timestamp(6) | NOT NULL | 저장 시각 (결제 시각) |
+
+> 결제와 같은 트랜잭션에 INSERT(키가 있는 결제만) → Redis 기록이 만료·유실되거나 Redis가 내려가 있어도 같은 키 재시도에 처음 응답을 재전송. 응답 본문은 저장하지 않고 결제 행의 불변 값으로 다시 만듦
+> 생성 후 변경 없음, 보관 기간(30일) 뒤 삭제 — `idx_payment_idempotency_keys_created_at (created_at)`. 동작은 [프로젝트 구조 · Redis](architecture.md#redis-41)
 
 ## 결제 연관관계: `@OneToOne` vs `@ManyToOne`
 
