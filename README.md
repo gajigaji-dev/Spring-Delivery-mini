@@ -46,7 +46,7 @@ flowchart LR
 |---|---|
 | [프로젝트 구조](docs/architecture.md) | 아키텍처·주문~정산 흐름 다이어그램, 패키지 구조, Redis 키·TTL·장애 시 동작, Kafka·Outbox 보장 범위·장애 시 동작, 요청 처리 흐름, 테스트 |
 | [Kafka Outbox · 알림 이벤트](docs/kafka-outbox.md) | Transactional Outbox 도입 배경·설계 결정, 구현 중 발견한 문제, 검증 결과, 후속 과제 (#42) |
-| [로컬 확인 가이드](docs/local-verification.md) | Redis·Kafka 동작을 자동 테스트와 로컬 실행으로 확인하는 절차 (멱등성 재전송·장애, Outbox 발행·재발행·DLT, 메트릭) |
+| [로컬 확인 가이드](docs/local-verification.md) | Redis·Kafka 동작을 자동 테스트와 로컬 실행으로 확인하는 절차 (멱등성 재전송·장애, Outbox 발행·재발행·DLT, DLT 재처리 CLI, 메트릭) |
 | [API 명세](docs/api.md) | API 목록, 주문 상태 흐름, API별 요청·응답·에러 코드 |
 | [ERD](docs/erd.md) | ERD 다이어그램, 테이블 간 관계 |
 | [데이터베이스](docs/database.md) | Flyway 마이그레이션, 테이블 상세·제약조건, 시간대, 결제 연관관계 |
@@ -114,7 +114,8 @@ docker compose up -d kafka   # 이벤트 발행·알림용 Kafka (127.0.0.1:9094
 - Redis 고가용성 및 장애 복구 전략 검토
 
 ### Kafka
-- ~~FAILED 이벤트 재발행~~ → 관리자 재발행 API / DLT 재처리 도구는 남음
+- ~~FAILED 이벤트 재발행~~ → 관리자 재발행 API
+- ~~DLT 재처리~~ → CLI(`dlt-reprocess` 프로필, 전체·파티션/오프셋 지정, 진행 위치 기록·분산 락) (#52)
 - ~~Outbox 및 Consumer 처리 기록 보관·삭제 정책~~ → `RetentionCleaner`
 - ~~발행 대기 건수, 실패 건수, DLT, Consumer lag 모니터링~~ → 메트릭 + 알림 규칙 (Alertmanager 연동은 남음)
 - ~~이벤트 순서 보장~~ → 같은 주문의 앞 이벤트가 대기 중이면 뒤 이벤트를 발행하지 않음

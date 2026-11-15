@@ -10,6 +10,7 @@ import com.sparta.springdeliverymini.event.OutboxPublisher;
 import com.sparta.springdeliverymini.event.OutboxPublisher.PublishResult;
 import com.sparta.springdeliverymini.repository.*;
 import com.sparta.springdeliverymini.service.SettlementIntegrationTest.MutableClock;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -64,6 +65,7 @@ class OutboxKafkaIntegrationTest {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private OutboxProperties properties;
     @Autowired private ConsumerFactory<?, ?> consumerFactory;
+    @Autowired private MeterRegistry meterRegistry;
 
     @Autowired private StoreService storeService;
     @Autowired private MenuService menuService;
@@ -253,6 +255,7 @@ class OutboxKafkaIntegrationTest {
                 .when(notificationService).handle(argThat(m -> m != null && failingId.equals(m.eventId())));
         String key = "dlt-retry-" + failingId;
         String payload = objectMapper.writeValueAsString(message(failingId, OutboxEventType.PAYMENT_COMPLETED, 1L));
+        double deadLettersBefore = meterRegistry.counter("outbox.dlt.records").count();
 
         sendRaw(key, payload);
         UUID nextId = UUID.randomUUID();
@@ -266,6 +269,9 @@ class OutboxKafkaIntegrationTest {
         verify(notificationService, times(3)).handle(argThat(m -> m != null && failingId.equals(m.eventId())));
         assertThat(consumedEventRepository.existsById(failingId)).isFalse();
         assertThat(notificationsOf(failingId)).isEmpty();
+        // DLT 전송 성공 후 1건 집계 (#52 — 전송 실패 시 미집계는 KafkaConfigTest)
+        await().atMost(WAIT).untilAsserted(() ->
+                assertThat(meterRegistry.counter("outbox.dlt.records").count()).isEqualTo(deadLettersBefore + 1));
 
         // 실패 메시지가 파티션을 막지 않음 → 뒤 메시지는 정상 처리
         await().atMost(WAIT).untilAsserted(() -> assertThat(notificationsOf(nextId)).hasSize(1));
