@@ -20,10 +20,11 @@
   ```
   - `message`는 기존과 같은 필드·문구 (기존 클라이언트는 그대로 동작), 나머지 필드는 #38에서 추가
   - 500은 내부 예외 메시지를 숨기고 공통 문구로 응답 → `traceId`로 서버 로그 확인
+  - 503(모든 API 공통): DB가 제때 응답하지 못함 — 행 잠금 대기 초과(5초)·문장 실행 초과(30초)·커넥션 부족. 요청은 반영되지 않았으므로 잠시 후 다시 시도 ([운영 프로필 6장](operations.md))
 - 추적 헤더 `X-Trace-Id`
   - 모든 응답에 포함. 요청에 `X-Trace-Id`(영문·숫자·하이픈 8~64자)를 보내면 그 값을 그대로 사용, 없거나 형식이 다르면 서버가 생성
   - 같은 값이 에러 응답 `traceId`, 서버 로그 각 줄의 `[traceId]`에 들어감
-- API 문서(Swagger UI): local·dev 프로필에서 `/swagger-ui.html`, 명세 `/v3/api-docs` (기본 설정·운영은 비활성 → 404)
+- API 문서(Swagger UI): local·dev 프로필에서 `/swagger-ui.html`, 명세 `/v3/api-docs` (기본 설정·prod 프로필은 비활성 → 404, [운영 설정](operations.md))
   - Authorize 버튼에 로그인 응답의 `accessToken`을 넣으면 Bearer 헤더가 자동으로 붙음
 - 목록 페이지네이션 (#40) — 매장·메뉴·주문·매장별 주문 목록 공통
   - 요청: `?page=0&size=20` (`page` 0부터, `size` 기본 20 · 최대 100). 범위를 벗어나거나 숫자가 아니면 400
@@ -36,6 +37,11 @@
     | `X-Has-Next` | 다음 페이지가 있으면 `true` (전체 개수는 제공하지 않음) |
   - 정렬은 id 오름차순(등록순) 고정. 범위를 넘은 페이지는 빈 배열 `[]`
   - 파라미터 없이 호출하면 첫 20건만 응답 (이전에는 전체) — 배경·측정 결과는 [성능 개선](performance.md)
+- keyset 페이징 (#54) — 주문 목록(`GET /api/orders`)만 추가 지원, `page` 방식도 그대로 사용 가능
+  - 요청: `?afterId={마지막으로 받은 주문 id}&size=20` (`afterId` 0 이상, 0이면 처음부터). `page`와 함께 보내면 400
+  - 응답 헤더: `X-Size`, `X-Has-Next`, `X-Next-After-Id`(다음 페이지가 있을 때만, 다음 요청의 `afterId` 값). 페이지 번호가 없으므로 `X-Page`는 보내지 않음
+  - `page` 방식 응답에도 `X-Next-After-Id`가 붙음 → 첫 페이지를 파라미터 없이 받고 이어서 keyset으로 넘길 수 있음
+  - 뒤쪽 페이지도 응답 시간이 일정하고, 넘기는 중 새 주문이 들어와도 이미 받은 주문이 다시 나오지 않음 — 측정 결과는 [성능 개선](performance.md) 9장
 - 공통 에러 코드
 
   | 코드 | 상황 |
@@ -76,7 +82,7 @@
 | 메뉴 수정 | PUT | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 200 |
 | 메뉴 삭제 | DELETE | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 204 |
 | 주문 생성 | POST | `/api/orders` | O | CUSTOMER | 201 |
-| 주문 목록 조회 | GET | `/api/orders?page=&size=` | O | CUSTOMER / OWNER | 200 |
+| 주문 목록 조회 | GET | `/api/orders?page=&size=` / `?afterId=&size=` | O | CUSTOMER / OWNER | 200 |
 | 주문 취소 (결제 취소 포함) | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
 | 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 매장 주문) | 204 |
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
@@ -429,13 +435,13 @@ Response `201 Created`
 | 404 | 항목 중 하나라도 메뉴가 없거나 삭제됨 |
 
 ### 주문 목록 조회 `GET /api/orders`
-Response `200 OK` — 주문 생성 응답 형식의 배열 ([페이지네이션](#공통-사항) `?page=&size=`)
+Response `200 OK` — 주문 생성 응답 형식의 배열 ([페이지네이션](#공통-사항) `?page=&size=` 또는 keyset `?afterId=&size=`)
 - CUSTOMER: 본인이 한 주문만
 - OWNER: 본인의 모든 매장에 들어온 주문만 (매장 하나만 보려면 `GET /api/stores/{id}/orders`)
 
 | 코드 | 상황 |
 |---|---|
-| 400 | `page`·`size` 범위 초과 |
+| 400 | `page`·`size`·`afterId` 범위 초과·형식 오류, `page`와 `afterId`를 함께 보냄 |
 | 401 | 토큰 없음 |
 
 ### 주문 취소 `PATCH /api/orders/{id}/cancel`

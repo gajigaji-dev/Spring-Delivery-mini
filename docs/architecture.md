@@ -89,7 +89,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── RetentionProperties.java         # 보관 기간 정리 설정(retention.*) 바인딩·검증 (V14)
 │   ├── BackgroundTaskConfig.java        # 알림 발송·보관 기간 정리 주기 작업 등록, 기본 발송기(로그) 빈 (V14)
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing, 생성·수정 시각을 Clock 기준으로 기록
-│   └── OpenApiConfig.java               # springdoc 문서 정보, JWT(Bearer) 인증 방식
+│   ├── OpenApiConfig.java               # springdoc 문서 정보, JWT(Bearer) 인증 방식
+│   └── ProdProfileGuard.java            # prod 프로필 기동 점검: 필수 환경변수 누락·Swagger 활성 시 기동 실패 (#54)
 ├── logging
 │   └── TraceIdFilter.java               # 요청별 traceId 생성·전달(MDC, X-Trace-Id 헤더), 요청 결과 로그
 ├── jwt
@@ -105,7 +106,7 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── MenuController.java              # 메뉴 등록·조회·수정·삭제
 │   ├── OrderController.java             # 주문 생성·조회·취소·상태 변경
 │   ├── PaymentController.java           # 결제 (선택 헤더 Idempotency-Key, 재전송 시 Idempotent-Replayed), 결제 단건 조회 (#53)
-│   └── SliceResponse.java               # 목록 페이지 응답: 본문은 배열, 페이지 정보는 X-Page·X-Size·X-Has-Next 헤더 (#40)
+│   └── SliceResponse.java               # 목록 페이지 응답: 본문은 배열, 페이지 정보는 X-Page·X-Size·X-Has-Next 헤더 (#40), 주문 목록은 X-Next-After-Id (#54)
 ├── service
 │   ├── UserService.java
 │   ├── StoreService.java                # 매장 생성·조회, 매장 소유권 검증(getOwnedStore)
@@ -171,7 +172,7 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── ConsumedEvent.java               # Consumer가 처리한 이벤트 (eventId PK) (#42)
 │   ├── Notification.java / NotificationSendStatus.java # 알림 기록, 발송 상태(PENDING → SENT / FAILED, SKIPPED) (#42, V14)
 │   └── PaymentIdempotencyKey.java       # DB 결제 멱등성 기록 — 결제와 같은 트랜잭션에 저장 (V14)
-├── dto                                  # 요청(Request) / 응답(Response) 객체, PageQuery(목록 page·size 검증, id 오름차순 고정)
+├── dto                                  # 요청(Request) / 응답(Response) 객체, PageQuery(목록 page·size 검증, id 오름차순 고정), KeysetQuery(주문 목록 afterId·size, #54)
 └── exception
     ├── ApiException.java                # 상태 코드를 담아 던지는 예외
     ├── InvalidOrderStatusException.java # 허용되지 않는 주문 상태 전이 (Order 엔티티가 던짐 → 409)
@@ -181,10 +182,11 @@ src/main/java/com/sparta/springdeliverymini
     └── GlobalExceptionHandler.java      # 예외를 ApiErrorResponse로 변환, 4xx WARN / 5xx ERROR(스택 트레이스) 로그
 
 src/main/resources
-├── application.yml                      # 공통 설정 (기본 프로필 local, DB 계정·JWT 키는 환경변수, Redis 주소·타임아웃, 멱등성 TTL·스케줄러 락, Kafka 주소·프로듀서 타임아웃, Outbox 발행·재시도, 로그 traceId, Actuator health만(Redis 헬스체크 제외)·springdoc 비활성)
+├── application.yml                      # 공통 설정 (기본 프로필 local, DB 계정·JWT 키는 환경변수, 커넥션 풀·DB 타임아웃, Redis 주소·타임아웃, 멱등성 TTL·스케줄러 락, Kafka 주소·프로듀서 타임아웃, Outbox 발행·재시도, 로그 traceId, Actuator health만(Redis 헬스체크 제외)·springdoc 비활성)
 ├── application-local.yml                # local: localhost DB, 루트 .env 읽기, SQL 로그, prometheus·Swagger UI 노출
 ├── application-dev.yml                  # dev: docker-compose 실행 (DB_URL, REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS), Actuator 관리 포트 8081, Swagger UI
 ├── application-dlt-reprocess.yml        # dlt-reprocess: DLT 재처리 CLI — HTTP 포트·Consumer·주기 작업 끔 (#52)
+├── application-prod.yml                 # prod: 운영 — 접속 정보 환경변수 필수, Swagger 끔, Flyway 자동 baseline 끔, 관리 포트에 health·prometheus만 (#54, docs/operations.md)
 └── db/migration                         # Flyway 마이그레이션 SQL (V{버전}__{설명}.sql)
 ```
 
@@ -212,7 +214,8 @@ src/main/resources
 - DB 제약 위반 로그는 제약 조건 이름만 기록 (PostgreSQL 에러 상세에 입력값이 들어 있어서)
 - 메트릭: Actuator + Micrometer Prometheus. `docker compose --profile monitoring up`이면 Prometheus가 `app:8081`을 수집하고 Grafana가 데이터 소스·대시보드(`monitoring/grafana`)를 자동 등록
 - 노출 정책: 기본 설정은 health만·Swagger 비활성(운영 기준), local·dev 프로필에서만 prometheus·Swagger UI를 켬
-- 운영 프로필은 배포 단계로 이월: 별도 프로필 없이 기본 설정(application.yml)을 그대로 쓰면 Swagger 비활성·Actuator health만·나머지 ADMIN이 유지됨. prometheus가 필요하면 dev처럼 비공개 관리 포트로 분리해서 노출
+- 운영 프로필(#54): `prod` — Swagger 비활성(켜면 기동 실패), Actuator는 비공개 관리 포트(8081)에서 health·prometheus만 켜고 나머지 엔드포인트는 비활성, 접속 정보·비밀 값은 환경변수 필수(`config.ProdProfileGuard`), Flyway 자동 baseline 끔. 상세는 [운영 프로필](operations.md)
+- 커넥션 풀·DB 타임아웃(모든 프로필): 풀 10·커넥션 대기 10초, `lock_timeout` 5초·`statement_timeout` 30초 → 넘으면 503 ([운영 프로필 6장](operations.md))
 - Grafana: `GRAFANA_ADMIN_PASSWORD` 필수(빈 값·admin이면 컨테이너가 exit 1). compose는 비활성 프로필 서비스까지 변수를 치환해 `:?`를 쓰면 기본 up도 실패하므로 entrypoint에서 검사
 
 ## Redis (#41)
@@ -469,9 +472,9 @@ sequenceDiagram
 
 | 종류 | 대상 | DB |
 |---|---|---|
-| 단위 테스트 | `TraceIdFilterTest`(traceId 생성·전달, 잘못된 외부 값 거부, MDC 정리), `OrderTest`(상태 전이, 항목 추가·총액 합산), `PaymentFeeTest`(수수료 계산·반올림), `PaymentFeePropertiesTest`(수수료율 설정 검증), `StoreTest`(소유권 판단, 매장 수수료율·공통 수수료율 fallback), `SettlementPeriodTest`(정산 기간·확정 시각), `SettlementTest`(정산 집계·합계, PENDING → CONFIRMED → PAID 전이·중복 지급 거부), `OrderServiceTest`, `MenuServiceTest`, `StoreServiceTest`, `PaymentServiceTest`(결제 + 단건 조회 401·403·404·현재 상태), `SettlementServiceTest`, `SettlementAuditTest`(상태 이력 생성 규칙·처리자 필수, 실패 기록 FAILED ↔ RESOLVED), `SettlementAggregationServiceTest`(집계·중복 건너뜀·오류 격리, 집계 이력 처리자, 실패 기록·해결, 매장 지정 재집계), `SettlementSchedulerTest`(집계 날짜 선택, 실행별 traceId·MDC 정리, 분산 락 미획득·Redis 장애 시 건너뜀), `AdminSettlementServiceTest`(관리자 확인, 확정·지급 시각 기록, 잘못된 전이, 상태 변경 로그, 확정·지급 이력의 처리자, 재집계 400·404·409), `UserServiceTest`(ADMIN 가입 거부), `AdminStoreServiceTest`(관리자 확인, 매장 404, 수수료율 설정·해제), `OwnerSettlementServiceTest`(권한, 기간 400, 상태 필터, 다른 매장 정산 404, 이월 차감 전) | 없음 (Mockito) |
-| 웹 계층 테스트 | `ErrorResponseFormatTest`(401·403·404·405·409·500 공통 형식, 본문·헤더·로그 traceId 일치, 500 내부 메시지 숨김), `OrderCancelSecurityTest` (`@WebMvcTest`, 401/403), `PaymentQuerySecurityTest`(결제 단건 조회 401·OWNER 403·응답 필드·404 형식), `AmountInputRangeTest`(가격·수량 범위 초과 400), `StoreSecurityTest`(매장·정산·일 정산 기록 API 401/403, 조회 파라미터 400, 목록 페이지 기본값·헤더·page/size 범위 400), `AdminSettlementSecurityTest`(관리자 API 401, CUSTOMER·OWNER 403, 잘못된 전이 409, 재집계·이력·실패 기록 API 권한과 처리자 파라미터 무시), `AdminStoreSecurityTest`(수수료율 API 401/403, 잘못된 수수료율 400) | 없음 |
-| 통합 테스트 | `ObservabilityDefaultExposureIntegrationTest`(기본 설정: health만 공개·prometheus/Swagger 비노출·기타 Actuator ADMIN), `ObservabilityEnabledIntegrationTest`(local·dev 설정: prometheus 수집, metrics ADMIN, OpenAPI 명세·Swagger UI), `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장), `PaymentQueryIntegrationTest`(결제 단건 조회: 본인 결제·환불 후 현재 상태, 다른 고객 403, 없음 404, OWNER 403), `TimeZoneIntegrationTest`, `AmountMigrationTest`(기존 데이터가 있는 DB에 V3 적용), `StoreMigrationTest`(기존 메뉴·주문을 매장으로 백필하는 V4 적용), `OrderItemMigrationTest`(기존 주문을 주문 항목으로 백필하는 V5 적용), `DeliveredAtMigrationTest`(배달완료 시각을 백필하는 V6 적용), `StoreOrderIntegrationTest`(매장 → 메뉴 → 주문 흐름, 여러 메뉴 주문, 매장별 조회·소유권, 목록 페이지 순서·겹침 없음, 주문 목록 쿼리 3번(N+1 없음)), `SettlementIntegrationTest`(배달완료 → 정산 조회, 날짜 경계), `SettlementAggregationIntegrationTest`(스케줄러 집계, 반복·동시 실행 시 중복 방지, DB 제약, cron 등록), `AdminSettlementIntegrationTest`(집계 → 확정 → 지급, 잘못된 전이, 동시 지급 시 1번만 성공), `SettlementStatusMigrationTest`(V7 정산 데이터가 있는 DB에 V8 적용), `StoreFeeRateMigrationTest`(V9 데이터가 있는 DB에 V10 적용, CHECK 제약), `SettlementAuditMigrationTest`(V10 데이터가 있는 DB에 V11 적용, 이력·실패 기록 제약), `OrderListIndexMigrationTest`(V11 데이터가 있는 DB에 V12 적용, 주문 목록 인덱스 생성·기존 인덱스 교체·실행 계획), `SettlementAuditRecoveryIntegrationTest`(누락·실패분 재집계와 복구, 중복·동시 재집계와 스케줄러 경합, 기존 정산 재집계 차단, 확정·지급 처리자 이력), `OwnerSettlementIntegrationTest`(일 정산 기록 = 관리자 정산, 늦은 환불의 차감 정산, 이월 연결, 판매 내역 합계), `StoreFeeRateIntegrationTest`(매장 수수료율 결제 스냅샷, 수수료율 혼합 정산, 확정·지급 정산 불변, 환불 차감 기준) | Testcontainers PostgreSQL |
+| 단위 테스트 | `TraceIdFilterTest`(traceId 생성·전달, 잘못된 외부 값 거부, MDC 정리), `OrderTest`(상태 전이, 항목 추가·총액 합산), `PaymentFeeTest`(수수료 계산·반올림), `PaymentFeePropertiesTest`(수수료율 설정 검증), `StoreTest`(소유권 판단, 매장 수수료율·공통 수수료율 fallback), `SettlementPeriodTest`(정산 기간·확정 시각), `SettlementTest`(정산 집계·합계, PENDING → CONFIRMED → PAID 전이·중복 지급 거부), `OrderServiceTest`, `MenuServiceTest`, `StoreServiceTest`, `PaymentServiceTest`(결제 + 단건 조회 401·403·404·현재 상태), `SettlementServiceTest`, `SettlementAuditTest`(상태 이력 생성 규칙·처리자 필수, 실패 기록 FAILED ↔ RESOLVED), `SettlementAggregationServiceTest`(집계·중복 건너뜀·오류 격리, 집계 이력 처리자, 실패 기록·해결, 매장 지정 재집계), `SettlementSchedulerTest`(집계 날짜 선택, 실행별 traceId·MDC 정리, 분산 락 미획득·Redis 장애 시 건너뜀), `AdminSettlementServiceTest`(관리자 확인, 확정·지급 시각 기록, 잘못된 전이, 상태 변경 로그, 확정·지급 이력의 처리자, 재집계 400·404·409), `UserServiceTest`(ADMIN 가입 거부), `AdminStoreServiceTest`(관리자 확인, 매장 404, 수수료율 설정·해제), `OwnerSettlementServiceTest`(권한, 기간 400, 상태 필터, 다른 매장 정산 404, 이월 차감 전), `ProdProfileGuardTest`(prod 필수 환경변수 누락·공백 시 이름만 담아 실패, Swagger 활성 시 실패, #54) | 없음 (Mockito) |
+| 웹 계층 테스트 | `ErrorResponseFormatTest`(401·403·404·405·409·500 공통 형식, 본문·헤더·로그 traceId 일치, 500 내부 메시지 숨김), `OrderCancelSecurityTest` (`@WebMvcTest`, 401/403), `OrderListPagingTest`(주문 목록 page·keyset 응답 헤더, `X-Next-After-Id`, page+afterId·범위 400, #54), `PaymentQuerySecurityTest`(결제 단건 조회 401·OWNER 403·응답 필드·404 형식), `AmountInputRangeTest`(가격·수량 범위 초과 400), `StoreSecurityTest`(매장·정산·일 정산 기록 API 401/403, 조회 파라미터 400, 목록 페이지 기본값·헤더·page/size 범위 400), `AdminSettlementSecurityTest`(관리자 API 401, CUSTOMER·OWNER 403, 잘못된 전이 409, 재집계·이력·실패 기록 API 권한과 처리자 파라미터 무시), `AdminStoreSecurityTest`(수수료율 API 401/403, 잘못된 수수료율 400) | 없음 |
+| 통합 테스트 | `ObservabilityDefaultExposureIntegrationTest`(기본 설정: health만 공개·prometheus/Swagger 비노출·기타 Actuator ADMIN), `ObservabilityEnabledIntegrationTest`(local·dev 설정: prometheus 수집, metrics ADMIN, OpenAPI 명세·Swagger UI), `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장), `PaymentQueryIntegrationTest`(결제 단건 조회: 본인 결제·환불 후 현재 상태, 다른 고객 403, 없음 404, OWNER 403), `TimeZoneIntegrationTest`, `AmountMigrationTest`(기존 데이터가 있는 DB에 V3 적용), `StoreMigrationTest`(기존 메뉴·주문을 매장으로 백필하는 V4 적용), `OrderItemMigrationTest`(기존 주문을 주문 항목으로 백필하는 V5 적용), `DeliveredAtMigrationTest`(배달완료 시각을 백필하는 V6 적용), `StoreOrderIntegrationTest`(매장 → 메뉴 → 주문 흐름, 여러 메뉴 주문, 매장별 조회·소유권, 목록 페이지 순서·겹침 없음, 주문 목록 쿼리 3번(N+1 없음), keyset 페이징 OFFSET과 같은 결과·중복·누락 없음·경계·조회 중 새 주문(#54)), `ProdProfileIntegrationTest`(prod 프로필 실제 기동: 서비스 포트 Actuator·Swagger 404, 관리 포트 health·probe·prometheus, 그 밖의 Actuator 비활성·401, #54), `SettlementIntegrationTest`(배달완료 → 정산 조회, 날짜 경계), `SettlementAggregationIntegrationTest`(스케줄러 집계, 반복·동시 실행 시 중복 방지, DB 제약, cron 등록), `AdminSettlementIntegrationTest`(집계 → 확정 → 지급, 잘못된 전이, 동시 지급 시 1번만 성공), `SettlementStatusMigrationTest`(V7 정산 데이터가 있는 DB에 V8 적용), `StoreFeeRateMigrationTest`(V9 데이터가 있는 DB에 V10 적용, CHECK 제약), `SettlementAuditMigrationTest`(V10 데이터가 있는 DB에 V11 적용, 이력·실패 기록 제약), `OrderListIndexMigrationTest`(V11 데이터가 있는 DB에 V12 적용, 주문 목록 인덱스 생성·기존 인덱스 교체·실행 계획), `SettlementAuditRecoveryIntegrationTest`(누락·실패분 재집계와 복구, 중복·동시 재집계와 스케줄러 경합, 기존 정산 재집계 차단, 확정·지급 처리자 이력), `OwnerSettlementIntegrationTest`(일 정산 기록 = 관리자 정산, 늦은 환불의 차감 정산, 이월 연결, 판매 내역 합계), `StoreFeeRateIntegrationTest`(매장 수수료율 결제 스냅샷, 수수료율 혼합 정산, 확정·지급 정산 불변, 환불 차감 기준) | Testcontainers PostgreSQL |
 
 - 통합 테스트는 `@Import(TestcontainersConfiguration.class)`를 붙이면 PostgreSQL 18·Redis 컨테이너가 뜨고 `@ServiceConnection`으로 자동 연결됨
 - Redis 테스트 (#41): `PaymentIdempotencyIntegrationTest`(같은 키 재전송·동시 요청 1건 처리·다른 요청 422·키 없는 기존 동작·실패 후 재시도·사용자별 분리·키 형식·TTL), `PaymentIdempotencyRedisFailureTest`(연결 실패·타임아웃 503, 결제 후 Redis 실패에도 응답 유지·재실행 없음), `RedisDistributedLockTest`(획득·해제·예외·최소/최대 유지 시간·만료 후 남의 락 보호·동시 경합·장애), `SettlementSchedulerLockTest`(여러 인스턴스 동시 실행 시 1번만 집계, 늦게 깨어난 인스턴스, 실패 후 해제, Redis 장애 시 미실행)

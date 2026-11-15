@@ -1,7 +1,7 @@
 // 목록 API 부하 테스트 (#40) — 실행 방법·결과는 docs/performance.md
 // 한 번에 API 하나만 측정 (TARGET) → API별 응답 시간·처리량이 서로 섞이지 않도록
 //   TARGET: stores | menus | orders-customer | orders-owner | store-orders
-//   QUERY : 쿼리 문자열 (예: "?page=100&size=20"), 기본은 파라미터 없이 호출
+//   QUERY : 쿼리 문자열 (예: "?page=100&size=20", keyset은 "?afterId=299106&size=20" #54), 기본은 파라미터 없이 호출
 //   VUS / DURATION: 동시 사용자 수 / 측정 시간 (기본 20명, 30초)
 import http from 'k6/http';
 import { check } from 'k6';

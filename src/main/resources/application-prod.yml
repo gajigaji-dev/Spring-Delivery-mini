@@ -1,0 +1,63 @@
+# prod 프로필 — 운영 배포 (#54). 실행: SPRING_PROFILES_ACTIVE=prod (지정하지 않으면 local로 떠서 Swagger가 켜지므로 반드시 지정)
+# 접속 정보·비밀 값은 모두 환경변수로만 받음 (.env 파일을 읽지 않고, 설정 파일에 기본값을 두지 않음)
+#   필수: DB_URL, DB_USERNAME, DB_PASSWORD, JWT_SECRET, REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS
+#   → 하나라도 비어 있으면 config.ProdProfileGuard가 기동을 막음 (Redis·Kafka는 처음 쓸 때 접속하므로 늦게 드러나는 것을 방지)
+#   선택: REDIS_PORT(기본 6379), MANAGEMENT_PORT(기본 8081)
+#   Redis 비밀번호·TLS 등 그 밖의 값은 Spring Boot 표준 환경변수로 지정 (예: SPRING_DATA_REDIS_PASSWORD) — 설정 파일에 두지 않음
+# 설정 근거·점검 결과: docs/operations.md
+spring:
+  datasource:
+    url: ${DB_URL}
+  data:
+    redis:
+      host: ${REDIS_HOST}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+  # 운영에서는 baseline을 자동으로 하지 않음
+  #   기본 설정(true)은 "이력 테이블은 없는데 테이블은 있는 DB"를 V1 적용 완료로 기록하고 V2부터 실행
+  #   → DB_URL을 잘못 지정해 다른 DB에 붙어도 조용히 마이그레이션이 진행됨. 끄면 그런 DB에서는 기동 실패
+  #   빈 DB(첫 배포)와 이력 테이블이 있는 DB는 영향 없음. 환경변수로 다시 켜면 ProdProfileGuard가 기동을 막음
+  flyway:
+    baseline-on-migrate: false
+  jpa:
+    # 기본값도 false지만 명시: SQL 로그에 조회 조건(회원 id 등)이 남지 않고, 로그 양으로 성능이 떨어지지 않도록
+    show-sql: false
+
+server:
+  # 배포·재시작 때 처리 중인 요청을 끝낸 뒤 종료 (새 요청은 받지 않음)
+  shutdown: graceful
+  # 기본 /error 응답에 예외 메시지·스택트레이스를 넣지 않음 (API 예외는 GlobalExceptionHandler가 처리, 그 밖의 오류에서 내부 정보 노출 방지)
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-exception: false
+
+# Actuator — 서비스 포트(8080)와 분리된 관리 포트에서만 제공. 관리 포트는 외부(로드밸런서·인터넷)에 공개하지 않고
+#   같은 내부 네트워크의 헬스체크·Prometheus만 접근 (dev 프로필·docker-compose와 같은 구조)
+# access.default: none → 노출 목록과 별개로 엔드포인트 자체를 끔. 필요한 health·prometheus만 읽기 전용으로 켬
+#   (exposure만 줄이면 설정 실수 하나로 env·heapdump 등이 열릴 수 있어 두 겹으로 막음)
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8081}
+  endpoints:
+    access:
+      default: none
+    web:
+      exposure:
+        include: health, prometheus
+  endpoint:
+    health:
+      access: read-only
+      show-details: never
+      # 오케스트레이터용 /actuator/health/liveness·readiness (liveness는 외부 의존성과 무관 → DB 장애로 재시작이 반복되지 않음)
+      probes:
+        enabled: true
+    prometheus:
+      access: read-only
+
+# API 문서 비활성 — 기본값(application.yml)과 같지만 운영 의도를 명시. 켜져 있으면 ProdProfileGuard가 기동을 막음
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

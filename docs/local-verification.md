@@ -1,8 +1,8 @@
-# 로컬 확인 가이드 — Redis · Kafka
+# 로컬 확인 가이드 — Redis · Kafka · 주문 목록 · 운영 프로필 · DB 타임아웃
 
 [← README](../README.md) · [프로젝트 구조](architecture.md)
 
-Redis(결제 멱등성·분산 락)와 Kafka(Transactional Outbox·알림·DLT 재처리)가 로컬에서 실제로 동작하는지 확인하는 방법.
+Redis(결제 멱등성·분산 락)와 Kafka(Transactional Outbox·알림·DLT 재처리), 주문 목록 keyset 페이징·prod 프로필·DB 타임아웃(#54, 3장)이 로컬에서 실제로 동작하는지 확인하는 방법.
 동작 원리·장애 시 동작 표는 [프로젝트 구조](architecture.md)의 Redis 장·Kafka 장, API 형식은 [API 명세](api.md) 참고
 
 > 2장의 수동 절차는 프로젝트 설정(compose·application.yml) 기준으로 정리한 것 — 자동 테스트(1장)는 전체 통과를 확인했고, **2-4(DLT 재처리)는 직접 실행해 결과를 2-4 "검증 결과"에 남김**(11단계 중 10단계 통과, 1단계 미검증). 2-2·2-3·2-5는 아직 직접 실행하지 않음 — 처음 따라 할 때 명령·경로가 맞는지 함께 확인
@@ -18,6 +18,9 @@ Testcontainers가 PostgreSQL·Redis·Kafka 컨테이너를 테스트 중에 띄�
 ./gradlew test --tests '*OutboxKafkaIntegrationTest'   # 실제 Kafka 발행·수신·DLT
 ./gradlew test --tests '*DltReprocess*'                # DLT 재처리: 재발행·중복 실행·부분 실패·건너뜀 (#52)
 ./gradlew test --tests '*OutboxFollowUp*'              # V14: 발행 순서, 재발행, 알림 발송, 보관 정리, 메트릭
+./gradlew test --tests '*OrderListPagingTest' --tests '*StoreOrderIntegrationTest'   # 주문 목록 keyset: 헤더·400, 중복·누락 없음·경계 (#54)
+./gradlew test --tests '*ProdProfile*'                 # prod 프로필: 실제 기동 후 노출 정책, 필수 환경변수 점검 (#54)
+./gradlew test --tests '*DatabaseTimeoutIntegrationTest' --tests '*ErrorResponseFormatTest'   # 커넥션 풀·잠금/문장 타임아웃 → 503 (#54)
 ./gradlew test                                         # 전체
 ```
 
@@ -190,3 +193,92 @@ docker compose --profile monitoring up   # Prometheus http://localhost:9090 (.en
   docker run --rm --entrypoint promtool -v "<프로젝트 경로>/monitoring:/etc/prometheus:ro" \
     prom/prometheus:v3.5.0 check config /etc/prometheus/prometheus.yml
   ```
+
+## 3. 주문 목록 keyset · 운영 프로필 (#54)
+
+> 이 장의 수동 절차는 아직 직접 실행하지 않음 — 같은 내용은 자동 테스트(1장 `OrderListPagingTest`·`StoreOrderIntegrationTest`·`ProdProfile*`·`DatabaseTimeoutIntegrationTest`)로 확인했고, 부하 측정은 [성능 개선](performance.md) 9장 절차로 실행함
+
+### 3-1. 주문 목록 keyset 페이징
+
+2-1처럼 앱을 띄우고 OWNER로 로그인해 토큰을 받은 뒤 (주문이 여러 건 있어야 함)
+
+```bash
+TOKEN=...   # 로그인 응답의 accessToken
+
+# 1) 첫 페이지 — 기존 page 방식. 헤더 X-Page·X-Size·X-Has-Next + X-Next-After-Id
+curl -s -D - -o /dev/null "http://localhost:8080/api/orders?size=2" -H "Authorization: Bearer $TOKEN"
+
+# 2) 다음 페이지 — 위 X-Next-After-Id 값을 afterId로. X-Page는 오지 않음
+curl -s -D - "http://localhost:8080/api/orders?afterId=<X-Next-After-Id>&size=2" -H "Authorization: Bearer $TOKEN"
+
+# 3) 오류 — page와 afterId를 함께 보내면 400, afterId=-1도 400
+curl -s "http://localhost:8080/api/orders?page=0&afterId=1" -H "Authorization: Bearer $TOKEN"
+```
+
+| 확인 | 기대 결과 |
+|---|---|
+| 2)를 `X-Has-Next: false`가 될 때까지 반복 | 받은 id를 이어 붙이면 `?page=0,1,2...`로 받은 결과와 같은 순서·같은 개수 (중복·누락 없음) |
+| 마지막 페이지 | `X-Has-Next: false`, `X-Next-After-Id` 헤더 없음 |
+| 넘기는 중간에 CUSTOMER로 새 주문 생성 | 이미 받은 주문이 다시 나오지 않고, 새 주문은 마지막 페이지에 이어서 나옴 |
+| 응답 본문 | 두 방식 모두 기존과 같은 JSON 배열 |
+
+### 3-2. prod 프로필
+
+Redis·Kafka는 compose 것을 쓰고, 앱만 jar로 prod 프로필 실행
+
+```bash
+./gradlew bootJar
+docker compose up -d redis kafka
+
+# 1) 필수 환경변수 누락 → 기동 실패 (메시지에 빠진 변수 이름만, 값은 출력되지 않음)
+SPRING_PROFILES_ACTIVE=prod java -jar build/libs/Spring-Delivery-Mini-0.0.1-SNAPSHOT.jar
+#   → "prod 프로필 설정 오류 — 필수 환경변수가 없습니다: DB_URL, DB_USERNAME, ..."
+
+# 2) 정상 기동 (DB는 local 실행과 같은 localhost:5432 delivery DB)
+SPRING_PROFILES_ACTIVE=prod DB_URL=jdbc:postgresql://localhost:5432/delivery DB_USERNAME=... DB_PASSWORD=... \
+  JWT_SECRET=... REDIS_HOST=localhost REDIS_PORT=6380 KAFKA_BOOTSTRAP_SERVERS=localhost:9094 \
+  java -jar build/libs/Spring-Delivery-Mini-0.0.1-SNAPSHOT.jar
+```
+
+| 요청 | 기대 결과 |
+|---|---|
+| `curl -i localhost:8080/swagger-ui.html`, `/v3/api-docs` | 404 |
+| `curl -i localhost:8080/actuator/health` | 404 (서비스 포트에는 Actuator 없음) |
+| `curl localhost:8081/actuator/health` | `{"status":"UP"}`만 (DB 등 상세 없음) |
+| `curl -i localhost:8081/actuator/health/liveness`, `/readiness` | 200 |
+| `curl -s localhost:8081/actuator/prometheus \| head` | 메트릭 출력 |
+| `curl -i localhost:8081/actuator/env` | 토큰 없으면 401, ADMIN 토큰이어도 404 (엔드포인트 비활성) |
+| 2)에 `SPRINGDOC_SWAGGER_UI_ENABLED=true` 추가해 실행 | 기동 실패 ("운영 프로필에서는 비활성이어야 합니다: springdoc.swagger-ui.enabled") |
+
+- 8081(관리 포트)은 확인용으로 로컬에서만 접근. 실제 배포에서는 외부에 공개하지 않음 ([운영 프로필](operations.md))
+
+### 3-3. compose DB 포트 · DB 타임아웃
+
+compose `db` 컨테이너는 포트 매핑이 바뀌었으므로 **재생성 필요** (`up -d`가 설정 변경을 감지해 다시 만듦, `db-data` 볼륨은 유지)
+
+```bash
+docker compose up -d db
+docker compose port db 5432        # → 127.0.0.1:5432 (0.0.0.0이 아님)
+```
+
+잠금 대기 초과 → 503 확인 (psql로 결제 완료 주문의 행을 잠근 채 점주가 같은 주문을 수락 — 상태 변경은 주문 행을 `FOR UPDATE`로 조회)
+
+```bash
+# 터미널 A — 주문 행을 잠그고 트랜잭션을 열어 둠
+docker compose exec db psql -U "$DB_USERNAME" -d delivery
+#   BEGIN; SELECT * FROM orders WHERE id = <주문 id> FOR UPDATE;
+
+# 터미널 B — 같은 주문 수락 (OWNER 토큰)
+curl -i -X PATCH "http://localhost:8080/api/orders/<주문 id>/status" -H "Authorization: Bearer $TOKEN" \n  -H "Content-Type: application/json" -d '{"status":"ORDER_ACCEPTED"}'
+
+# 터미널 A — 확인 후 ROLLBACK;
+```
+
+| 확인 | 기대 결과 |
+|---|---|
+| `docker compose port db 5432` | `127.0.0.1:5432` |
+| 터미널 B 응답 | 약 5초 뒤 **503** 공통 오류 형식, 본문에 DB 오류 메시지 없음 / 주문 상태는 그대로 |
+| 터미널 A `ROLLBACK` 후 B 재요청 | 정상 처리 |
+| `DB_LOCK_TIMEOUT=2s`로 앱 재기동 후 반복 | 약 2초 뒤 503 |
+
+- 세션 타임아웃 값·이유는 [운영 프로필](operations.md) 6장

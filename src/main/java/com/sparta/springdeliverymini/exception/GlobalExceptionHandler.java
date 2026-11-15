@@ -4,6 +4,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.QueryTimeoutException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -71,6 +74,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(ApiErrorResponse.of(HttpStatus.CONFLICT, "데이터 저장 중 제약 조건을 위반했습니다.",
                         request.getRequestURI()));
+    }
+
+    // DB가 제때 응답하지 못한 경우 → 503 (요청은 반영되지 않았고 잠시 후 다시 시도하면 되는 상황이라 500과 구분)
+    // - PessimisticLockingFailureException: 행 잠금 대기가 lock_timeout을 넘김, 교착 상태로 이 트랜잭션이 취소됨
+    // - QueryTimeoutException: 문장 실행이 statement_timeout을 넘김
+    // - CannotCreateTransactionException: 커넥션 풀이 바닥나 connection-timeout 안에 커넥션을 얻지 못함, DB 접속 불가
+    // 타임아웃 값은 application.yml spring.datasource.hikari. 스택 트레이스 없이 종류만 남김 (SQL·값이 로그에 남지 않도록)
+    @ExceptionHandler({PessimisticLockingFailureException.class, QueryTimeoutException.class,
+            CannotCreateTransactionException.class})
+    public ResponseEntity<ApiErrorResponse> handleDatabaseBusy(Exception e, HttpServletRequest request) {
+        log.error("DB 응답 지연·사용 불가 {} {} cause={}", request.getMethod(), request.getRequestURI(),
+                e.getClass().getSimpleName());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiErrorResponse.of(HttpStatus.SERVICE_UNAVAILABLE,
+                        "일시적으로 요청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.", request.getRequestURI()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

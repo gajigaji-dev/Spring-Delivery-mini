@@ -4,6 +4,7 @@ import com.sparta.springdeliverymini.dto.OrderCreateRequest;
 import com.sparta.springdeliverymini.dto.OrderItemRequest;
 import com.sparta.springdeliverymini.dto.OrderItemResponse;
 import com.sparta.springdeliverymini.dto.OrderResponse;
+import com.sparta.springdeliverymini.dto.KeysetQuery;
 import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.event.OutboxEventRecorder;
@@ -469,6 +470,34 @@ class OrderServiceTest {
 
         assertThat(orders.getContent()).hasSize(1);
         assertThat(orders.hasNext()).isTrue();
+    }
+
+    @Test
+    void keyset_주문_목록은_afterId_이후를_첫_페이지_id_오름차순으로_조회한다() {
+        // 위치는 afterId 조건이 정하므로 OFFSET은 항상 0
+        given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
+        Pageable expected = PageRequest.of(0, 30, Sort.by(Sort.Direction.ASC, "id"));
+        given(orderRepository.findAllByStoreOwnerIdAndIdGreaterThan(3L, 120L, expected))
+                .willReturn(new SliceImpl<>(List.of(order(OrderStatus.ORDER_REQUEST)), expected, true));
+
+        Slice<OrderResponse> orders = orderService.getOrdersAfter("owner1", KeysetQuery.of(120L, 30));
+
+        assertThat(orders.getContent()).hasSize(1);
+        assertThat(orders.hasNext()).isTrue();
+    }
+
+    @Test
+    void keyset_고객은_본인_주문만_ADMIN은_빈_목록() {
+        given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
+        given(orderRepository.findAllByUserIdAndIdGreaterThan(
+                customer.getId(), 0L, KeysetQuery.of(0L, 20).toPageable()))
+                .willReturn(new SliceImpl<>(List.of(order(OrderStatus.ORDER_REQUEST))));
+        given(userRepository.findByUsername("admin1"))
+                .willReturn(Optional.of(new User("admin1", "encoded", Role.ADMIN)));
+
+        assertThat(orderService.getOrdersAfter("customer1", KeysetQuery.of(0L, 20))).hasSize(1);
+        assertThat(orderService.getOrdersAfter("admin1", KeysetQuery.of(0L, 20))).isEmpty();
+        verify(orderRepository, never()).findAllByStoreOwnerIdAndIdGreaterThan(any(), any(), any());
     }
 
     // ===== 매장별 주문 조회 =====
