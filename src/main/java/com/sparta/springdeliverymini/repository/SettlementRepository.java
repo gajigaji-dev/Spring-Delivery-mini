@@ -5,6 +5,7 @@ import com.sparta.springdeliverymini.entity.SettlementStatus;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -13,7 +14,9 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
-public interface SettlementRepository extends JpaRepository<Settlement, Long> {
+// JpaSpecificationExecutor: 내 정산 내역 조회(GET /api/settlements)의 선택 조건(상태·기간)을 조합하기 위해 사용
+// (JPQL의 `:param IS NULL OR ...`는 PostgreSQL에서 null 파라미터 타입 추론 문제가 생길 수 있어 조건을 있을 때만 붙임)
+public interface SettlementRepository extends JpaRepository<Settlement, Long>, JpaSpecificationExecutor<Settlement> {
 
     // 해당 매장·날짜에 이미 정산이 있는지 (중복 정산 방지 1차 확인, 최종 보장은 DB UNIQUE)
     boolean existsByStoreIdAndSettlementDate(Long storeId, LocalDate settlementDate);

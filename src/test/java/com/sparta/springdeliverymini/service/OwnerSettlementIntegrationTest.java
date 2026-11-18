@@ -13,6 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.Slice;
+import org.springframework.http.HttpStatus;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -88,14 +90,28 @@ class OwnerSettlementIntegrationTest {
     // ===== 도우미 =====
 
     private Long delivered(LocalDateTime deliveredAt) {
+        return delivered(menu.id(), "owner1", deliveredAt);
+    }
+
+    private Long delivered(Long menuId, String owner, LocalDateTime deliveredAt) {
         clock.set(deliveredAt.minusHours(1));
         OrderResponse order = orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1");
+                new OrderCreateRequest(List.of(new OrderItemRequest(menuId, 1)), "서울시"), "customer1");
         PaymentResponse payment = paymentService.pay(new PaymentRequest(order.id(), "CARD"), "customer1");
-        orderService.statusOrder(order.id(), "owner1", OrderStatus.ORDER_ACCEPTED);
+        orderService.statusOrder(order.id(), owner, OrderStatus.ORDER_ACCEPTED);
         clock.set(deliveredAt);
-        orderService.statusOrder(order.id(), "owner1", OrderStatus.DELIVERY_COMPLETED);
+        orderService.statusOrder(order.id(), owner, OrderStatus.DELIVERY_COMPLETED);
         return payment.id();
+    }
+
+    private Long newMenu(String storeName, String owner) {
+        StoreResponse newStore = storeService.createStore(new StoreCreateRequest(storeName), owner);
+        return menuService.createMenu(new MenuCreateRequest(newStore.id(), "메뉴", PRICE, null), owner).id();
+    }
+
+    private Slice<MySettlementResponse> mine(String owner, Long storeId, SettlementStatus status,
+                                             LocalDate from, LocalDate to, int page, int size) {
+        return ownerSettlementService.getMySettlements(owner, storeId, status, from, to, PageQuery.of(page, size));
     }
 
     private void refund(Long paymentId, LocalDateTime refundedAt) {
@@ -320,5 +336,103 @@ class OwnerSettlementIntegrationTest {
         assertThatThrownBy(() -> ownerSettlementService.getDailySettlement(store.id(), nov5, "owner2"))
                 .isInstanceOf(ApiException.class)
                 .extracting("status").isEqualTo(org.springframework.http.HttpStatus.FORBIDDEN);
+    }
+
+    // ===== 내 정산 내역 (GET /api/settlements) =====
+
+    @Test
+    void 내_정산_내역은_본인_매장_전체의_정산만_id_순으로_나오고_다른_점주의_정산은_섞이지_않는다() {
+        Long pizzaMenu = newMenu("피자집", "owner1");      // owner1의 두 번째 매장
+        Long otherMenu = newMenu("분식집", "owner2");      // 다른 점주의 매장
+        delivered(nov(5, 12));
+        delivered(pizzaMenu, "owner1", nov(5, 13));
+        delivered(otherMenu, "owner2", nov(5, 14));
+        aggregate(nov(5));
+        delivered(nov(6, 12));
+        aggregate(nov(6));
+
+        List<MySettlementResponse> owner1 = mine("owner1", null, null, null, null, 0, 20).getContent();
+        assertThat(owner1).hasSize(3);
+        assertThat(owner1).extracting(MySettlementResponse::storeName)
+                .containsExactlyInAnyOrder("치킨집", "피자집", "치킨집");
+        assertThat(owner1).extracting(MySettlementResponse::id).isSorted();
+        assertThat(owner1.get(0).settlementAmount()).isEqualTo(9500);
+
+        List<MySettlementResponse> owner2 = mine("owner2", null, null, null, null, 0, 20).getContent();
+        assertThat(owner2).singleElement()
+                .satisfies(s -> assertThat(s.storeName()).isEqualTo("분식집"));
+    }
+
+    @Test
+    void 내_정산_내역은_페이지_단위로_나뉘고_다음_페이지_여부를_알려준다() {
+        delivered(nov(5, 12));
+        aggregate(nov(5));
+        delivered(nov(6, 12));
+        aggregate(nov(6));
+        delivered(nov(7, 12));
+        aggregate(nov(7));
+
+        Slice<MySettlementResponse> first = mine("owner1", null, null, null, null, 0, 2);
+        Slice<MySettlementResponse> second = mine("owner1", null, null, null, null, 1, 2);
+
+        assertThat(first.getContent()).extracting(MySettlementResponse::settlementDate)
+                .containsExactly(nov(5), nov(6));
+        assertThat(first.hasNext()).isTrue();
+        assertThat(second.getContent()).extracting(MySettlementResponse::settlementDate)
+                .containsExactly(nov(7));
+        assertThat(second.hasNext()).isFalse();
+    }
+
+    @Test
+    void 내_정산_내역은_매장_상태_기간_조건을_함께_적용한다() {
+        Long pizzaMenu = newMenu("피자집", "owner1");
+        delivered(nov(5, 12));
+        delivered(pizzaMenu, "owner1", nov(5, 13));
+        aggregate(nov(5));
+        delivered(nov(6, 12));
+        aggregate(nov(6));
+        delivered(nov(7, 12));
+        aggregate(nov(7));
+        clock.set(nov(8, 9));
+        adminSettlementService.confirm(settlementId(nov(6)), "admin");
+
+        assertThat(mine("owner1", store.id(), null, null, null, 0, 20).getContent())
+                .extracting(MySettlementResponse::settlementDate).containsExactly(nov(5), nov(6), nov(7));
+        assertThat(mine("owner1", store.id(), SettlementStatus.CONFIRMED, null, null, 0, 20).getContent())
+                .extracting(MySettlementResponse::settlementDate).containsExactly(nov(6));
+        // from·to 모두 포함, 한쪽만 줘도 됨
+        assertThat(mine("owner1", store.id(), null, nov(6), nov(7), 0, 20).getContent())
+                .extracting(MySettlementResponse::settlementDate).containsExactly(nov(6), nov(7));
+        assertThat(mine("owner1", null, null, null, nov(5), 0, 20).getContent())
+                .extracting(MySettlementResponse::storeName).containsExactlyInAnyOrder("치킨집", "피자집");
+        assertThat(mine("owner1", null, SettlementStatus.PAID, null, null, 0, 20).getContent()).isEmpty();
+    }
+
+    @Test
+    void 내_정산_내역에서_다른_점주의_매장을_지정하면_403_없는_매장은_404_기간이_뒤집히면_400() {
+        delivered(nov(5, 12));
+        aggregate(nov(5));
+
+        assertThatThrownBy(() -> mine("owner2", store.id(), null, null, null, 0, 20))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.FORBIDDEN);
+        assertThatThrownBy(() -> mine("owner1", 999_999L, null, null, null, 0, 20))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.NOT_FOUND);
+        assertThatThrownBy(() -> mine("owner1", null, null, nov(7), nov(5), 0, 20))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.BAD_REQUEST);
+        // OWNER가 아니면 서비스에서도 403 (토큰 발급 후 역할 변경 대비)
+        assertThatThrownBy(() -> mine("customer1", null, null, null, null, 0, 20))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    @Test
+    void 매장이_없는_점주는_빈_목록을_받는다() {
+        Slice<MySettlementResponse> result = mine("owner2", null, null, null, null, 0, 20);
+
+        assertThat(result.getContent()).isEmpty();
+        assertThat(result.hasNext()).isFalse();
     }
 }

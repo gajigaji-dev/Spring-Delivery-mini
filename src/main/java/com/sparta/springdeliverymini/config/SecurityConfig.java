@@ -68,6 +68,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET,
                                 "/api/stores/*/daily-settlements", "/api/stores/*/daily-settlements/*").hasRole("OWNER")
 
+                        // 내 정산 내역(본인 매장 전체)은 OWNER만 가능 (본인 매장 정산만 Service에서 조회)
+                        .requestMatchers(HttpMethod.GET, "/api/settlements").hasRole("OWNER")
+
                         // 매장 조회는 로그인하지 않아도 가능
                         .requestMatchers(HttpMethod.GET, "/api/stores", "/api/stores/*").permitAll()
 

@@ -160,6 +160,10 @@
 > - 지급: `settlement_amount = 0 OR carried_out_amount = 0`
 > - 순액: `settlement_amount - carried_out_amount = sales_settlement_amount - refund_settlement_amount - carried_in_amount`
 > 정산 대상이 없는 매장·날짜는 행을 만들지 않음 (빈 기록이 매장 수 × 날짜 수만큼 쌓이지 않도록)
+> 내 정산 내역 조회(`GET /api/settlements`, #59)는 **인덱스를 추가하지 않음** — 점주 매장을 `idx_stores_owner_id`(V4)로 찾고,
+> 정산은 `uk_settlements_store_date (store_id, settlement_date)`의 `store_id` 선두 컬럼으로 매장별로 읽은 뒤 id로 정렬.
+> 정산은 매장당 하루 최대 1행(1년 약 365행)이라 점주 한 명의 정산을 모두 정렬해도 작고, `(store_id, id)` 인덱스는 쓰기 비용 대비 이득이 작음.
+> (부하 테스트·EXPLAIN 실측은 아님 — 매장 수가 크게 늘면 `docs/performance.md` 방식으로 확인 후 검토)
 > 집계·확정·지급과 스케줄러 동작은 [정산 기준 · 정산 집계·확정·지급](settlement-policy.md#8-정산-집계확정지급--settlements) 참고
 
 ### settlement_refunds — 환불 차감 기록 (V9)
