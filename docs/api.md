@@ -76,6 +76,7 @@
 | 매장별 정산 조회 | GET | `/api/stores/{id}/settlements?from=&to=` | O | OWNER (본인 매장) | 200 |
 | 매장별 일 정산 기록 목록 | GET | `/api/stores/{id}/daily-settlements?from=&to=&status=` | O | OWNER (본인 매장) | 200 |
 | 매장별 일 정산 기록 상세 | GET | `/api/stores/{id}/daily-settlements/{settlementId}` | O | OWNER (본인 매장) | 200 |
+| 내 정산 내역 (전체 매장) | GET | `/api/settlements?storeId=&status=&from=&to=&page=&size=` | O | OWNER (본인 매장) | 200 |
 | 메뉴 등록 | POST | `/api/menus` | O | OWNER (본인 매장) | 201 |
 | 메뉴 목록 조회 | GET | `/api/menus?page=&size=` | X | - | 200 |
 | 메뉴 단건 조회 | GET | `/api/menus/{id}` | X | - | 200 |
@@ -322,6 +323,40 @@ Response `200 OK`
 | 401 | 토큰 없음 |
 | 403 | OWNER가 아님, 본인 매장이 아님 |
 | 404 | 매장 없음, 정산이 없거나 **다른 매장의 정산** (다른 매장에 그 정산이 있는지 드러내지 않음) |
+
+### 내 정산 내역 `GET /api/settlements`
+점주 본인 매장 **전체**의 일 정산 기록을 한 목록으로 (매장별 `/daily-settlements`와 같은 저장 기록, 항목에 매장 정보 추가)
+
+Request — 쿼리 파라미터 (모두 선택)
+```
+GET /api/settlements?storeId=1&status=PAID&from=2026-11-01&to=2026-11-30&page=0&size=20
+```
+- `storeId`: 이 매장만. 없으면 본인 매장 전체
+- `status`: `PENDING` / `CONFIRMED` / `PAID`, 없으면 전체
+- `from`, `to`: `yyyy-MM-dd`, 정산일 기준이며 둘 다 포함. 한쪽만 줘도 되고, 기간 길이 제한 없음 (페이징으로 응답 크기 제한)
+- `page`, `size`: 목록 공통 페이징 (기본 0·20, `size` 최대 100), **id 오름차순**
+
+Response `200 OK` — 본문은 배열, 페이지 정보는 헤더 `X-Page`·`X-Size`·`X-Has-Next` ([성능 개선](performance.md)과 같은 방식)
+```json
+[
+  { "id": 3, "storeId": 1, "storeName": "치킨집", "settlementDate": "2026-11-05",
+    "paymentCount": 2, "totalAmount": 20000, "totalFee": 1000, "salesSettlementAmount": 19000,
+    "refundCount": 0, "refundAmount": 0, "refundFee": 0, "refundSettlementAmount": 0,
+    "carriedInAmount": 0, "carriedOutAmount": 0, "settlementAmount": 19000,
+    "status": "PAID", "aggregatedAt": "2026-11-06T01:10:00",
+    "confirmedAt": "2026-11-06T09:00:00", "paidAt": "2026-11-06T10:00:00" }
+]
+```
+- 본인 매장 id를 먼저 정한 뒤 `store_id IN (...)`으로 조회 → 다른 점주의 정산은 섞이지 않음
+- 관리자 응답의 처리자(`confirmedBy`·`paidBy`)는 포함하지 않음. 매장이 없는 점주는 빈 배열
+- 재집계(#39)로 과거 날짜 정산이 나중에 만들어지면 id 순과 정산일 순이 다를 수 있음 → 날짜순이 필요하면 클라이언트에서 정렬하거나 `from`·`to`로 좁혀 조회
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `from` > `to`, 날짜 형식 오류, `status`가 정의되지 않은 값, `page` < 0, `size`가 1~100 밖 |
+| 401 | 토큰 없음 |
+| 403 | OWNER가 아님(CUSTOMER·ADMIN), `storeId`가 본인 매장이 아님 |
+| 404 | `storeId` 매장 없음 |
 
 ---
 

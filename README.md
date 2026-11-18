@@ -41,6 +41,62 @@ flowchart LR
 | 이벤트 · 알림 | 결제 완료·환불·배달 완료 이벤트를 업무 데이터와 같은 트랜잭션에 저장(Transactional Outbox) → Kafka 발행(실패 시 지수 백오프 재시도, 한도 초과 FAILED), Consumer가 알림 기록 저장(`eventId` 기준 멱등성, 처리 실패는 재시도 후 DLT) → 발송기가 발송(재시도·FAILED), 내 알림 조회. FAILED 이벤트 관리자 재발행, 같은 주문 발행 순서 유지, 보관 기간 정리, 메트릭·알림 규칙. Kafka 장애여도 결제 등은 그대로 성공 |
 | 정산 운영 | 확정·지급 처리자와 시각을 감사 이력으로 기록(처리자는 인증 정보 기준), 집계 실패를 DB에 기록하고 관리자가 누락·실패분만 재집계(기존 정산은 재계산하지 않음, 스케줄러와 동시 실행에도 매장·날짜당 1건), 여러 인스턴스 중 한 대만 스케줄러 실행(Redis 분산 락, 장애 시 건너뛰고 다음 실행에서 보충) |
 
+## 문제 해결 사례
+각 사례는 문제 → 결정 → 검증 순서로 정리했고, 측정 방법·전체 수치는 링크한 문서에 있습니다.
+
+### 1. 주문 목록: 전체 조회 16초 → keyset 페이징 17.6ms (#40, #54)
+- **문제**: 목록 API가 전체 행을 한 번에 반환하고 주문 항목을 건마다 조회(N+1). 주문 30만 건에서 점주 주문 목록 평균 15,982ms, 1.1 req/s
+- **결정**
+  - `Slice`(size + 1건 조회)로 페이징해 매번 실행되는 count 쿼리를 없애고, 주문 항목은 `IN` 일괄 조회로 쿼리 3번 고정
+  - 인덱스는 EXPLAIN 근거가 있는 `(user_id, id)`·`(store_id, id)`만 추가. 값을 직접 넣은 EXPLAIN에서는 문제가 안 보여 `PREPARE` + generic plan으로 실제 조건을 재현
+  - 남은 병목(점주 전체 주문 OFFSET 뒤쪽 페이지)에만 `?afterId=` keyset 페이징 추가, 기존 `?page=`는 유지
+- **검증** (k6, 동시 사용자 20명)
+
+  | 요청 | 개선 전 | 개선 후 |
+  |---|---|---|
+  | 점주 주문 목록 (전체 → 첫 페이지) | 15,982ms · 1.1 req/s | 19.0ms · 1,028 req/s |
+  | 고객 주문 목록 (전체 → 첫 페이지) | 1,205ms · 16 req/s | 18.0ms · 1,082 req/s |
+  | 점주 마지막 페이지 (OFFSET → keyset) | 426ms · 47 req/s | 17.6ms · 1,111 req/s |
+
+- **한계**: keyset은 임의 페이지 이동 불가, 다른 정렬을 추가하면 `(정렬 컬럼, id)` 복합 조건·인덱스 필요
+- 문서: [성능 개선](docs/performance.md) 4·5·9장
+
+### 2. 정산: 확정된 기록을 고치지 않고 환불 차감·이월 (#30, #39)
+- **문제**: 배달완료 후 환불이 생기면 이미 만들어진(또는 지급된) 정산과 어긋남. 기존 정산을 수정하면 지급 기록과 감사 근거가 사라짐
+- **결정**
+  - 정산 기준 시점은 배달완료 시각(일 정산 D+1, Asia/Seoul)
+  - 기존 정산 행은 UPDATE하지 않고 상태 전이(PENDING → 확정 → 지급)만 허용. 환불은 이후 처음 집계되는 정산에서 차감하고, 모자라면 다음 정산으로 이월
+  - 수수료는 결제 시점에 원 단위 HALF_UP으로 한 번만 반올림, 정산액 = 결제액 − 수수료 → 1원 오차 없음
+  - 중복 차감은 매장 행 잠금 + `settlement_refunds.payment_id`·`settlement_carryovers.from_settlement_id` UNIQUE로 이중 방어
+  - 확정·지급 처리자와 시각은 감사 이력으로, 집계 실패는 DB에 기록해 관리자가 누락분만 재집계
+- **검증**: 회계 항등식 `Σ지급액 = Σ판매 정산액 − Σ환불 정산액 + 미차감 이월분`을 `PaymentRefundIntegrationTest`로 고정, 날짜 역순·동시 집계에서도 총 지급액 동일
+- 문서: [정산 기준](docs/settlement-policy.md) 9·10장, [금액 처리 정책](docs/money-policy.md)
+
+### 3. Redis: 보조 수단으로만 쓰는 결제 멱등성·분산 락 (#41)
+- **문제**: 클라이언트 재시도로 같은 결제 요청이 두 번 오거나, 여러 인스턴스의 정산 스케줄러가 동시에 실행될 수 있음
+- **결정**
+  - 최종 방어는 DB 제약(주문당 결제 UNIQUE, 매장·날짜당 정산 UNIQUE). Redis는 응답 재전송과 불필요한 중복 실행을 줄이는 보조 수단
+  - `Idempotency-Key` 결제는 같은 키에 처음 응답을 재전송, 같은 키에 다른 요청은 422
+  - 멱등성 키를 결제와 같은 트랜잭션에서 DB(`payment_idempotency_keys`)에도 기록 → Redis 기록이 사라져도 재전송
+  - Redis 장애 시 데이터를 바꾸는 쪽으로 진행하지 않음: 키 있는 새 결제는 503, 스케줄러는 건너뛰고 다음 실행에서 보충
+- **검증**: Testcontainers Redis로 재전송·동시 요청·Redis 장애 테스트 (`PaymentIdempotencyIntegrationTest`, `PaymentIdempotencyRedisFailureTest`, `SettlementSchedulerLockTest`)
+- 문서: [프로젝트 구조](docs/architecture.md) Redis 장
+
+### 4. Kafka: Transactional Outbox와 DLT 재처리 (#42, #52)
+- **문제**: 업무 트랜잭션 안에서 Kafka로 바로 보내면 롤백된 결제의 이벤트가 나가거나, 커밋 후 전송 실패로 이벤트가 유실됨. Kafka가 느리면 결제도 느려짐
+- **결정**
+  - 업무 트랜잭션은 `outbox_events`에 INSERT만 (`Propagation.MANDATORY`로 트랜잭션 밖 호출 차단), 발행은 별도 Publisher
+  - 여러 인스턴스는 `FOR UPDATE SKIP LOCKED`로 나눠 발행, 실패는 지수 백오프 후 10회 초과 시 FAILED (관리자 재발행 API)
+  - 발행은 최소 한 번 → Consumer가 `consumed_events`에 `ON CONFLICT DO NOTHING`으로 멱등 처리
+  - 처리 실패는 1초×3회 재시도 후 DLT, 형식 오류는 즉시 DLT. 원인 해결 후 되돌리는 DLT 재처리 CLI(종료 코드 0/1/2)
+  - DLT 적재 카운터가 전송 성공 전에 증가해 과다 집계되던 문제를 전송 성공 후 증가로 수정
+- **구현 중 발견한 문제**
+  - Spring Kafka 4에서 DLT 기본 이름이 `{topic}-dlt`로 바뀌어 다른 토픽으로 감 → 보낼 토픽을 직접 지정
+  - Kafka 접속 불가 시 건마다 5초씩 멈춰 행 잠금을 수백 초 쥐고 있음 → 첫 전송 실패 시 그 주기 중단
+  - DLT 조회만으로 브로커가 파티션 1개짜리 DLT를 자동 생성 → `allow.auto.create.topics=false`
+- **검증**: 실제 Kafka 컨테이너로 원자성·중복 수신·DLT·재처리 테스트. 로컬 수동 검증에서 DB 장애 → DLT 적재 126.6초, 재처리 후 약 70ms 뒤 알림 저장
+- 문서: [Kafka Outbox · 알림 이벤트](docs/kafka-outbox.md) 2·3·7장
+
 ## 문서
 | 문서 | 내용 |
 |---|---|

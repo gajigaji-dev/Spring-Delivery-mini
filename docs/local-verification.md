@@ -69,6 +69,20 @@ SELECT user_id, idempotency_key, payment_id, created_at FROM payment_idempotency
 
 분산 락(`lock:settlement-daily-aggregation`)은 스케줄러가 매일 01:10에만 잡으므로 수동 확인보다 자동 테스트로 확인
 
+#### 검증 결과 (2026-11-18, compose DB·Redis·Kafka + jar local 프로필, 포트 8090)
+
+| 단계 | 결과 | 실제 값 |
+|---|---|---|
+| 1 | 통과 | 둘 다 201·같은 본문(payment id 1), 두 번째에 `Idempotent-Replayed: true` |
+| 2 | 통과 | 키 1개, TTL 86399초 |
+| 3 | 통과 | `DEL` 후 재전송 201 + `Idempotent-Replayed: true`, 키 다시 생성 |
+| 4 | 통과 | 422 `같은 Idempotency-Key로 다른 결제 요청을 보낼 수 없습니다.` |
+| 5 | 통과 | Redis 중단 상태에서 201 재전송(약 1.1초) |
+| 6 | 통과 | 503, 주문 상태 `ORDER_REQUEST` 그대로 |
+| 7 | 통과 | 201, 주문 `PAYMENT_COMPLETED` |
+
+- Git Bash의 curl로 한글 본문을 보내면 400(본문 형식 오류)이 남 — 터미널 인코딩 문제이므로 확인용 값은 ASCII로 보냄
+
 ### 2-3. Kafka — Outbox · 알림
 
 | 단계 | 하는 일 | 기대 결과 |
@@ -90,6 +104,20 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
 SELECT id, event_type, status, attempt_count, last_error FROM outbox_events ORDER BY id;
 SELECT id, recipient_user_id, message, send_status, sent_at FROM notifications ORDER BY id;
 ```
+
+- Git Bash에서 `docker compose exec`로 컨테이너 안 절대 경로를 실행할 때는 `MSYS_NO_PATHCONV=1`을 앞에 붙임 (붙이지 않으면 경로가 `C:/Program Files/Git/opt/...`로 바뀌어 실패)
+
+#### 검증 결과 (2026-11-18, 2-2와 같은 환경)
+
+| 단계 | 결과 | 실제 값 |
+|---|---|---|
+| 1 | 통과 | 토픽에 `PAYMENT_COMPLETED` JSON(`eventId`·`orderId`·`paymentId`·`storeId`·`customerId`·`ownerId`·`amount`·`occurredAt`) |
+| 2 | 통과 | 고객·사장님 각각 알림 생성, `SENT`, 앱 로그 `알림 발송 notificationId=...` |
+| 3 | 통과 | 결제 201, `PENDING` 유지·`attempt_count` 1 → 3(20초), `last_error` `KafkaException: Send failed` |
+| 4 | 통과 | 재시작 후 `attempt_count` 4에서 `PUBLISHED`, 알림 2건 생성 |
+| 5 | 통과 | `OUTBOX_PUBLISHER_MAX_ATTEMPTS=2`로 재기동 → 결제 약 13초 뒤 `FAILED`(`attempt_count` 2) |
+| 6 | 통과 | 목록에 FAILED 1건 → 일괄 재발행 `{"republished":1}`, `PENDING`(`attempt_count` 0) → `PUBLISHED`, 알림 2건 |
+| 7 | 통과 | DLT에는 2-4 검증(2026-11-15) 때 넣은 2건만 있음 — 이번 확인으로 새로 들어간 메시지 없음 |
 
 ### 2-4. Kafka — DLT 재처리 (#52)
 
@@ -193,10 +221,24 @@ docker compose --profile monitoring up   # Prometheus http://localhost:9090 (.en
   docker run --rm --entrypoint promtool -v "<프로젝트 경로>/monitoring:/etc/prometheus:ro" \
     prom/prometheus:v3.5.0 check config /etc/prometheus/prometheus.yml
   ```
+- Prometheus는 compose `app:8081`을 수집하므로 앱도 compose로 띄워야 함. 호스트 8080을 다른 프로그램이 쓰면 `APP_PORT=8090 docker compose --profile monitoring up -d --build`
+
+#### 검증 결과 (2026-11-18, compose app + monitoring 프로필)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| 수집 대상 | 통과 | `delivery-app` up |
+| 규칙 | 통과 | 9개 로드, 평시 모두 inactive. `promtool` `SUCCESS: 9 rules found` |
+| Redis 중단 + 키 있는 결제 | 통과 | 503, `redis_failures_total{operation="idempotency.acquire"}` 1 |
+| Kafka 중단 + 결제 | 통과 | `outbox_events{status="pending"}` 1, `outbox_oldest_pending_age_seconds` 28 (약 40초 뒤) |
+| 복구 후 | 통과 | pending 0, `notification_send_total{result="sent"}` 2 |
+| `outbox_events{status="failed"}`·`outbox_dlt_records_total` | 미확인 | 이번에는 FAILED·DLT를 만들지 않아 0 (값 증가는 2-3 5단계·2-4에서 확인한 동작) |
+- 알림이 실제로 firing되는 것(`for` 시간 경과)까지는 기다리지 않음
 
 ## 3. 주문 목록 keyset · 운영 프로필 (#54)
 
-> 이 장의 수동 절차는 아직 직접 실행하지 않음 — 같은 내용은 자동 테스트(1장 `OrderListPagingTest`·`StoreOrderIntegrationTest`·`ProdProfile*`·`DatabaseTimeoutIntegrationTest`)로 확인했고, 부하 측정은 [성능 개선](performance.md) 9장 절차로 실행함
+> 2026-11-18에 아래 수동 절차를 직접 실행함 (각 절 끝의 검증 결과). 같은 내용은 자동 테스트(1장 `OrderListPagingTest`·`StoreOrderIntegrationTest`·`ProdProfile*`·`DatabaseTimeoutIntegrationTest`)로도 확인하고, 부하 측정은 [성능 개선](performance.md) 9장 절차로 실행함
+> 확인 때는 호스트 8080을 다른 프로젝트가 쓰고 있어 앱을 `SERVER_PORT=8090`으로 띄움 (아래 명령의 8080을 8090으로 읽음)
 
 ### 3-1. 주문 목록 keyset 페이징
 
@@ -221,6 +263,12 @@ curl -s "http://localhost:8080/api/orders?page=0&afterId=1" -H "Authorization: B
 | 마지막 페이지 | `X-Has-Next: false`, `X-Next-After-Id` 헤더 없음 |
 | 넘기는 중간에 CUSTOMER로 새 주문 생성 | 이미 받은 주문이 다시 나오지 않고, 새 주문은 마지막 페이지에 이어서 나옴 |
 | 응답 본문 | 두 방식 모두 기존과 같은 JSON 배열 |
+
+#### 검증 결과 (2026-11-18, 주문 7건·size=2)
+
+- 통과: page 방식 `1,2 / 3,4 / 5,6 / 7`(마지막 `X-Has-Next: false`), keyset 방식 `1,2 / 3,4 / 5,6 / 7,8` — 두 번째 페이지를 받은 뒤 새 주문 8을 결제했고, 이미 받은 주문은 다시 나오지 않고 8이 마지막 페이지에 이어서 나옴
+- keyset 요청에는 `X-Page` 없음, 마지막 페이지에 `X-Next-After-Id` 없음
+- `page=0&afterId=1` 400, `afterId=-1` 400
 
 ### 3-2. prod 프로필
 
@@ -252,6 +300,21 @@ SPRING_PROFILES_ACTIVE=prod DB_URL=jdbc:postgresql://localhost:5432/delivery DB_
 
 - 8081(관리 포트)은 확인용으로 로컬에서만 접근. 실제 배포에서는 외부에 공개하지 않음 ([운영 프로필](operations.md))
 
+#### 검증 결과 (2026-11-18)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| 1) 필수 환경변수 전부 누락 | **기대와 다름** | 기동은 실패하지만 안내 메시지 대신 `'url' must start with "jdbc"`(DataSource 생성 실패). 값은 출력되지 않음 |
+| 1') DB·JWT는 있고 `REDIS_HOST`·`KAFKA_BOOTSTRAP_SERVERS`만 누락 | 통과 | `prod 프로필 설정 오류 — 필수 환경변수가 없습니다: REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS` |
+| swagger·api-docs·서비스 포트 actuator | 통과 | 모두 404 |
+| 8081 health | 통과 | `{"groups":["liveness","readiness"],"status":"UP"}` — 그룹 이름만 있고 DB 등 상세 없음 |
+| liveness·readiness | 통과 | 200 |
+| prometheus | 통과 | 메트릭 출력 |
+| `/actuator/env` | 통과 | 토큰 없음 401, ADMIN 토큰 404 |
+| `SPRINGDOC_SWAGGER_UI_ENABLED=true` | 통과 | `운영 프로필에서는 비활성이어야 합니다: springdoc.swagger-ui.enabled` |
+
+- **발견한 문제**: `ProdProfileGuard`는 일반 `@Component`라 생성 순서가 보장되지 않음 — `entityManagerFactory`가 `flyway`→`dataSource`를 먼저 만들기 때문에 `DB_URL`이 없으면 가드보다 DataSource가 먼저 실패함. 기동 실패라는 결과는 같지만 빠진 변수 목록이 한 번에 나오지 않음. 개선 후보: 환경 준비 단계(`EnvironmentPostProcessor` 또는 `ApplicationEnvironmentPreparedEvent`)에서 검사
+
 ### 3-3. compose DB 포트 · DB 타임아웃
 
 compose `db` 컨테이너는 포트 매핑이 바뀌었으므로 **재생성 필요** (`up -d`가 설정 변경을 감지해 다시 만듦, `db-data` 볼륨은 유지)
@@ -282,3 +345,13 @@ curl -i -X PATCH "http://localhost:8080/api/orders/<주문 id>/status" -H "Autho
 | `DB_LOCK_TIMEOUT=2s`로 앱 재기동 후 반복 | 약 2초 뒤 503 |
 
 - 세션 타임아웃 값·이유는 [운영 프로필](operations.md) 6장
+- Git Bash에서는 터미널 A 대신 `psql -c "BEGIN; SELECT ... FOR UPDATE; SELECT pg_sleep(15); ROLLBACK;"`를 백그라운드로 실행해 잠금을 잡아도 됨
+
+#### 검증 결과 (2026-11-18)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| `docker compose port db 5432` | 통과 | `127.0.0.1:5432` |
+| 잠금 중 수락 | 통과 | 5.05초 뒤 503 `일시적으로 요청을 처리할 수 없습니다...`(DB 오류 메시지 없음), 주문 `PAYMENT_COMPLETED` 그대로 |
+| `ROLLBACK` 후 재요청 | 통과 | 204, `ORDER_ACCEPTED` |
+| `DB_LOCK_TIMEOUT=2s`(prod 프로필 실행에서 확인) | 통과 | 2.11초 뒤 503 |
