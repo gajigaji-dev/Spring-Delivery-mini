@@ -1,0 +1,2 @@
+# prod 필수 설정 점검을 빈 생성 전(환경 준비 단계)에 실행 - config.ProdProfileGuard 주석 참고
+org.springframework.boot.EnvironmentPostProcessor=com.sparta.springdeliverymini.config.ProdProfileGuard

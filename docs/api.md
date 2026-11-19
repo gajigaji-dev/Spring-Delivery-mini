@@ -24,6 +24,9 @@
 - 추적 헤더 `X-Trace-Id`
   - 모든 응답에 포함. 요청에 `X-Trace-Id`(영문·숫자·하이픈 8~64자)를 보내면 그 값을 그대로 사용, 없거나 형식이 다르면 서버가 생성
   - 같은 값이 에러 응답 `traceId`, 서버 로그 각 줄의 `[traceId]`에 들어감
+- CORS (#61): 브라우저에서 호출할 수 있는 출처는 서버 설정 `CORS_ALLOWED_ORIGINS`로 정함 (local·dev 기본 `http://localhost:5173`·`http://localhost:3000`). 자격 증명(쿠키)은 허용하지 않음 — 토큰은 `Authorization` 헤더로만
+  - 허용 요청 헤더: `Authorization`, `Content-Type`, `Idempotency-Key`, `X-Trace-Id` / JS에서 읽을 수 있는 응답 헤더: `X-Has-Next`, `X-Next-After-Id`, `X-Page`, `X-Size`, `X-Trace-Id`, `Idempotent-Replayed`
+  - 허용하지 않은 출처는 403 (`Invalid CORS request`, 공통 오류 형식 아님) — 설정 근거는 [운영 프로필 7장](operations.md)
 - API 문서(Swagger UI): local·dev 프로필에서 `/swagger-ui.html`, 명세 `/v3/api-docs` (기본 설정·prod 프로필은 비활성 → 404, [운영 설정](operations.md))
   - Authorize 버튼에 로그인 응답의 `accessToken`을 넣으면 Bearer 헤더가 자동으로 붙음
 - 목록 페이지네이션 (#40) — 매장·메뉴·주문·매장별 주문 목록 공통

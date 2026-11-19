@@ -33,7 +33,7 @@ flowchart LR
 ## 주요 기능
 | 영역 | 내용 |
 |---|---|
-| 회원 | 회원가입·로그인, BCrypt, JWT 인증, CUSTOMER / OWNER / ADMIN 역할 (ADMIN은 DB에서만 지정) |
+| 회원 | 회원가입·로그인, BCrypt, JWT 인증, CUSTOMER / OWNER / ADMIN 역할 (ADMIN은 DB에서만 지정), 브라우저 호출용 CORS(허용 출처는 `CORS_ALLOWED_ORIGINS`, 쿠키 미사용) |
 | 매장 · 메뉴 | OWNER의 매장 생성(여러 개 가능), 메뉴 등록·수정·삭제(Soft Delete), 소유권은 `Store.isOwnedBy` 한곳에서 판단 |
 | 주문 | 같은 매장의 메뉴 여러 개를 한 주문에 담음, 총액은 서버 계산, 주문 당시 메뉴 이름·단가 스냅샷, 상태 전이(결제 → 수락 → 배달완료), 목록은 페이지 단위(`?page=`) + 주문 목록 keyset(`?afterId=`, 뒤쪽 페이지도 응답 시간 일정 — 점주 마지막 페이지 426ms → 17.6ms) |
 | 결제 | 서버가 정한 금액으로 결제, 중복 결제 방지(DB UNIQUE), `Idempotency-Key`로 재시도 시 처음 응답 재전송(Redis + 결제와 같은 트랜잭션의 DB 기록 — Redis 기록이 사라지거나 장애여도 재전송, 같은 키 다른 요청 422·새 결제는 Redis 장애 시 503), 수수료(기본 5%, 매장별 설정 가능) 스냅샷 저장, 수락 전 취소·배달 후 관리자 환불, 본인 결제 단건 조회(현재 상태) |
@@ -102,14 +102,14 @@ flowchart LR
 |---|---|
 | [프로젝트 구조](docs/architecture.md) | 아키텍처·주문~정산 흐름 다이어그램, 패키지 구조, Redis 키·TTL·장애 시 동작, Kafka·Outbox 보장 범위·장애 시 동작, 요청 처리 흐름, 테스트 |
 | [Kafka Outbox · 알림 이벤트](docs/kafka-outbox.md) | Transactional Outbox 도입 배경·설계 결정, 구현 중 발견한 문제, 검증 결과, 후속 과제 (#42) |
-| [로컬 확인 가이드](docs/local-verification.md) | Redis·Kafka 동작을 자동 테스트와 로컬 실행으로 확인하는 절차 (멱등성 재전송·장애, Outbox 발행·재발행·DLT, DLT 재처리 CLI, 메트릭), 주문 목록 keyset·prod 프로필·DB 타임아웃 확인 (#54) |
+| [로컬 확인 가이드](docs/local-verification.md) | Redis·Kafka 동작을 자동 테스트와 로컬 실행으로 확인하는 절차 (멱등성 재전송·장애, Outbox 발행·재발행·DLT, DLT 재처리 CLI, 메트릭), 주문 목록 keyset·prod 프로필·DB 타임아웃 확인 (#54), CORS 확인 (#61) |
 | [API 명세](docs/api.md) | API 목록, 주문 상태 흐름, API별 요청·응답·에러 코드 |
 | [ERD](docs/erd.md) | ERD 다이어그램, 테이블 간 관계 |
 | [데이터베이스](docs/database.md) | Flyway 마이그레이션, 테이블 상세·제약조건, 시간대, 결제 연관관계 |
 | [금액 처리 정책](docs/money-policy.md) | 금액 타입, 수수료 계산·반올림, 공통·매장별 수수료율 |
 | [정산 기준](docs/settlement-policy.md) | 정산 기간 기준, 집계·확정·지급, 결제 취소·환불과 이월, 감사 이력과 누락·실패분 재집계 |
 | [성능 개선](docs/performance.md) | 목록 API 페이지네이션·N+1 제거·인덱스 근거(EXPLAIN), k6 부하 테스트 개선 전후 비교, 점주 주문 keyset 페이징(#54) |
-| [운영 프로필](docs/operations.md) | prod 프로필 설정 근거, Swagger·Actuator 노출 정책, 필수 환경변수 점검, 커넥션 풀·DB 타임아웃, 검증 (#54) |
+| [운영 프로필](docs/operations.md) | prod 프로필 설정 근거, Swagger·Actuator 노출 정책, 필수 환경변수 점검, 커넥션 풀·DB 타임아웃, 검증 (#54), CORS 설정 근거 (#61) |
 | [질문 · 피드백 요청](docs/review-questions.md) | 과제 리뷰 때 받고 싶은 피드백 |
 
 ## 실행 · 테스트
@@ -126,6 +126,7 @@ flowchart LR
 | `MANAGEMENT_PORT` | - | prod의 Actuator 관리 포트 (기본 8081, 외부에 공개하지 않음) |
 | `REDIS_PORT` | local | 이 프로젝트 전용 Redis 포트 (`.env.example`: `6380`). local은 `localhost:REDIS_PORT`로 접속하고, compose는 이 포트로 `redis` 컨테이너를 127.0.0.1에 엶 (앱 컨테이너는 `redis:6379`로 접속). 미지정 시 local 기본값은 6379 → 다른 프로젝트 Redis와 섞일 수 있으니 지정 권장. Redis가 없어도 기동되며 `Idempotency-Key` 결제는 503, 정산 스케줄러는 실행을 건너뜀 |
 | `KAFKA_PORT` | - | compose가 Kafka를 127.0.0.1에 여는 포트 (기본 9094, local 실행의 기본 접속 주소 `localhost:9094`). 9092는 다른 프로젝트 Kafka와 겹칠 수 있어 사용하지 않음 |
+| `CORS_ALLOWED_ORIGINS` | prod | 브라우저에서 API를 호출할 프론트엔드 출처(쉼표 구분, `scheme://host[:port]`). local·dev 기본 `http://localhost:5173,http://localhost:3000`, 와일드카드·경로·끝 슬래시는 기동 실패 — [운영 프로필 7장](docs/operations.md) |
 | `KAFKA_BOOTSTRAP_SERVERS` | prod | Kafka 주소 (local 기본 `localhost:9094`, compose는 `kafka:9092` 자동 지정). Kafka가 없어도 기동·업무 처리는 되고 이벤트는 회복 후 발행 |
 | `APP_PORT` | - | docker-compose에서 호스트에 여는 포트 (기본 8080) |
 | `DB_PORT` | - | docker-compose가 PostgreSQL을 호스트(127.0.0.1)에 여는 포트 (기본 5432) |
@@ -190,4 +191,6 @@ docker compose up -d kafka   # 이벤트 발행·알림용 Kafka (127.0.0.1:9094
 - ~~점주 전체 주문 뒤쪽 페이지 병목~~ → 주문 목록 keyset 페이징(`?afterId=`), 마지막 페이지 평균 426ms → 17.6ms ([성능 개선](docs/performance.md) 9장)
 - ~~운영 프로필~~ → `prod` 프로필: 필수 환경변수 점검, Swagger 비활성, Actuator 관리 포트 분리·최소 노출 ([운영 프로필](docs/operations.md))
 - ~~DB 대기 상한~~ → 커넥션 풀 10·커넥션 대기 10초·`lock_timeout` 5s·`statement_timeout` 30s, 초과 시 503 ([운영 프로필](docs/operations.md) 6장)
+- ~~CORS~~ → 허용 출처는 환경변수로만, prod는 필수 (#61). 실제 브라우저 확인은 프론트엔드 연동 때 ([운영 프로필](docs/operations.md) 7장)
+- ~~prod 필수 값 점검 순서~~ → 빈 생성 전(`EnvironmentPostProcessor`) 검사로 바꿔 `DB_URL` 누락 시에도 빠진 변수 목록 전체를 출력 (#61)
 - 배포 환경 확정 후: 프록시 헤더·TLS·JVM 옵션, 실제 트래픽 기준 풀 크기·타임아웃 조정
