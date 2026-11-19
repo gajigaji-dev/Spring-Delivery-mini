@@ -157,6 +157,13 @@ retention:
   consumed-events: 30d
   payment-idempotency-keys: 30d
 
+# CORS — 브라우저(프론트엔드)에서 API를 호출할 수 있는 출처 (config.CorsProperties, SecurityConfig, docs/operations.md 7장)
+# 환경변수 CORS_ALLOWED_ORIGINS에 쉼표로 구분해 지정 (scheme://host[:port], 와일드카드·경로·끝 슬래시 불가 → 기동 실패)
+# 기본값은 빈 목록 = 다른 출처의 브라우저 요청을 모두 막음. local·dev는 로컬 프론트엔드 개발 서버 주소를 기본값으로 둠
+# prod는 기본값 없이 환경변수 필수 (없으면 config.ProdProfileGuard가 기동을 막음)
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:}
+
 # JWT — secret은 Base64 인코딩된 256비트 이상 키, JWT_SECRET 환경변수로만 주입
 # 기본값을 두지 않음: 저장소에 공개된 키로 운영 토큰이 서명되는 일을 막기 위해, 값이 없으면 기동 실패
 # 테스트는 src/test/resources/application-test.yml의 테스트 전용 키 사용

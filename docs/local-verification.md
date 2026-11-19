@@ -1,11 +1,11 @@
-# 로컬 확인 가이드 — Redis · Kafka · 주문 목록 · 운영 프로필 · DB 타임아웃
+# 로컬 확인 가이드 — Redis · Kafka · 주문 목록 · 운영 프로필 · DB 타임아웃 · CORS
 
 [← README](../README.md) · [프로젝트 구조](architecture.md)
 
-Redis(결제 멱등성·분산 락)와 Kafka(Transactional Outbox·알림·DLT 재처리), 주문 목록 keyset 페이징·prod 프로필·DB 타임아웃(#54, 3장)이 로컬에서 실제로 동작하는지 확인하는 방법.
+Redis(결제 멱등성·분산 락)와 Kafka(Transactional Outbox·알림·DLT 재처리), 주문 목록 keyset 페이징·prod 프로필·DB 타임아웃(#54, 3장), CORS(#61, 4장)가 로컬에서 실제로 동작하는지 확인하는 방법.
 동작 원리·장애 시 동작 표는 [프로젝트 구조](architecture.md)의 Redis 장·Kafka 장, API 형식은 [API 명세](api.md) 참고
 
-> 2장의 수동 절차는 프로젝트 설정(compose·application.yml) 기준으로 정리한 것 — 자동 테스트(1장)는 전체 통과를 확인했고, **2-4(DLT 재처리)는 직접 실행해 결과를 2-4 "검증 결과"에 남김**(11단계 중 10단계 통과, 1단계 미검증). 2-2·2-3·2-5는 아직 직접 실행하지 않음 — 처음 따라 할 때 명령·경로가 맞는지 함께 확인
+> **자동 테스트**(1장)와 **수동 확인**(2~4장 "검증 결과")을 구분해 기록함. 수동 확인은 2-2·2-3·2-5·3장을 2026-11-18에 두 번(#54 마무리, #61 CORS 반영 후) 실행했고 결과는 각 절 끝에 있음. 3-2의 `ProdProfileGuard` 실행 순서는 2026-11-19 수정 후 다시 확인함. 2-4(DLT 재처리)는 2026-11-15에 한 번(11단계 중 10단계 통과, 1단계 미검증)
 
 ## 1. 자동 테스트 (Docker만 실행 중이면 됨)
 
@@ -21,6 +21,7 @@ Testcontainers가 PostgreSQL·Redis·Kafka 컨테이너를 테스트 중에 띄�
 ./gradlew test --tests '*OrderListPagingTest' --tests '*StoreOrderIntegrationTest'   # 주문 목록 keyset: 헤더·400, 중복·누락 없음·경계 (#54)
 ./gradlew test --tests '*ProdProfile*'                 # prod 프로필: 실제 기동 후 노출 정책, 필수 환경변수 점검 (#54)
 ./gradlew test --tests '*DatabaseTimeoutIntegrationTest' --tests '*ErrorResponseFormatTest'   # 커넥션 풀·잠금/문장 타임아웃 → 503 (#54)
+./gradlew test --tests '*Cors*' --tests '*ProdProfile*'   # CORS: 허용·차단·헤더, 설정값 검사, prod 허용 출처 누락 시 기동 실패 (#61)
 ./gradlew test                                         # 전체
 ```
 
@@ -83,6 +84,18 @@ SELECT user_id, idempotency_key, payment_id, created_at FROM payment_idempotency
 
 - Git Bash의 curl로 한글 본문을 보내면 400(본문 형식 오류)이 남 — 터미널 인코딩 문제이므로 확인용 값은 ASCII로 보냄
 
+#### 재검증 결과 (2026-11-18 #61 — CORS 반영 jar, local 프로필, 포트 8090, 새 회원·매장·주문으로)
+
+| 단계 | 결과 | 실제 값 |
+|---|---|---|
+| 1 | 통과 | 둘 다 201·같은 본문(payment id 9), 두 번째 `Idempotent-Replayed: true` (첫 요청 1.47초, 재전송 0.03초) |
+| 2 | 통과 | 새 키 1개, TTL 86371초 (이전 검증 키 1개는 남은 TTL로 공존) |
+| 3 | 통과 | `DEL` 후 재전송 201 + `Idempotent-Replayed: true`, 키 다시 생성(`EXISTS` 1) |
+| 4 | 통과 | 422 `같은 Idempotency-Key로 다른 결제 요청을 보낼 수 없습니다.` |
+| 5 | 통과 | Redis 중단 상태에서 201 재전송(1.06초) |
+| 6 | 통과 | 503(1.04초), 주문 `ORDER_REQUEST` 그대로 |
+| 7 | 통과 | 201, 주문 `PAYMENT_COMPLETED` |
+
 ### 2-3. Kafka — Outbox · 알림
 
 | 단계 | 하는 일 | 기대 결과 |
@@ -118,6 +131,18 @@ SELECT id, recipient_user_id, message, send_status, sent_at FROM notifications O
 | 5 | 통과 | `OUTBOX_PUBLISHER_MAX_ATTEMPTS=2`로 재기동 → 결제 약 13초 뒤 `FAILED`(`attempt_count` 2) |
 | 6 | 통과 | 목록에 FAILED 1건 → 일괄 재발행 `{"republished":1}`, `PENDING`(`attempt_count` 0) → `PUBLISHED`, 알림 2건 |
 | 7 | 통과 | DLT에는 2-4 검증(2026-11-15) 때 넣은 2건만 있음 — 이번 확인으로 새로 들어간 메시지 없음 |
+
+#### 재검증 결과 (2026-11-18 #61, 2-2 재검증과 같은 환경 — 5·6단계는 `OUTBOX_PUBLISHER_MAX_ATTEMPTS=2`로 재기동)
+
+| 단계 | 결과 | 실제 값 |
+|---|---|---|
+| 1 | 통과 | 토픽에 `PAYMENT_COMPLETED` JSON 1건(`orderId` 15·`paymentId` 11 등 8개 필드) |
+| 2 | 통과 | 고객·사장님 알림 각 1건 `SENT`(생성 약 2초 뒤 발송), 앱 로그 `알림 발송 notificationId=...` |
+| 3 | 통과 | 결제 201, 이벤트 `PENDING` — 3초 뒤 `attempt_count` 0, 23초 뒤 3, `last_error` `KafkaException: Send failed` |
+| 4 | 통과 | Kafka 시작 49초 뒤 `PUBLISHED`(`attempt_count` 6, 백오프 대기 포함), 알림 2건 |
+| 5 | 통과 | 결제 13초 뒤 `FAILED`(`attempt_count` 2) |
+| 6 | 통과 | `GET ?status=FAILED`에 해당 이벤트(`status` FAILED·`attemptCount` 2·`lastError`), 일괄 재발행 `{"republished":1}` → `PUBLISHED`·알림 2건. 단건 재발행 `POST /{id}/republish`도 200 → `PUBLISHED`·알림 2건 |
+| 7 | 통과 | DLT에는 2-4 검증 때의 키 `900`·`901` 2건만 — 새 메시지 없음 |
 
 ### 2-4. Kafka — DLT 재처리 (#52)
 
@@ -235,6 +260,20 @@ docker compose --profile monitoring up   # Prometheus http://localhost:9090 (.en
 | `outbox_events{status="failed"}`·`outbox_dlt_records_total` | 미확인 | 이번에는 FAILED·DLT를 만들지 않아 0 (값 증가는 2-3 5단계·2-4에서 확인한 동작) |
 - 알림이 실제로 firing되는 것(`for` 시간 경과)까지는 기다리지 않음
 
+#### 재검증 결과 (2026-11-18 #61, `APP_PORT=8090 docker compose --profile monitoring up -d --build` — CORS 반영 이미지)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| 수집 대상 | 통과 | `delivery-app` up (기동 직후 한 번은 앱이 뜨기 전이라 down → 20초 뒤 up) |
+| 규칙 | 통과 | 9개 로드, 평시 모두 inactive. `promtool` `SUCCESS: 9 rules found` |
+| Redis 중단 + 키 있는 결제 | 통과 | 503, `redis_failures_total{operation="idempotency.acquire"}` 1. **응답 5.26초** (jar 실행 때는 약 1초, 아래 참고) |
+| Redis 실패 알림 | 통과 (이번에 처음 확인) | 약 1분 뒤 `RedisCommandFailures` **firing** (`increase(...[5m]) > 0`, `for: 1m`) |
+| Kafka 중단 + 결제 | 통과 | 45초 뒤 `outbox_events{status="pending"}` 1, `outbox_oldest_pending_age_seconds` 39 |
+| 복구 후 | 통과 | pending 0·failed 0, `notification_send_total{result="sent"}` 2 |
+| `outbox_dlt_records_total` | 미확인 | 0 (이번에 DLT를 만들지 않음) |
+
+- 관찰: compose 앱에서 Redis 컨테이너를 내리면 키 있는 결제의 503이 약 5초 걸림 (local jar → `localhost:6380`은 약 1초). 컨테이너가 멈추면 `redis` 호스트 이름 조회가 실패하는 경로라 Redis `connect-timeout`(1초)보다 오래 걸린 것으로 추정 — 원인은 확인하지 않음, 별도 이슈 후보
+
 ## 3. 주문 목록 keyset · 운영 프로필 (#54)
 
 > 2026-11-18에 아래 수동 절차를 직접 실행함 (각 절 끝의 검증 결과). 같은 내용은 자동 테스트(1장 `OrderListPagingTest`·`StoreOrderIntegrationTest`·`ProdProfile*`·`DatabaseTimeoutIntegrationTest`)로도 확인하고, 부하 측정은 [성능 개선](performance.md) 9장 절차로 실행함
@@ -269,6 +308,12 @@ curl -s "http://localhost:8080/api/orders?page=0&afterId=1" -H "Authorization: B
 - 통과: page 방식 `1,2 / 3,4 / 5,6 / 7`(마지막 `X-Has-Next: false`), keyset 방식 `1,2 / 3,4 / 5,6 / 7,8` — 두 번째 페이지를 받은 뒤 새 주문 8을 결제했고, 이미 받은 주문은 다시 나오지 않고 8이 마지막 페이지에 이어서 나옴
 - keyset 요청에는 `X-Page` 없음, 마지막 페이지에 `X-Next-After-Id` 없음
 - `page=0&afterId=1` 400, `afterId=-1` 400
+
+#### 재검증 결과 (2026-11-18 #61, compose 앱 포트 8090, OWNER 주문 9건·size=3)
+
+- 통과: page 방식 `12,13,14 / 15,16,17 / 18,19,20`(마지막 `X-Has-Next: false`, `X-Next-After-Id` 없음)
+- 통과: keyset 방식 `12,13,14 / 15,16,17 / 18,19,20 / 21` — 두 번째 페이지 뒤 새 주문 21을 결제, 중복 없이 마지막 페이지에 이어서 나옴. 첫 요청(afterId 없음)만 `X-Page: 0`, 이후 keyset 요청에는 없음
+- 통과: `page=0&afterId=1` 400, `afterId=-1` 400
 
 ### 3-2. prod 프로필
 
@@ -313,7 +358,23 @@ SPRING_PROFILES_ACTIVE=prod DB_URL=jdbc:postgresql://localhost:5432/delivery DB_
 | `/actuator/env` | 통과 | 토큰 없음 401, ADMIN 토큰 404 |
 | `SPRINGDOC_SWAGGER_UI_ENABLED=true` | 통과 | `운영 프로필에서는 비활성이어야 합니다: springdoc.swagger-ui.enabled` |
 
-- **발견한 문제**: `ProdProfileGuard`는 일반 `@Component`라 생성 순서가 보장되지 않음 — `entityManagerFactory`가 `flyway`→`dataSource`를 먼저 만들기 때문에 `DB_URL`이 없으면 가드보다 DataSource가 먼저 실패함. 기동 실패라는 결과는 같지만 빠진 변수 목록이 한 번에 나오지 않음. 개선 후보: 환경 준비 단계(`EnvironmentPostProcessor` 또는 `ApplicationEnvironmentPreparedEvent`)에서 검사
+#### 재검증 결과 (2026-11-18 #61 — `CORS_ALLOWED_ORIGINS` 필수 추가 후, 서비스 포트 8091·관리 포트 8081)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| 필수 환경변수 전부 누락 | **기대와 다름 (기존 문제 그대로)** → 2026-11-19 수정 후 통과 | 수정 전 `'url' must start with "jdbc"` — 아래 "발견한 문제" |
+| DB·JWT만 있음 | 통과 | `필수 환경변수가 없습니다: REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS, CORS_ALLOWED_ORIGINS` |
+| `CORS_ALLOWED_ORIGINS`만 누락 | 통과 | `필수 환경변수가 없습니다: CORS_ALLOWED_ORIGINS` |
+| `CORS_ALLOWED_ORIGINS=*` | 통과 | 기동 실패 `cors.allowed-origins에 와일드카드(*)는 사용할 수 없습니다: *` |
+| `CORS_ALLOWED_ORIGINS=https://app.example.com/` | 통과 | 기동 실패 `scheme://host[:port] 형식이어야 합니다 (경로·끝 슬래시 없이)` |
+| `SPRINGDOC_SWAGGER_UI_ENABLED=true` | 통과 | `운영 프로필에서는 비활성이어야 합니다: springdoc.swagger-ui.enabled` |
+| swagger·api-docs·서비스 포트 actuator | 통과 | 모두 404 |
+| 8081 health·liveness·readiness·prometheus | 통과 | `{"groups":["liveness","readiness"],"status":"UP"}`, 200, 200, 메트릭 출력 |
+| `/actuator/env` | 통과 | 토큰 없음 401, ADMIN 토큰 404 |
+| CORS (4장과 같은 요청) | 통과 | `https://app.example.com` Preflight 200·`Access-Control-Allow-Origin` 일치, local 기본값 `http://localhost:5173`은 403, 실제 요청에 노출 헤더 포함, `Allow-Credentials` 없음 |
+| 로그의 비밀 값 | 통과 | 실패 로그에 비밀번호·키 값 없음 (`grep` 0건) |
+
+- **발견한 문제**: `ProdProfileGuard`는 일반 `@Component`라 생성 순서가 보장되지 않음 — `entityManagerFactory`가 `flyway`→`dataSource`를 먼저 만들기 때문에 `DB_URL`이 없으면 가드보다 DataSource가 먼저 실패함. 기동 실패라는 결과는 같지만 빠진 변수 목록이 한 번에 나오지 않음. → **#61에서 수정**: 가드를 빈이 아닌 `EnvironmentPostProcessor`(`META-INF/spring.factories`)로 바꿔 설정 파일·프로필 반영 직후, 빈 생성 전에 검사. 자동 테스트 `ProdProfileGuardStartupTest`. 수정 후 확인(2026-11-19, prod jar를 필수 환경변수 없이 실행): `prod 프로필 설정 오류 — 필수 환경변수가 없습니다: DB_URL, DB_USERNAME, DB_PASSWORD, JWT_SECRET, REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS, CORS_ALLOWED_ORIGINS`
 
 ### 3-3. compose DB 포트 · DB 타임아웃
 
@@ -355,3 +416,67 @@ curl -i -X PATCH "http://localhost:8080/api/orders/<주문 id>/status" -H "Autho
 | 잠금 중 수락 | 통과 | 5.05초 뒤 503 `일시적으로 요청을 처리할 수 없습니다...`(DB 오류 메시지 없음), 주문 `PAYMENT_COMPLETED` 그대로 |
 | `ROLLBACK` 후 재요청 | 통과 | 204, `ORDER_ACCEPTED` |
 | `DB_LOCK_TIMEOUT=2s`(prod 프로필 실행에서 확인) | 통과 | 2.11초 뒤 503 |
+
+#### 재검증 결과 (2026-11-18 #61 — db 컨테이너 재생성 포함)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| `docker compose up -d --force-recreate db` | 통과 | 컨테이너 id 바뀜, 주문/결제 행 수 21/16 → 21/16 (`db-data` 볼륨 유지) |
+| 재생성 후 포트 | 통과 | `127.0.0.1:5432` |
+| 재생성 후 실행 중인 앱 | 통과 | compose 앱·prod jar 모두 재시작 없이 바로 200 (Hikari가 끊긴 커넥션을 새로 맺음) |
+| 잠금 중 수락 (compose 앱, 기본 5초) | 통과 | 5.14초 뒤 503 `일시적으로 요청을 처리할 수 없습니다...`, 주문 `PAYMENT_COMPLETED` 그대로 |
+| 잠금 해제 후 재요청 | 통과 | 204, `ORDER_ACCEPTED` |
+| `DB_LOCK_TIMEOUT=2s` (prod jar) | 통과 | 2.05초 뒤 503, 주문 `ORDER_ACCEPTED` 그대로 (기동 직후 첫 요청은 3.05초 — 첫 요청 준비 시간 포함) |
+
+## 4. CORS (#61)
+
+설정 근거는 [운영 프로필](operations.md) 7장. 앱을 띄운 뒤 `Origin` 헤더를 직접 붙여 브라우저 요청을 흉내 냄 (local·dev 기본 허용 출처: `http://localhost:5173`, `http://localhost:3000`)
+
+```bash
+# 1) 허용 출처 Preflight — 토큰 없이 200, 허용 메서드·헤더·노출 헤더
+curl -s -o /dev/null -D - -X OPTIONS localhost:8080/api/payments -H "Origin: http://localhost:5173" \
+  -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: authorization,content-type,idempotency-key"
+# 2) 허용 출처 실제 요청 — Access-Control-Allow-Origin·Expose-Headers + X-Has-Next
+curl -s -o /dev/null -D - "localhost:8080/api/orders?size=1" -H "Origin: http://localhost:5173" -H "Authorization: Bearer $TOKEN"
+# 3) 허용하지 않은 출처 — Preflight·실제 요청 모두 403 "Invalid CORS request"
+curl -s -D - -X OPTIONS localhost:8080/api/orders -H "Origin: https://evil.example.com" -H "Access-Control-Request-Method: GET"
+```
+
+| 확인 | 기대 결과 |
+|---|---|
+| 1) 허용 출처 Preflight | 200, `Access-Control-Allow-Origin` = 요청 출처, `Allow-Headers`에 `authorization, content-type, idempotency-key`, `Max-Age: 3600`, `Allow-Credentials` 없음 |
+| 2) 허용 출처 실제 요청 | 200, `Access-Control-Expose-Headers`에 `X-Has-Next`·`X-Next-After-Id` 등 |
+| 3) 허용하지 않은 출처 | Preflight 403, 토큰이 있는 실제 요청도 403 (컨트롤러에 닿지 않음), `Access-Control-Allow-Origin` 없음 |
+| 허용 출처 + 목록에 없는 요청 헤더 | Preflight 403 |
+| 관리자 경로 Preflight (토큰 없음) | 200 — Preflight는 인증 전에 처리 |
+| `Origin` 없는 요청 (curl·서버 간 호출) | CORS와 관계없이 기존 동작 |
+
+#### 검증 결과 (2026-11-18)
+
+**수동 확인** — 실제 브라우저가 아닌 curl로 `Origin`·`Access-Control-Request-*` 헤더를 붙여 확인 (브라우저 확인은 프론트엔드 연동 때)
+
+| 환경 | 확인 | 결과 | 실제 값 |
+|---|---|---|---|
+| local jar (8090) | 1) 허용 출처 Preflight | 통과 | 200, `Allow-Origin: http://localhost:5173`, `Allow-Methods: GET,POST,PUT,PATCH,DELETE,OPTIONS`, `Allow-Headers: authorization, content-type, idempotency-key`, `Max-Age: 3600`, `Allow-Credentials` 없음 |
+| local jar | 2) 허용 출처 실제 요청 | 통과 | 200, `Expose-Headers: X-Has-Next, X-Next-After-Id, X-Page, X-Size, X-Trace-Id, Idempotent-Replayed`, `X-Has-Next: false` |
+| local jar | 3) 허용하지 않은 출처 | 통과 | Preflight 403, 토큰 있는 실제 요청 403, 본문 `Invalid CORS request`, `Allow-Origin` 없음 |
+| local jar | 목록에 없는 요청 헤더(`x-custom`) | 통과 | 403 |
+| local jar | 관리자 경로 Preflight (`http://localhost:3000`, 토큰 없음) | 통과 | 200 |
+| local jar | `Origin` 없는 `GET /api/stores` | 통과 | 200 |
+| compose 앱 (dev, 8090) | dev 기본값 | 통과 | `http://localhost:5173` 200, `https://evil.example.com` 403 |
+| prod jar (8091) | 환경변수 출처만 허용·누락/와일드카드 시 기동 실패 | 통과 | 3-2 재검증 결과 |
+
+**자동 테스트** — 2026-11-18 통과
+
+| 테스트 | 건수 | 확인한 내용 |
+|---|---|---|
+| `CorsSecurityTest` (`@WebMvcTest`) | 7 | 허용 출처 Preflight(토큰 없음·관리자 경로 포함, `Idempotency-Key`·`X-Trace-Id` 헤더), 실제 요청 노출 헤더, 허용하지 않은 출처 Preflight·실제 요청 403(컨트롤러 호출 없음), 허용하지 않은 요청 헤더 403, `Origin` 없는 요청은 기존 401, `Allow-Credentials` 없음 |
+| `CorsPropertiesTest` | 4 | 공백·빈 값 정리, 미설정 시 빈 목록, 와일드카드 거부, 경로·끝 슬래시·scheme 누락 거부 |
+| `ProdProfileGuardTest` | 5 (+1) | `CORS_ALLOWED_ORIGINS`가 비어 있으면 기동 실패 |
+| `ProdProfileGuardStartupTest` | 2 (신규) | `DB_URL`이 비어 있으면 DB 없이도 DataSource 오류가 아닌 가드 메시지(빠진 변수 목록)로 기동 실패, prod가 아니면 검사하지 않음 |
+| `ProdProfileIntegrationTest` | 6 (+1) | `test,prod`로 실제 기동 후 환경변수 출처만 허용, local 기본값은 403 |
+
+- 수동 확인 뒤 허용 요청 헤더에 `X-Trace-Id`를 추가함 (API 명세상 클라이언트가 보낼 수 있는 헤더) → 이 항목은 자동 테스트(`CorsSecurityTest` Preflight)로만 확인
+
+발견한 점
+- 거부 응답(403) 본문은 Spring 기본 `Invalid CORS request`(text/plain) — 다른 오류처럼 `ApiErrorResponse` 형식이 아님. 브라우저 JS는 CORS로 막힌 응답을 읽을 수 없어 클라이언트 영향은 없고 curl·로그 확인 때만 보임 → 이번에는 그대로 둠

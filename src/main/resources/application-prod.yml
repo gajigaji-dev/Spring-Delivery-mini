@@ -1,6 +1,7 @@
 # prod 프로필 — 운영 배포 (#54). 실행: SPRING_PROFILES_ACTIVE=prod (지정하지 않으면 local로 떠서 Swagger가 켜지므로 반드시 지정)
 # 접속 정보·비밀 값은 모두 환경변수로만 받음 (.env 파일을 읽지 않고, 설정 파일에 기본값을 두지 않음)
-#   필수: DB_URL, DB_USERNAME, DB_PASSWORD, JWT_SECRET, REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS
+#   필수: DB_URL, DB_USERNAME, DB_PASSWORD, JWT_SECRET, REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS, CORS_ALLOWED_ORIGINS
+#     CORS_ALLOWED_ORIGINS: 프론트엔드 출처(쉼표 구분, 예: https://app.example.com). application.yml의 cors.allowed-origins로 바인딩
 #   → 하나라도 비어 있으면 config.ProdProfileGuard가 기동을 막음 (Redis·Kafka는 처음 쓸 때 접속하므로 늦게 드러나는 것을 방지)
 #   선택: REDIS_PORT(기본 6379), MANAGEMENT_PORT(기본 8081)
 #   Redis 비밀번호·TLS 등 그 밖의 값은 Spring Boot 표준 환경변수로 지정 (예: SPRING_DATA_REDIS_PASSWORD) — 설정 파일에 두지 않음

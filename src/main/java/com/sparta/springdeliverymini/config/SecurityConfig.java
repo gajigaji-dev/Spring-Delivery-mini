@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.exception.ApiErrorResponse;
 import com.sparta.springdeliverymini.jwt.JwtAuthenticationFilter;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import jakarta.servlet.http.HttpServletRequest;
@@ -19,18 +20,26 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.List;
 
 @Slf4j
 @Configuration
 @RequiredArgsConstructor // final 필드를 받는 생성자 자동 생성 (생성자 주입)
+// CorsProperties를 여기서도 등록: @WebMvcTest처럼 SecurityConfig만 가져오는 테스트에서도 CORS 설정이 같이 적용되도록
+@EnableConfigurationProperties(CorsProperties.class)
 public class SecurityConfig {
 
     private final JwtProvider jwtProvider;
     private final ObjectMapper objectMapper; // 401/403 응답을 GlobalExceptionHandler와 같은 형식(ApiErrorResponse)으로 직렬화
+    private final CorsProperties corsProperties;
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -40,6 +49,11 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
+                // CORS는 인증·권한 검사보다 앞(CorsFilter)에서 처리됨
+                // → 허용 출처의 Preflight(OPTIONS + Access-Control-Request-Method)는 토큰 없이 CorsFilter가 바로 200으로 응답,
+                //   허용하지 않은 출처는 Preflight·실제 요청 모두 403. OPTIONS 전체를 permitAll로 열지 않는 이유는
+                //   CORS가 아닌 OPTIONS 요청까지 인증 없이 컨트롤러 쪽으로 넘기지 않기 위해
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .csrf(AbstractHttpConfigurer::disable)      // REST API용
                 .formLogin(AbstractHttpConfigurer::disable) // 기본 로그인 페이지 대신 /api/users/login 사용
                 .httpBasic(AbstractHttpConfigurer::disable)
@@ -113,6 +127,28 @@ public class SecurityConfig {
                 )
                 .addFilterBefore(new JwtAuthenticationFilter(jwtProvider), UsernamePasswordAuthenticationFilter.class);
         return http.build();
+    }
+
+    // 허용 출처는 설정값(cors.allowed-origins, 환경변수 CORS_ALLOWED_ORIGINS)으로만 지정 — 와일드카드 금지는 CorsProperties에서 검사
+    // allowCredentials는 끔: 인증은 쿠키가 아닌 Authorization 헤더(JWT)로만 하므로 브라우저 자격 증명(쿠키 등)을 보낼 필요가 없음
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration config = new CorsConfiguration();
+        config.setAllowedOrigins(corsProperties.allowedOrigins());
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        // 요청 헤더: JWT, JSON 본문, 결제 멱등성 키(#41), 클라이언트가 정하는 추적 id(#38). 목록에 없는 헤더를 보내면 Preflight가 거부됨
+        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key", "X-Trace-Id"));
+        // 응답 헤더: 브라우저 JS는 기본 헤더 외에는 노출 목록에 있는 것만 읽을 수 있음
+        //   목록 페이징(X-Has-Next·X-Page·X-Size, keyset X-Next-After-Id), 오류 추적(X-Trace-Id), 멱등 재전송 여부(Idempotent-Replayed)
+        config.setExposedHeaders(List.of(
+                "X-Has-Next", "X-Next-After-Id", "X-Page", "X-Size", "X-Trace-Id", "Idempotent-Replayed"));
+        config.setAllowCredentials(false);
+        // Preflight 결과 캐시 시간 — 요청마다 OPTIONS가 한 번 더 가지 않도록
+        config.setMaxAge(Duration.ofHours(1));
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", config);
+        return source;
     }
 
     // Security 필터에서 바로 응답하는 401/403은 GlobalExceptionHandler를 거치지 않으므로 같은 형식으로 직접 작성

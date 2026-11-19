@@ -20,7 +20,7 @@ class ProdProfileGuardTest {
 
     @Test
     void 필수_환경변수가_모두_있고_API_문서가_꺼져_있으면_통과한다() {
-        assertThatCode(() -> new ProdProfileGuard(completeEnvironment())).doesNotThrowAnyException();
+        assertThatCode(() -> ProdProfileGuard.check(completeEnvironment())).doesNotThrowAnyException();
     }
 
     @Test
@@ -33,7 +33,7 @@ class ProdProfileGuardTest {
         environment.setProperty("REDIS_HOST", "  "); // 공백만 있는 값도 없는 것으로 봄
         // KAFKA_BOOTSTRAP_SERVERS 없음
 
-        assertThatThrownBy(() -> new ProdProfileGuard(environment))
+        assertThatThrownBy(() -> ProdProfileGuard.check(environment))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS")
                 // 설정된 비밀 값은 메시지에 들어가지 않음
@@ -41,12 +41,23 @@ class ProdProfileGuardTest {
                 .hasMessageNotContaining("jwt-secret-value");
     }
 
+    // CORS 허용 출처가 비어 있으면 서버는 뜨지만 브라우저 요청이 모두 403 → 배포 시점에 막음 (#61)
+    @Test
+    void CORS_허용_출처가_없으면_기동을_막는다() {
+        MockEnvironment environment = completeEnvironment();
+        environment.setProperty("CORS_ALLOWED_ORIGINS", "");
+
+        assertThatThrownBy(() -> ProdProfileGuard.check(environment))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("필수 환경변수가 없습니다: CORS_ALLOWED_ORIGINS");
+    }
+
     @Test
     void API_문서가_켜져_있으면_기동을_막는다() {
         MockEnvironment environment = completeEnvironment();
         environment.setProperty("springdoc.swagger-ui.enabled", "true");
 
-        assertThatThrownBy(() -> new ProdProfileGuard(environment))
+        assertThatThrownBy(() -> ProdProfileGuard.check(environment))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("springdoc.swagger-ui.enabled")
                 .hasMessageNotContaining("springdoc.api-docs.enabled");
@@ -58,7 +69,7 @@ class ProdProfileGuardTest {
         MockEnvironment environment = completeEnvironment();
         environment.setProperty("spring.flyway.baseline-on-migrate", "true");
 
-        assertThatThrownBy(() -> new ProdProfileGuard(environment))
+        assertThatThrownBy(() -> ProdProfileGuard.check(environment))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("spring.flyway.baseline-on-migrate");
     }
