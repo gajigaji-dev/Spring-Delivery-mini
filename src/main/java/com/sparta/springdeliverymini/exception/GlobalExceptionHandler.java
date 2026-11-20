@@ -29,7 +29,9 @@ public class GlobalExceptionHandler {
     // 409 아이디 중복, 401 로그인 실패 등 서비스에서 상태코드를 지정해 던지는 예외
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ApiErrorResponse> handleApiException(ApiException e, HttpServletRequest request) {
-        return clientError(e.getStatus(), e.getMessage(), request);
+        log.warn("요청 실패 status={} code={} message={}", e.getStatus().value(), e.getCode(), e.getMessage());
+        return ResponseEntity.status(e.getStatus())
+                .body(ApiErrorResponse.of(e.getStatus(), e.getCode(), e.getMessage(), request.getRequestURI()));
     }
 
     // Order 엔티티의 상태 전이 규칙 위반 (예: 결제 전 주문 수락, 결제완료 주문 취소) → 409

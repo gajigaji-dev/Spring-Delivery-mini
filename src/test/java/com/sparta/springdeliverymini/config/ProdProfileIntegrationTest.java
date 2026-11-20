@@ -105,7 +105,8 @@ class ProdProfileIntegrationTest {
         HttpResponse<String> allowed = preflight("https://app.example.com");
         assertThat(allowed.statusCode()).isEqualTo(200);
         assertThat(allowed.headers().firstValue("Access-Control-Allow-Origin")).hasValue("https://app.example.com");
-        assertThat(allowed.headers().firstValue("Access-Control-Allow-Credentials")).isEmpty();
+        // Refresh Token 쿠키(HttpOnly) 때문에 자격 증명 허용 — 허용 출처에만 (V15)
+        assertThat(allowed.headers().firstValue("Access-Control-Allow-Credentials")).hasValue("true");
 
         // local 기본값(localhost:5173)은 prod에 적용되지 않음
         HttpResponse<String> denied = preflight("http://localhost:5173");

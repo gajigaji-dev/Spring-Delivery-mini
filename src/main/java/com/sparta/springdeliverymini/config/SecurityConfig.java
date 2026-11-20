@@ -2,6 +2,7 @@ package com.sparta.springdeliverymini.config;
 
 import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.exception.ApiErrorResponse;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.jwt.JwtAuthenticationFilter;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -60,6 +61,10 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/users/signup", "/api/users/login", "/error").permitAll()
+
+                        // Refresh Token 재발급·로그아웃은 Access Token 없이 호출 (Access가 이미 만료된 상태에서 쓰는 API)
+                        // 인증 근거는 HttpOnly 쿠키의 Refresh Token — 검증은 AuthTokenService에서 DB 기준으로
+                        .requestMatchers(HttpMethod.POST, "/api/users/refresh", "/api/users/logout").permitAll()
 
                         // 헬스체크·Prometheus 수집은 토큰 없이 허용 (모니터링 도구가 JWT를 발급받을 수 없으므로)
                         // 실제 노출 여부는 management.endpoints.web.exposure가 결정: 기본(application.yml)은 health만 노출,
@@ -122,8 +127,20 @@ public class SecurityConfig {
                 )
                 .exceptionHandling(exception -> exception
                         // 토큰이 없거나 유효하지 않은 상태로 인증이 필요한 요청을 보내면 401
-                        .authenticationEntryPoint((request, response, authException) ->
-                                writeError(request, response, HttpStatus.UNAUTHORIZED, "인증이 필요합니다."))
+                        // 토큰이 있었는데 실패했으면 사유를 code로 구분 (만료 → 재발급, 위조·형식 오류 → 재로그인)
+                        // 토큰이 없으면 code 없이 기존 메시지 그대로
+                        .authenticationEntryPoint((request, response, authException) -> {
+                            Object code = request.getAttribute(JwtAuthenticationFilter.AUTH_ERROR_ATTRIBUTE);
+                            if (code == ErrorCode.TOKEN_EXPIRED) {
+                                writeError(request, response, HttpStatus.UNAUTHORIZED, ErrorCode.TOKEN_EXPIRED,
+                                        "토큰이 만료되었습니다.");
+                            } else if (code == ErrorCode.TOKEN_INVALID) {
+                                writeError(request, response, HttpStatus.UNAUTHORIZED, ErrorCode.TOKEN_INVALID,
+                                        "유효하지 않은 토큰입니다.");
+                            } else {
+                                writeError(request, response, HttpStatus.UNAUTHORIZED, "인증이 필요합니다.");
+                            }
+                        })
                         // 인증은 됐지만 권한이 없으면(예: CUSTOMER가 메뉴 등록) 403
                         .accessDeniedHandler((request, response, accessDeniedException) ->
                                 writeError(request, response, HttpStatus.FORBIDDEN, "권한이 없습니다."))
@@ -133,7 +150,11 @@ public class SecurityConfig {
     }
 
     // 허용 출처는 설정값(cors.allowed-origins, 환경변수 CORS_ALLOWED_ORIGINS)으로만 지정 — 와일드카드 금지는 CorsProperties에서 검사
-    // allowCredentials는 끔: 인증은 쿠키가 아닌 Authorization 헤더(JWT)로만 하므로 브라우저 자격 증명(쿠키 등)을 보낼 필요가 없음
+    // allowCredentials 켬: Refresh Token을 HttpOnly 쿠키로 주고받기 때문 (#61에서는 껐음 → docs/operations.md 7장)
+    // - API 인증은 여전히 Authorization 헤더(Access JWT)로만 함. 쿠키는 Refresh Token 하나뿐이고 Path=/api/users라
+    //   재발급·로그아웃 외의 API에는 실리지 않음
+    // - 자격 증명을 허용해도 허용 출처 목록에 없는 출처의 요청은 CorsFilter가 403으로 막음 (재발급·로그아웃 CSRF 방어의 한 축,
+    //   다른 한 축은 쿠키의 SameSite) — 그래서 허용 출처에 와일드카드를 쓰지 않는 규칙이 더 중요해짐
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
@@ -145,7 +166,7 @@ public class SecurityConfig {
         //   목록 페이징(X-Has-Next·X-Page·X-Size, keyset X-Next-After-Id), 오류 추적(X-Trace-Id), 멱등 재전송 여부(Idempotent-Replayed)
         config.setExposedHeaders(List.of(
                 "X-Has-Next", "X-Next-After-Id", "X-Page", "X-Size", "X-Trace-Id", "Idempotent-Replayed"));
-        config.setAllowCredentials(false);
+        config.setAllowCredentials(true);
         // Preflight 결과 캐시 시간 — 요청마다 OPTIONS가 한 번 더 가지 않도록
         config.setMaxAge(Duration.ofHours(1));
 
@@ -158,11 +179,16 @@ public class SecurityConfig {
     // TraceIdFilter가 먼저 실행되므로 여기서도 MDC의 traceId가 응답에 들어감
     private void writeError(HttpServletRequest request, HttpServletResponse response,
                             HttpStatus status, String message) throws IOException {
-        log.warn("요청 실패 status={} message={}", status.value(), message);
+        writeError(request, response, status, null, message);
+    }
+
+    private void writeError(HttpServletRequest request, HttpServletResponse response,
+                            HttpStatus status, ErrorCode code, String message) throws IOException {
+        log.warn("요청 실패 status={} code={} message={}", status.value(), code, message);
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.getWriter().write(objectMapper.writeValueAsString(
-                ApiErrorResponse.of(status, message, request.getRequestURI())));
+                ApiErrorResponse.of(status, code, message, request.getRequestURI())));
     }
 }

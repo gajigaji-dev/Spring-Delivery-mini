@@ -24,6 +24,7 @@ erDiagram
     settlements ||--o| settlement_aggregation_failures : "settlement_id (해결 시)"
     users ||--o{ payment_idempotency_keys : "user_id"
     payments ||--o| payment_idempotency_keys : "payment_id (UNIQUE)"
+    users ||--o{ refresh_tokens : "user_id"
 
     users {
         bigint id PK
@@ -158,6 +159,7 @@ erDiagram
         int send_attempt_count
         timestamp next_send_at
         timestamp sent_at
+        timestamp read_at "NULL = 안 읽음 (V15)"
     }
     payment_idempotency_keys {
         bigint id PK
@@ -166,6 +168,17 @@ erDiagram
         varchar fingerprint "요청 본문 SHA-256"
         bigint payment_id FK "UNIQUE"
         timestamp created_at
+    }
+    refresh_tokens {
+        bigint id PK
+        bigint user_id FK
+        varchar token_hash "UNIQUE, 원문의 SHA-256"
+        uuid family_id "로그인 1번 = 계열 1개"
+        timestamp created_at
+        timestamp expires_at "<= family_expires_at"
+        timestamp family_expires_at "계열 절대 만료 (V16)"
+        timestamp revoked_at "사유와 함께 NULL/NOT NULL"
+        varchar revoke_reason "ROTATED/LOGOUT/REUSE_DETECTED"
     }
 ```
 
@@ -190,6 +203,7 @@ erDiagram
 | settlements ─ settlement_aggregation_failures | 1 : 0..1 | `settlement_aggregation_failures.settlement_id` → `settlements.id` (NULL 허용) | 재집계로 만들어진 정산 |
 | users ─ payment_idempotency_keys | 1 : N | `payment_idempotency_keys.user_id` → `users.id` | 회원별 결제 멱등성 키 (회원·키당 1건) |
 | payments ─ payment_idempotency_keys | 1 : 0..1 | `payment_idempotency_keys.payment_id` → `payments.id` (unique) | 키가 있는 결제만 기록 1건 (V14) |
+| users ─ refresh_tokens | 1 : N | `refresh_tokens.user_id` → `users.id` | 로그인(계열)마다, 재발급마다 1건 (V15). 같은 `family_id` 행끼리가 한 로그인 |
 
 - **Outbox·알림 테이블(V13)은 FK 없음**: `outbox_events`·`consumed_events`·`notifications`는 `event_id`로만 이어지는 이벤트 기록 — 주문·회원 id는 발생 시점 스냅샷 값이라 원본이 지워져도 남음 ([데이터베이스](database.md#outbox_events--발행-대기-이벤트-v13))
 - **OWNER가 받은 주문 조회**: `orders → stores → users(owner)`로 본인 매장에 들어온 주문만 찾음 (`findAllByStoreOwnerId`), 매장 하나는 `findAllByStoreId`

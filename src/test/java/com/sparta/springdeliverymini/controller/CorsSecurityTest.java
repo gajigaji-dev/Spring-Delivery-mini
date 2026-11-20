@@ -26,7 +26,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-// CORS (#61) — 허용 출처의 Preflight·실제 요청, 허용하지 않은 출처 차단, 노출·허용 헤더, 자격 증명 미허용
+// CORS (#61) — 허용 출처의 Preflight·실제 요청, 허용하지 않은 출처 차단, 노출·허용 헤더, 자격 증명 허용(V15 Refresh Token 쿠키)
 // 허용 출처는 설정값으로만 주입 (test 프로필 기본값은 빈 목록이라 여기서 지정)
 @WebMvcTest(value = OrderController.class, properties = "cors.allowed-origins=http://localhost:5173")
 @Import({SecurityConfig.class, JwtProvider.class})
@@ -60,8 +60,8 @@ class CorsSecurityTest {
                 .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS, containsString("idempotency-key")))
                 .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS, containsString("authorization")))
                 .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_MAX_AGE, "3600"))
-                // 쿠키 등 자격 증명은 허용하지 않음 (JWT는 Authorization 헤더로만)
-                .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS));
+                // Refresh Token 쿠키(HttpOnly) 때문에 자격 증명 허용 (V15, #61에서는 끔) — 허용 출처에만 붙음
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS, "true"));
     }
 
     @Test
@@ -89,7 +89,7 @@ class CorsSecurityTest {
                 .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, ALLOWED))
                 .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, containsString("X-Has-Next")))
                 .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS, containsString("X-Next-After-Id")))
-                .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS))
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS, "true"))
                 .andExpect(header().string("X-Has-Next", "true"));
     }
 

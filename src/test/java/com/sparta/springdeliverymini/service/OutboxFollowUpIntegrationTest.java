@@ -412,7 +412,7 @@ class OutboxFollowUpIntegrationTest {
         assertThat(outboxEventRepository.findAll()).extracting(OutboxEvent::getId)
                 .containsExactlyInAnyOrder(recentPublished, oldPending, oldFailed);
         // 다시 실행해도 더 지우지 않음
-        assertThat(retentionCleaner.cleanUp()).isEqualTo(new CleanupResult(0, 0, 0));
+        assertThat(retentionCleaner.cleanUp()).isEqualTo(new CleanupResult(0, 0, 0, 0));
     }
 
     @Test

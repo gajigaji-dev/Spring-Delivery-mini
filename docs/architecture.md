@@ -82,6 +82,7 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── TimeConfig.java                  # 기준 시간대(Asia/Seoul), 현재 시각용 Clock 빈
 │   ├── PaymentFeeProperties.java        # 수수료율 설정(payment.fee.rate) 바인딩·검증
 │   ├── PaymentIdempotencyProperties.java # 결제 멱등성 기록 TTL(payment.idempotency.*) 바인딩·검증 (#41)
+│   ├── RefreshTokenProperties.java      # Refresh Token 수명·쿠키 속성(auth.refresh-token.*) 바인딩·검증 (V15)
 │   ├── SchedulingConfig.java            # @EnableScheduling (settlement.scheduler.enabled로 켜고 끔)
 │   ├── OutboxProperties.java            # Outbox 발행·Consumer 재시도 설정(outbox.*) 바인딩·검증, 백오프 계산 (#42)
 │   ├── KafkaConfig.java                 # 토픽·DLT 생성, Consumer 오류 처리(재시도 후 DLT, 형식 오류는 즉시 DLT) (#42)
@@ -94,21 +95,23 @@ src/main/java/com/sparta/springdeliverymini
 ├── logging
 │   └── TraceIdFilter.java               # 요청별 traceId 생성·전달(MDC, X-Trace-Id 헤더), 요청 결과 로그
 ├── jwt
-│   ├── JwtProvider.java                 # JWT 생성·검증
-│   └── JwtAuthenticationFilter.java     # 요청마다 토큰을 확인해 인증 정보 등록
+│   ├── JwtProvider.java                 # JWT 생성·검증 (Access Token)
+│   └── JwtAuthenticationFilter.java     # 요청마다 토큰을 확인해 인증 정보 등록, 실패 사유(만료·위조)를 요청 속성에 남김 (V15)
 ├── controller
-│   ├── UserController.java              # 회원가입, 로그인
+│   ├── UserController.java              # 회원가입, 로그인, Access 재발급·로그아웃(Refresh Token 쿠키) (V15)
+│   ├── RefreshTokenCookies.java         # Refresh Token HttpOnly 쿠키 생성·삭제 (V15)
 │   ├── StoreController.java             # 매장 생성·조회, 매장별 주문 조회, 매장별 정산 조회, 일 정산 기록 조회
 │   ├── AdminSettlementController.java   # 관리자 정산 조회·확정·지급·이력·재집계·실패 기록 (/api/admin/settlements)
 │   ├── AdminStoreController.java        # 관리자 매장 수수료율 설정·해제 (/api/admin/stores/{id}/fee-rate)
 │   ├── AdminOutboxController.java       # 관리자 Outbox 이벤트 조회·FAILED 재발행 (/api/admin/outbox-events) (V14)
-│   ├── NotificationController.java      # 내 알림 목록 (/api/notifications) (V14)
+│   ├── NotificationController.java      # 내 알림 목록 (/api/notifications) (V14), 안 읽은 개수·읽음 처리 (V15)
 │   ├── MenuController.java              # 메뉴 등록·조회·수정·삭제
 │   ├── OrderController.java             # 주문 생성·조회·취소·상태 변경
 │   ├── PaymentController.java           # 결제 (선택 헤더 Idempotency-Key, 재전송 시 Idempotent-Replayed), 결제 단건 조회 (#53)
 │   └── SliceResponse.java               # 목록 페이지 응답: 본문은 배열, 페이지 정보는 X-Page·X-Size·X-Has-Next 헤더 (#40), 주문 목록은 X-Next-After-Id (#54)
 ├── service
 │   ├── UserService.java
+│   ├── AuthTokenService.java            # Access·Refresh Token 발급, 재발급(rotation)·재사용 감지·로그아웃 — DB 기준 (V15)
 │   ├── StoreService.java                # 매장 생성·조회, 매장 소유권 검증(getOwnedStore)
 │   ├── MenuService.java
 │   ├── OrderService.java
@@ -120,7 +123,7 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── AdminStoreService.java           # 관리자 매장 수수료율 설정·해제 (이후 결제부터 적용)
 │   ├── OwnerSettlementService.java      # 사장님 일 정산 기록 목록·상세 (지급액·이월·상태, 차감 내역)
 │   ├── AdminOutboxService.java          # 관리자 Outbox 조회·재발행 (FAILED → PENDING, 행 잠금) (V14)
-│   └── NotificationService.java         # 이벤트 → 알림 기록, eventId 기준 멱등성(consumed_events) (#42), 내 알림 목록 (V14)
+│   └── NotificationService.java         # 이벤트 → 알림 기록, eventId 기준 멱등성(consumed_events) (#42), 내 알림 목록 (V14), 읽음 처리·안 읽은 개수 (V15)
 ├── event                                # Kafka Transactional Outbox (#42)
 │   ├── OutboxEventRecorder.java         # 업무 트랜잭션 안에서 이벤트 저장 (MANDATORY — 업무 데이터와 함께 커밋·롤백)
 │   ├── OutboxPublisher.java             # outbox_events → Kafka 발행 (SKIP LOCKED, 실패 시 백오프 재시도, 한도 초과 FAILED)
@@ -137,7 +140,7 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── SettlementScheduler.java         # 매일 01:10 최근 N일 정산 자동 집계 (분산 락을 잡은 인스턴스만), 실행 결과·소요 시간 메트릭
 │   └── FixedDelayTask.java              # 전용 스레드로 fixed-delay 반복 실행 (알림 발송·보관 기간 정리) (V14)
 ├── maintenance
-│   └── RetentionCleaner.java            # 보관 기간이 지난 발행 완료 이벤트·처리 기록·멱등성 기록 삭제 (V14)
+│   └── RetentionCleaner.java            # 보관 기간이 지난 발행 완료 이벤트·처리 기록·멱등성 기록 삭제 (V14), 만료된 Refresh Token (V16)
 ├── lock
 │   ├── DistributedLock.java             # 인스턴스 간 실행 락 인터페이스 (#41)
 │   ├── RedisDistributedLock.java        # Redis 구현 — SET NX PX 획득, token 확인 후 해제(Lua), 최소 유지 시간
@@ -153,7 +156,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── SettlementAggregationFailureRepository.java  # 정산 집계 실패 기록
 │   ├── OutboxEventRepository.java       # 발행 대상 조회 (FOR UPDATE SKIP LOCKED) (#42)
 │   ├── ConsumedEventRepository.java     # 처리 기록 INSERT ... ON CONFLICT DO NOTHING (#42)
-│   └── NotificationRepository.java      # 알림 기록 (#42)
+│   ├── NotificationRepository.java      # 알림 기록 (#42), 읽음 처리 조건부 UPDATE (V15)
+│   └── RefreshTokenRepository.java      # Refresh Token — 해시로 행 잠금 조회(FOR UPDATE), 계열 전체 폐기 (V15)
 ├── entity
 │   ├── BaseEntity.java                  # 생성·수정 시각 자동 기록 (@MappedSuperclass)
 │   ├── User.java / Role.java            # 회원, 역할(CUSTOMER / OWNER / ADMIN)
@@ -171,14 +175,16 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── OutboxEvent.java / OutboxEventStatus.java / OutboxEventType.java # 발행 대기 이벤트, 상태(PENDING → PUBLISHED / FAILED), 종류 (#42)
 │   ├── ConsumedEvent.java               # Consumer가 처리한 이벤트 (eventId PK) (#42)
 │   ├── Notification.java / NotificationSendStatus.java # 알림 기록, 발송 상태(PENDING → SENT / FAILED, SKIPPED) (#42, V14)
-│   └── PaymentIdempotencyKey.java       # DB 결제 멱등성 기록 — 결제와 같은 트랜잭션에 저장 (V14)
+│   ├── PaymentIdempotencyKey.java       # DB 결제 멱등성 기록 — 결제와 같은 트랜잭션에 저장 (V14)
+│   └── RefreshToken.java / RefreshTokenRevokeReason.java # Refresh Token(해시만), 폐기 사유 ROTATED·LOGOUT·REUSE_DETECTED (V15)
 ├── dto                                  # 요청(Request) / 응답(Response) 객체, PageQuery(목록 page·size 검증, id 오름차순 고정), KeysetQuery(주문 목록 afterId·size, #54)
 └── exception
     ├── ApiException.java                # 상태 코드를 담아 던지는 예외
+    ├── ErrorCode.java                   # 응답 code — 401 토큰 만료·위조, Refresh Token 거부 사유 구분 (V15)
     ├── InvalidOrderStatusException.java # 허용되지 않는 주문 상태 전이 (Order 엔티티가 던짐 → 409)
     ├── InvalidSettlementStatusException.java # 허용되지 않는 정산 상태 전이 (Settlement 엔티티가 던짐 → 409)
     ├── InvalidOutboxEventStatusException.java # 허용되지 않는 Outbox 상태 전이 (FAILED가 아닌 이벤트 재발행 → 409)
-    ├── ApiErrorResponse.java            # 공통 에러 응답 {status, error, message, path, traceId}
+    ├── ApiErrorResponse.java            # 공통 에러 응답 {status, error, code, message, path, traceId} (code는 V15)
     └── GlobalExceptionHandler.java      # 예외를 ApiErrorResponse로 변환, 4xx WARN / 5xx ERROR(스택 트레이스) 로그
 
 src/main/resources
@@ -201,7 +207,7 @@ src/main/resources
 | `dto` | 요청·응답 전용 객체(`record`). 엔티티를 그대로 노출하지 않고 필요한 값만 주고받음 (예: 응답에 비밀번호 제외, 요청에 금액 제외) |
 | `config`, `jwt` | Spring Security + JWT 인증. 1차 권한 검사(역할별 URL 접근)는 `SecurityConfig`, 본인 데이터 여부 같은 세부 검사는 Service에서 처리. 역할 제한이 있는 API는 모두 `SecurityConfig`에 규칙을 두고, Service에서도 토큰 발급 후 역할 변경에 대비해 한 번 더 확인 |
 | `scheduler` | `@Scheduled` 작업. 직접 로직을 갖지 않고 Service를 호출 (예: `SettlementScheduler` → `SettlementAggregationService`) |
-| `exception` | 모든 에러 응답을 `ApiErrorResponse`(`status`·`error`·`message`·`path`·`traceId`)로 통일. Security의 401/403도 같은 형식 |
+| `exception` | 모든 에러 응답을 `ApiErrorResponse`(`status`·`error`·`code`·`message`·`path`·`traceId`)로 통일. Security의 401/403도 같은 형식 |
 | `lock` | 여러 인스턴스 사이의 실행 락. `DistributedLock`(인터페이스) / `RedisDistributedLock`(Redis 구현) — 스케줄러가 한 인스턴스에서만 실행되도록 사용 |
 | `logging` | 관측성. `TraceIdFilter`가 Security보다 먼저 실행되어 요청마다 traceId를 MDC에 넣음 → 요청 로그·서비스 로그·예외 로그·에러 응답이 같은 traceId로 연결 |
 
@@ -375,6 +381,7 @@ sequenceDiagram
 | `outbox_events` 중 `PUBLISHED` | 7일 | 발행이 끝난 이벤트는 추적용으로만 필요. `PENDING`·`FAILED`는 기간과 관계없이 남김 |
 | `consumed_events` | 30일 | 같은 메시지가 다시 올 수 있는 기간(Kafka 토픽 보관 기본 7일)보다 길어야 중복을 걸러냄 |
 | `payment_idempotency_keys` | 30일 | 재시도가 올 수 있는 기간. 지난 뒤 재시도는 DB 검사 409 |
+| `refresh_tokens` (V16) | 만료 후 7일 | 만료된 토큰은 재발급에 쓸 수 없어 지워도 동작이 같음. 만료 전 행은 폐기됐어도 남김(재사용 감지 근거) |
 
 - 1,000건씩 나눠 삭제(DELETE마다 별도 트랜잭션, 주기당 테이블별 최대 100번) → 긴 트랜잭션·큰 WAL 방지. 대상 행은 SKIP LOCKED라 여러 인스턴스가 함께 돌아도 서로 기다리지 않음
 - 결제·정산·알림 기록은 지우지 않음 (업무 기록)
@@ -430,6 +437,62 @@ docker compose run --rm app --spring.profiles.active=dev,dlt-reprocess --all
 - **대용량 정리**: 행 수가 크게 늘면 주기 삭제 대신 테이블 파티셔닝(파티션 DROP)
 - **알림 전달**: Alertmanager 연동, Outbox·알림 대시보드 패널
 
+## 인증 (Access · Refresh Token, V15)
+
+Access Token(JWT, V15까지 1시간 → V16부터 15분)이 만료됐을 때 다시 로그인하지 않도록 Refresh Token을 추가했다. 클라이언트 사용법은 [API 명세 · 인증 토큰](api.md#인증-토큰-access--refresh)
+
+| 결정 | 선택 | 근거 · 대안 |
+|---|---|---|
+| 저장소 | **DB** `refresh_tokens` (해시만) | Refresh Token은 로그인 상태 그 자체라 유실되면 전원 로그아웃 → "Redis는 보조 수단" 원칙상 원본을 Redis에 두지 않음. Redis만 쓰면 장애·유실 때 로그아웃·재발급이 막히고, DB + Redis 캐시는 현재 트래픽(재발급은 사용자당 1시간에 1번)에 비해 복잡도만 늘어남 |
+| 전달 | **HttpOnly 쿠키** `refresh_token` | JS가 읽을 수 없어 XSS로 Refresh Token이 유출되지 않음. 대가로 CORS `allowCredentials`를 켬(#61에서는 끔, [운영 프로필 7장](operations.md)). 응답 본문으로 주는 방식은 #61 설계를 유지하지만 프론트가 storage에 두면 XSS에 노출 |
+| 토큰 형식 | 무작위 256비트, SHA-256 해시 저장 | 유효성은 어차피 DB 행(폐기·만료)으로 판단 → JWT일 필요 없음. 해시만 저장해 DB·백업 유출 시에도 재발급 불가 (무작위 값이라 솔트·느린 해시 불필요) |
+| 재사용 | **엄격**: 이미 쓴 토큰이 다시 오면 계열(로그인 1번) 전체 폐기 | 정상 사용자·탈취자 중 늦게 쓴 쪽이 재사용으로 걸려 양쪽 다 재로그인 → 탈취 토큰 수명이 끝남. 대안(폐기 직후 몇 초 유예)은 동시 요청에 관대하지만 그 사이 탈취 토큰을 놓침 → 프론트가 재발급을 한 번에 하나만 보내는 것으로 대응 |
+| 401 구분 | 오류 본문 `code` 추가 | `TOKEN_EXPIRED`(재발급) / `TOKEN_INVALID`(재로그인) / `REFRESH_TOKEN_*`. 필드 추가만이라 기존 클라이언트 영향 없음. 대안: `WWW-Authenticate` 헤더(CORS 노출·파싱 필요), 메시지 문구 비교(깨지기 쉬움) |
+
+### 흐름
+- **로그인**: 비밀번호 확인 → 새 계열(`family_id`)의 Refresh Token 행 저장 + Access 발급. 로그인마다 계열이 따로 생겨 기기별 로그아웃이 서로 영향 없음
+- **재발급** `POST /api/users/refresh` (`AuthTokenService.refresh`)
+  1. 쿠키 값 형식 확인(43자 Base64URL) → 해시로 `SELECT ... FOR UPDATE`
+  2. 폐기된 행: `ROTATED`면 재사용 → 계열의 유효한 행 전부 `REUSE_DETECTED`로 폐기 후 401 `REFRESH_TOKEN_REUSED` / 그 밖(로그아웃 등) 401 `REFRESH_TOKEN_REVOKED`
+  3. 만료: 401 `REFRESH_TOKEN_EXPIRED` (행은 그대로)
+  4. 현재 행 `ROTATED` + 같은 계열에 새 행(수명 다시 14일) + Access 발급(역할은 DB의 현재 값)
+  - 재사용 감지 뒤 401을 던져도 계열 폐기는 커밋돼야 함 → `@Transactional(noRollbackFor = ApiException.class)` (다른 401 경로는 DB를 바꾸지 않음)
+- **로그아웃** `POST /api/users/logout`: 쿠키의 계열을 `LOGOUT`으로 폐기, 쿠키 삭제, 항상 204. Access 없이도 호출 가능
+- **Access Token 검증**: `JwtAuthenticationFilter`가 `ExpiredJwtException`과 그 밖의 `JwtException`을 나눠 요청 속성에 남기고, 인증이 필요한 경로면 entry point가 401 `code`로 응답. jjwt는 서명을 먼저 검증하므로 위조된 만료 토큰은 `TOKEN_INVALID`
+
+### 동시성
+- 같은 토큰의 동시 재발급: 행 잠금으로 뒤 요청은 앞 요청이 커밋될 때까지 기다린 뒤 `ROTATED` 상태를 읽음 → 새 토큰이 두 번 발급되지 않고, 뒤 요청은 재사용으로 처리되어 계열 전체(앞 요청이 받은 토큰 포함) 폐기 (`AuthTokenIntegrationTest` 5개 동시 요청)
+- READ COMMITTED에서 계열 폐기 UPDATE는 문장 시작 시점의 커밋된 행을 보므로, 앞 요청이 커밋한 새 행까지 폐기됨
+- 행 잠금 대기는 `lock_timeout`(5초)을 넘으면 503 ([운영 프로필 6장](operations.md))
+
+### CSRF
+Refresh Token이 쿠키라 다른 사이트가 재발급·로그아웃을 위조 요청할 수 있는지가 문제
+- 쿠키 `SameSite=Strict`: 다른 사이트에서 시작된 요청에는 쿠키가 실리지 않음
+- CORS: 허용 출처 목록에 없는 `Origin`의 요청은 `CorsFilter`가 컨트롤러 전에 403 (`AuthTokenIntegrationTest`) → 허용 출처에 와일드카드를 쓰지 않는 규칙(`CorsProperties`)이 전제
+- 응답 본문(새 Access Token)은 허용 출처가 아니면 브라우저가 읽지 못함
+- 쿠키 `Path=/api/users` → 다른 API 요청에는 쿠키가 실리지 않고, API 인증은 여전히 `Authorization` 헤더라 다른 API는 CSRF 대상이 아님
+
+### 장애 시 동작
+| 상황 | 동작 |
+|---|---|
+| Redis 장애 | 영향 없음 (Refresh Token은 Redis를 쓰지 않음) |
+| DB 장애·잠금 대기 초과 | 로그인·재발급·로그아웃 503 → 데이터를 바꾸지 않음. 클라이언트는 재시도(같은 Refresh Token은 아직 유효) |
+| 재발급 응답 유실(서버는 커밋, 클라이언트는 못 받음) | 브라우저 쿠키는 이전 값 → 다음 재발급이 재사용으로 처리되어 재로그인. 엄격 정책의 대가 |
+
+### 한계 · 후속 (V16에서 처리한 항목 포함)
+- ~~**로그아웃 후 Access Token**: 서명만 검증하므로 만료(1시간)까지 유효~~ → **Access 수명 15분으로 단축** (V16). 즉시 차단은 하지 않음
+  - 검토한 대안: ① 요청마다 DB에서 계열 상태 확인(즉시 차단, 모든 인증 요청에 쿼리 1번 추가) ② Redis 차단 목록(빠르지만 Redis 장애 시 통과시키면 차단 무력화, 막으면 전체 API 503 — "Redis는 보조" 원칙과 충돌)
+  - 선택 근거: 요청 경로에 저장소 의존을 추가하지 않고 노출 시간을 1/4로 줄임. 재발급 흐름(`TOKEN_EXPIRED` → refresh)이 이미 있어 프론트 추가 작업 없음 (재발급 빈도만 15분에 1번)
+  - 남는 위험: 로그아웃·재사용 감지 뒤에도 이미 발급된 Access는 최대 15분 유효. 즉시 차단이 필요해지면 ①을 추가
+- ~~**만료·폐기 행 정리**~~ → `RetentionCleaner`가 **만료(`expires_at`) 후 7일** 지난 행을 삭제 (V16, `retention.refresh-tokens`, `idx_refresh_tokens_expires_at`)
+  - 만료 전 행은 폐기됐어도 남김 — 아직 유효 기간 안의 `ROTATED` 행이 있어야 재사용을 감지할 수 있음
+  - 지운 토큰이 다시 오면 재사용이 아니라 모르는 값(`REFRESH_TOKEN_INVALID`)으로 거부 → 이미 만료된 토큰이라 결과(재로그인)는 같음
+- ~~**수명 연장**: 재발급마다 14일이 다시 시작되어 로그인이 끝나지 않음~~ → **계열 절대 만료 30일** (V16, `family_expires_at`, `auth.refresh-token.absolute-ttl`)
+  - 재발급 토큰의 만료 = min(재발급 시각 + 14일, 로그인 시각 + 30일). 탈취 토큰도 최대 로그인 후 30일까지만 쓸 수 있음
+  - V16 이전 계열은 첫 발급 + 30일로 백필하되, 이미 더 늦게 만료되는 토큰이 있으면 그 시각까지 (발급된 토큰을 앞당겨 끊지 않음)
+  - 쿠키 `Max-Age`는 계속 14일 — 절대 만료에 가까우면 쿠키가 서버 기록보다 늦게 사라지지만, 서버가 `REFRESH_TOKEN_EXPIRED`로 거부하며 쿠키를 지움
+- **다른 사이트 배포**: 프론트·API의 등록 도메인이 다르면 `SameSite=None` 필요 → CSRF 방어가 CORS(Origin 검사)에만 의존하게 됨
+
 ## 요청 처리 흐름
 
 ```mermaid
@@ -484,5 +547,6 @@ sequenceDiagram
 - 후속 개선 테스트 (V14): `OutboxFollowUpMigrationTest`(V13 데이터 위에 V14 적용 — 기존 알림 `SKIPPED`, 새 제약·인덱스), `OutboxFollowUpIntegrationTest`(같은 주문 발행 순서, FAILED 단건·일괄 재발행과 409·403, 알림 발송·재시도·FAILED·SKIPPED, 내 알림 목록, 보관 기간 정리, Outbox 게이지·발송 카운터), `NotificationTest`(발송 상태 전이), `AdminOutboxSecurityTest`(관리자 Outbox API·내 알림 API 권한), `PaymentIdempotencyIntegrationTest`·`PaymentIdempotencyRedisFailureTest`에 DB 기록 재전송(Redis 기록 유실·Redis 장애) 추가
   - test 프로필은 알림 발송·보관 기간 정리의 주기 실행을 끄고(`application-test.yml`) 테스트가 직접 호출
   - Kafka 컨테이너는 `KafkaTestcontainersConfiguration`을 함께 `@Import`한 클래스에서만 뜸. test 프로필은 토픽 생성·Consumer·주기 발행을 끄고(`application-test.yml`), Kafka 테스트 클래스가 속성으로 다시 켬. 발행은 `publishPending()`을 직접 호출해 시점을 고정
+- 알림 읽음·Refresh Token 테스트 (V15·V16): `RefreshTokenFamilyExpiryMigrationTest`(V15 토큰 위에 V16 적용 — 계열 절대 만료 백필·앞당기지 않음, NOT NULL·`expires_at <= family_expires_at`, 정리 인덱스), `NotificationReadRefreshTokenMigrationTest`(V14 데이터 위에 V15 적용 — 기존 알림 안 읽음·다른 값 유지, 부분 인덱스, `refresh_tokens` UNIQUE·CHECK·FK), `RefreshTokenTest`(발급·재발급 같은 계열·폐기 1회·만료 경계·절대 만료로 잘림), `NotificationReadIntegrationTest`(본인 알림 읽음 204, 다른 사람 403·없음 404·토큰 없음 401, 멱등 — 처음 읽은 시각 유지, 목록 `read`·`readAt`, 안 읽은 개수는 본인 것만, 발송 상태 변경과 서로 덮어쓰지 않음), `AuthTokenIntegrationTest`(로그인 쿠키 속성·본문에 Refresh 없음·DB 해시만, 재발급 rotation·DB 역할 반영, 재사용 시 계열 전체 폐기·다른 계열 유지, 만료·폐기·모르는 값 401 `code`, 동시 재발급 5건 중 1건만 성공, 계속 재발급해도 로그인 후 30일에 만료, 만료 후 7일 지난 행만 정리, 로그아웃 계열 폐기·멱등, 허용하지 않은 출처 403(CSRF), Access 만료 `TOKEN_EXPIRED`·위조 `TOKEN_INVALID`·없음 `code` 없음)
 - 스키마는 Flyway가 생성하므로 마이그레이션 SQL과 `ddl-auto: validate`도 함께 검증됨
 - 같은 설정을 쓰는 테스트 클래스끼리는 컨테이너 1개를 공유하고, 테스트가 끝나면 컨테이너는 자동 삭제됨

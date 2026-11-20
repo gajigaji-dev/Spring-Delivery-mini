@@ -156,6 +156,9 @@ retention:
   outbox-published: 7d
   consumed-events: 30d
   payment-idempotency-keys: 30d
+  # 만료된 Refresh Token 행 — 만료(expires_at) 후 이 기간이 지나면 삭제 (V16). 만료된 토큰은 어차피 재발급에 못 쓰므로
+  # 기간은 문의·감사 확인용 여유. 지운 토큰이 다시 오면 "모르는 값"(REFRESH_TOKEN_INVALID)으로 거부됨
+  refresh-tokens: 7d
 
 # CORS — 브라우저(프론트엔드)에서 API를 호출할 수 있는 출처 (config.CorsProperties, SecurityConfig, docs/operations.md 7장)
 # 환경변수 CORS_ALLOWED_ORIGINS에 쉼표로 구분해 지정 (scheme://host[:port], 와일드카드·경로·끝 슬래시 불가 → 기동 실패)
@@ -169,7 +172,22 @@ cors:
 # 테스트는 src/test/resources/application-test.yml의 테스트 전용 키 사용
 jwt:
   secret: ${JWT_SECRET}
-  expiration-ms: 3600000  # 1시간
+  # Access Token 수명 15분 (V16, 이전 1시간) — 서명만 검증하는 방식이라 로그아웃해도 만료까지는 유효하므로
+  # 노출 시간을 짧게 둠. 요청마다 DB·Redis 확인 없이 끝나는 장점은 유지 (docs/architecture.md 인증 장)
+  expiration-ms: 900000
+
+# Refresh Token — config.RefreshTokenProperties, service.AuthTokenService (docs/architecture.md 인증 장)
+#   DB(refresh_tokens)에 해시만 저장, 브라우저에는 HttpOnly 쿠키(refresh_token, Path=/api/users)로 전달
+#   ttl: 수명. 재발급할 때마다 그 시점부터 다시 ttl (ttl 동안 한 번도 재발급하지 않으면 재로그인)
+#   absolute-ttl: 로그인 시점부터 최대 수명 (V16) — 계속 재발급해도 이 기간이 지나면 재로그인
+#   cookie-secure: HTTPS에서만 전송 (localhost는 브라우저가 http에서도 허용)
+#   cookie-same-site: 프론트엔드와 API가 다른 사이트(등록 도메인이 다름)에 배포되면 None 필요 (None이면 secure 필수)
+auth:
+  refresh-token:
+    ttl: 14d
+    absolute-ttl: 30d
+    cookie-secure: ${REFRESH_TOKEN_COOKIE_SECURE:true}
+    cookie-same-site: ${REFRESH_TOKEN_COOKIE_SAME_SITE:Strict}
 
 # 로그 — 모든 로그 줄에 요청별 traceId(logging.TraceIdFilter가 MDC에 넣은 값)를 출력
 # 요청 밖(스케줄러 등)에서는 빈 값. 응답 헤더 X-Trace-Id·에러 응답 traceId와 같은 값으로 로그를 찾을 수 있음
