@@ -40,6 +40,12 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     // 매장은 소유권 검증 때 이미 조회되어 있으므로 함께 조회하지 않음 — 인덱스 idx_orders_store_id_id (V12)
     Slice<Order> findAllByStoreId(Long storeId, Pageable pageable);
 
+    // 주문 단건 조회용 (#62) — 매장·주문 항목을 한 쿼리로 함께 조회(fetch join)
+    // 단건이라 컬렉션 fetch join의 메모리 페이징 문제가 없음 → 항목을 @BatchSize로 따로 읽지 않고 쿼리 1번
+    // 소유권 확인(order.user.id, store.owner.id)은 FK 값이라 추가 쿼리 없음
+    @Query("SELECT o FROM Order o JOIN FETCH o.store LEFT JOIN FETCH o.orderItems WHERE o.id = :id")
+    Optional<Order> findDetailById(@Param("id") Long id);
+
     // 상태 변경용 조회 — 주문 행 잠금(SELECT ... FOR UPDATE)
     // 결제·취소·수락·배달완료가 같은 주문에 동시에 들어와도 한 번에 하나씩 처리
     //   → 예) 고객 취소와 사장님 수락이 함께 결제완료 상태를 읽고 둘 다 성공하는 일을 막음

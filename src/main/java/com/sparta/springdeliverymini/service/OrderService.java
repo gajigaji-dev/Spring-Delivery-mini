@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.dto.OrderCreateRequest;
+import com.sparta.springdeliverymini.dto.OrderDetailResponse;
 import com.sparta.springdeliverymini.dto.OrderItemRequest;
 import com.sparta.springdeliverymini.dto.OrderResponse;
 import com.sparta.springdeliverymini.dto.KeysetQuery;
@@ -94,6 +95,36 @@ public class OrderService {
         }
 
         return new SliceImpl<>(List.of());
+    }
+
+    // 주문 단건 조회 (#62) — CUSTOMER는 본인 주문, OWNER는 본인 매장에 들어온 주문만
+    // 역할·소유권은 토큰이 아니라 DB의 회원·주문 기준으로 판단 (결제 단건 조회 #53과 같은 순서: 404 → 403)
+    // 쿼리: 회원 1 + 주문·매장·항목 1 + 결제 1 = 3번 (항목 수와 무관)
+    public OrderDetailResponse getOrder(Long orderId, String username) {
+
+        // 토큰은 유효하지만 그 사이 회원이 삭제된 경우 → 401
+        User currentUser = userRepository.findByUsername(username)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "존재하지 않는 회원입니다."));
+
+        // SecurityConfig에서 1차로 막지만(ADMIN 403), 토큰 발급 후 역할이 바뀐 경우까지 대비
+        if (currentUser.getRole() != Role.CUSTOMER && currentUser.getRole() != Role.OWNER) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "CUSTOMER 또는 OWNER만 주문을 조회할 수 있습니다.");
+        }
+
+        Order order = orderRepository.findDetailById(orderId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "주문이 없습니다."));
+
+        // CUSTOMER: 주문자 본인인지 / OWNER: 주문이 들어간 매장의 주인인지 → 아니면 403
+        boolean accessible = currentUser.getRole() == Role.CUSTOMER
+                ? order.getUser().getId().equals(currentUser.getId())
+                : order.getStore().isOwnedBy(currentUser);
+        if (!accessible) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "본인 주문 또는 본인 매장에 들어온 주문만 조회할 수 있습니다.");
+        }
+
+        // 결제 전·결제 없이 취소된 주문은 결제가 없음 → payment: null
+        Payment payment = paymentRepository.findByOrderId(order.getId()).orElse(null);
+        return OrderDetailResponse.of(order, payment);
     }
 
     // 매장별 주문 조회 — 본인 매장의 주문만 조회 가능

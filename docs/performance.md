@@ -256,3 +256,29 @@ WHERE rn IN (3740, 7480);   -- 149456, 299106
 | `StoreOrderIntegrationTest` | 14 (4건 추가) | 점주 keyset으로 끝까지 넘기면 OFFSET과 같은 순서·내용으로 중복·누락 없음(다른 점주 주문이 사이에 섞인 상태), 경계(`afterId=0`=첫 페이지, 마지막 id 다음은 빈 결과, 다른 점주 주문 id를 afterId로 줘도 그 다음 본인 주문부터, 정확히 size건 남으면 `hasNext=false`), 넘기는 중 새 주문이 들어와도 이미 받은 주문이 다시 나오지 않고 뒤에 이어짐, 고객 keyset은 본인 주문만·고객·점주 모두 쿼리 3번 |
 | `OrderListPagingTest` (신규) | 8 | 파라미터 없으면 기존처럼 배열 + `X-Page`·`X-Size`·`X-Has-Next` + `X-Next-After-Id`, keyset 응답은 `X-Page` 없음, 마지막·빈 페이지는 `X-Next-After-Id` 없음, `page`+`afterId` 400, `afterId=-1`·`abc`·`size=0`·`101` 400, 토큰 없으면 401 |
 | `OrderServiceTest` | 35 (2건 추가) | keyset은 OFFSET 0 + id 오름차순 `Pageable`로 조회, 고객은 본인 주문 쿼리·ADMIN은 빈 목록 |
+
+## 10. 내 결제 목록 (#62)
+
+`GET /api/payments?page=&size=` — 고객 본인 결제를 id 오름차순으로 (`PaymentRepository.findAllByOrderUserId`, `@EntityGraph("order")`)
+
+```sql
+SELECT p.*, o.* FROM payments p JOIN orders o ON o.id = p.order_id
+WHERE o.user_id = ? ORDER BY p.id LIMIT ? OFFSET ?
+```
+
+### 인덱스 판단 (추가하지 않음, V15 미사용)
+
+| 단계 | 사용하는 인덱스 |
+|---|---|
+| 본인 주문 찾기 (`orders.user_id = ?`) | `idx_orders_user_id_id` (V12) |
+| 주문의 결제 (`payments.order_id`) | `payments.order_id` UNIQUE 제약의 인덱스 (V1) |
+| `ORDER BY p.id` | 인덱스로 해결 불가 → 그 고객의 결제를 모두 읽고 정렬 |
+
+- `payments`에는 `user_id`가 없어 `(user_id, id)` 같은 인덱스로 정렬까지 없앨 수 없음. 없애려면 결제에 주문자 컬럼을 중복 저장(반정규화)해야 하는데, 결제 행은 불변이라 값은 안전하지만 스키마·쓰기 경로 변경에 비해 이득이 작음
+- 읽는 행 수 = 그 고객의 결제 수 (결제 ≤ 주문, 주문당 결제 1건). 고객 한 명의 결제는 많아야 수백~수천 건이라 페이지 위치와 관계없이 작음 — 주문 목록 V11의 "전체 주문에 비례"하는 문제와 다름
+- 주문 목록(4장)처럼 고객 결제가 매우 많아져 정렬 비용이 보이면 그때 `payments.user_id` + `(user_id, id)` 인덱스 또는 주문 id 기준 정렬을 검토
+- EXPLAIN 실측은 하지 않음 (로컬 데이터가 작아 계획이 의미 없음). 근거는 위 인덱스 구성
+
+### 주문 단건 조회 (`GET /api/orders/{id}`)
+
+- 주문·매장·항목을 `JOIN FETCH` 한 쿼리로 (단건이라 컬렉션 fetch join의 메모리 페이징 문제 없음) + 결제는 `order_id` UNIQUE 인덱스로 1건 → 회원 포함 쿼리 3번, 항목 수와 무관 (`OrderQueryIntegrationTest`에서 Hibernate Statistics로 확인)

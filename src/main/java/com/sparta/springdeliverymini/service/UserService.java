@@ -3,12 +3,14 @@ package com.sparta.springdeliverymini.service;
 import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.LoginRequest;
 import com.sparta.springdeliverymini.dto.LoginResponse;
+import com.sparta.springdeliverymini.dto.MyInfoResponse;
 import com.sparta.springdeliverymini.dto.SignupRequest;
 import com.sparta.springdeliverymini.dto.UserResponse;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
+import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -16,12 +18,15 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 @Service
 @Transactional(readOnly = true) // 기본은 읽기 전용, 저장이 필요한 메서드만 @Transactional로 덮어씀
 @RequiredArgsConstructor // final 필드를 받는 생성자 자동 생성 (생성자 주입)
 public class UserService {
 
     private final UserRepository userRepository;
+    private final StoreRepository storeRepository; // 내 정보 조회의 OWNER 매장 id 목록 (#62)
     private final PasswordEncoder passwordEncoder; // SecurityConfig에 등록한 BCryptPasswordEncoder
     private final JwtProvider jwtProvider;
 
@@ -61,6 +66,23 @@ public class UserService {
         // 5. 응답 DTO로 변환
         // 응답에는 비밀번호를 포함하지 않음 (id, username, role만)
         return UserResponse.from(user);
+    }
+
+    // 내 정보 조회 (#62) — 토큰의 username으로 DB의 현재 회원을 찾아 응답
+    // 토큰의 role은 발급 시점 값이라 그 뒤 역할 변경이 반영되지 않음 → 응답의 role은 DB 값
+    public MyInfoResponse getMyInfo(String username) {
+
+        // 토큰은 유효하지만 그 사이 회원이 삭제된 경우 → 401 (다른 API와 같은 기준)
+        User user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "존재하지 않는 회원입니다."));
+
+        // OWNER는 매장 선택 화면을 바로 그릴 수 있도록 매장 id 목록 포함 (매장 상세는 /api/stores/{id})
+        // 그 밖의 역할은 쿼리 없이 빈 배열 → 클라이언트가 null 처리를 하지 않아도 됨
+        List<Long> storeIds = user.getRole() == Role.OWNER
+                ? storeRepository.findIdsByOwnerId(user.getId())
+                : List.of();
+
+        return MyInfoResponse.of(user, storeIds);
     }
 
     public LoginResponse login(LoginRequest request) {

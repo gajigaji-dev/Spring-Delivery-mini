@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.config.PaymentFeeProperties;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
@@ -13,6 +14,7 @@ import com.sparta.springdeliverymini.repository.PaymentIdempotencyKeyRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Slice;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -72,6 +74,23 @@ public class PaymentService {
         }
 
         return PaymentResponse.from(payment);
+    }
+
+    // 내 결제 목록 (#62) — CUSTOMER 본인 결제만, id 오름차순 페이지 (#40 목록 방식)
+    // 응답은 단건 조회와 같은 PaymentResponse (현재 결제·주문 상태)
+    public Slice<PaymentResponse> getMyPayments(String username, PageQuery pageQuery) {
+
+        User currentUser = userRepository.findByUsername(username)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "존재하지 않는 회원입니다."));
+
+        // SecurityConfig에서 1차로 막지만, 토큰 발급 후 역할이 바뀐 경우까지 대비 → 403
+        if (currentUser.getRole() != Role.CUSTOMER) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "CUSTOMER만 결제를 조회할 수 있습니다.");
+        }
+
+        // 결제자 = 주문자 → 주문자 id로 조회 (다른 회원의 결제는 조건에서 빠짐)
+        return paymentRepository.findAllByOrderUserId(currentUser.getId(), pageQuery.toPageable())
+                .map(PaymentResponse::from);
     }
 
     @Transactional
