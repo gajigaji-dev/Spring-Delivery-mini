@@ -13,18 +13,20 @@
   {
     "status": 409,
     "error": "Conflict",
+    "code": null,
     "message": "에러 메시지",
     "path": "/api/admin/payments/1/refund",
     "traceId": "5af890963e74404eb8ac559bfc252067"
   }
   ```
   - `message`는 기존과 같은 필드·문구 (기존 클라이언트는 그대로 동작), 나머지 필드는 #38에서 추가
+  - `code`(V15에서 추가): 같은 상태 코드 안에서 클라이언트가 대응을 나눠야 하는 오류에만 값이 있고 그 밖에는 `null`. 분기는 `message` 문구가 아니라 `code`로 ([인증](#인증-토큰-access--refresh))
   - 500은 내부 예외 메시지를 숨기고 공통 문구로 응답 → `traceId`로 서버 로그 확인
   - 503(모든 API 공통): DB가 제때 응답하지 못함 — 행 잠금 대기 초과(5초)·문장 실행 초과(30초)·커넥션 부족. 요청은 반영되지 않았으므로 잠시 후 다시 시도 ([운영 프로필 6장](operations.md))
 - 추적 헤더 `X-Trace-Id`
   - 모든 응답에 포함. 요청에 `X-Trace-Id`(영문·숫자·하이픈 8~64자)를 보내면 그 값을 그대로 사용, 없거나 형식이 다르면 서버가 생성
   - 같은 값이 에러 응답 `traceId`, 서버 로그 각 줄의 `[traceId]`에 들어감
-- CORS (#61): 브라우저에서 호출할 수 있는 출처는 서버 설정 `CORS_ALLOWED_ORIGINS`로 정함 (local·dev 기본 `http://localhost:5173`·`http://localhost:3000`). 자격 증명(쿠키)은 허용하지 않음 — 토큰은 `Authorization` 헤더로만
+- CORS (#61): 브라우저에서 호출할 수 있는 출처는 서버 설정 `CORS_ALLOWED_ORIGINS`로 정함 (local·dev 기본 `http://localhost:5173`·`http://localhost:3000`). 자격 증명(쿠키) 허용(V15) — Refresh Token 쿠키 때문이며, API 인증은 여전히 `Authorization` 헤더로만
   - 허용 요청 헤더: `Authorization`, `Content-Type`, `Idempotency-Key`, `X-Trace-Id` / JS에서 읽을 수 있는 응답 헤더: `X-Has-Next`, `X-Next-After-Id`, `X-Page`, `X-Size`, `X-Trace-Id`, `Idempotent-Replayed`
   - 허용하지 않은 출처는 403 (`Invalid CORS request`, 공통 오류 형식 아님) — 설정 근거는 [운영 프로필 7장](operations.md)
 - API 문서(Swagger UI): local·dev 프로필에서 `/swagger-ui.html`, 명세 `/v3/api-docs` (기본 설정·prod 프로필은 비활성 → 404, [운영 설정](operations.md))
@@ -50,7 +52,7 @@
   | 코드 | 상황 |
   |---|---|
   | 400 | 요청 값 검증 실패, JSON 형식 오류, 필수 쿼리 파라미터 누락, 경로·쿼리 파라미터 형식 오류 |
-  | 401 | 토큰이 없거나 유효하지 않음(만료·위조), 로그인 실패 |
+  | 401 | 토큰이 없거나 유효하지 않음(만료 `TOKEN_EXPIRED`·위조 `TOKEN_INVALID`), 로그인 실패, Refresh Token 거부(`REFRESH_TOKEN_*`) |
   | 403 | 권한 없음 (역할이 다르거나 본인 데이터가 아님) |
   | 404 | 대상(매장·메뉴·주문·정산)이 없음 |
   | 409 | 중복(아이디, 결제) 또는 현재 상태에서 할 수 없는 요청 (주문·정산 상태 전이) |
@@ -71,6 +73,8 @@
 |---|---|---|---|---|---|
 | 회원가입 | POST | `/api/users/signup` | X | - | 201 |
 | 로그인 | POST | `/api/users/login` | X | - | 200 |
+| Access Token 재발급 | POST | `/api/users/refresh` | 쿠키 | Refresh Token 쿠키 | 200 |
+| 로그아웃 | POST | `/api/users/logout` | 쿠키 | Refresh Token 쿠키 (없어도 204) | 204 |
 | 내 정보 조회 | GET | `/api/users/me` | O | 로그인 사용자 | 200 |
 | 매장 생성 | POST | `/api/stores` | O | OWNER | 201 |
 | 매장 목록 조회 | GET | `/api/stores?page=&size=` | X | - | 200 |
@@ -94,6 +98,8 @@
 | 내 결제 목록 조회 | GET | `/api/payments?page=&size=` | O | CUSTOMER (본인 결제) | 200 |
 | 결제 단건 조회 | GET | `/api/payments/{id}` | O | CUSTOMER (본인 결제) | 200 |
 | 내 알림 목록 | GET | `/api/notifications?page=&size=` | O | 로그인 사용자 | 200 |
+| 안 읽은 알림 개수 | GET | `/api/notifications/unread-count` | O | 로그인 사용자 | 200 |
+| 알림 읽음 처리 | PATCH | `/api/notifications/{id}/read` | O | 로그인 사용자 (본인 알림) | 204 |
 | 정산 목록 조회 (관리자) | GET | `/api/admin/settlements?date=&status=` | O | ADMIN | 200 |
 | 정산 확정 (관리자) | PATCH | `/api/admin/settlements/{id}/confirm` | O | ADMIN | 200 |
 | 정산 지급 (관리자) | PATCH | `/api/admin/settlements/{id}/pay` | O | ADMIN | 200 |
@@ -155,15 +161,67 @@ Request
 { "username": "user1", "password": "password123" }
 ```
 Response `200 OK`
-```json
-{ "accessToken": "eyJhbGciOi...", "tokenType": "Bearer" }
 ```
-- 토큰 유효 시간: 1시간
+Set-Cookie: refresh_token=...; Path=/api/users; Max-Age=1209600; Secure; HttpOnly; SameSite=Strict
+```
+```json
+{ "accessToken": "eyJhbGciOi...", "tokenType": "Bearer", "expiresIn": 900 }
+```
+- Access Token 유효 시간: 15분 (`expiresIn`, 초 — V15에서 추가. V16에서 1시간 → 15분)
+- Refresh Token(V15)은 본문에 없고 HttpOnly 쿠키로만 전달 (14일, JS에서 읽을 수 없음). 로그인할 때마다 별도의 로그인(계열)이 생김 → 기기별 로그아웃이 서로 영향 없음
+- 브라우저는 `fetch(..., { credentials: 'include' })`로 호출해야 쿠키가 저장됨 ([인증](#인증-토큰-access--refresh))
 
 | 코드 | 상황 |
 |---|---|
 | 400 | 아이디/비밀번호 누락 |
 | 401 | 아이디 또는 비밀번호 불일치 (어느 쪽이 틀렸는지 구분하지 않음) |
+
+### Access Token 재발급 `POST /api/users/refresh`
+Access Token 없이 호출. 요청 본문 없음 — `refresh_token` 쿠키로 인증 (브라우저는 `credentials: 'include'`)
+
+Response `200 OK` — 로그인 응답과 같은 형식 + 새 `refresh_token` 쿠키
+- 쓴 Refresh Token은 즉시 폐기되고 새 토큰으로 교체(rotation). 새 토큰의 수명은 재발급 시점부터 다시 14일, 단 로그인 후 30일(절대 만료, V16)을 넘지 않음 → 계속 써도 30일마다 재로그인
+- 새 Access Token의 `role`은 DB의 현재 역할 (로그인 뒤 역할이 바뀌었으면 반영)
+
+| 코드 | `code` | 상황 | 클라이언트 대응 |
+|---|---|---|---|
+| 401 | `REFRESH_TOKEN_INVALID` | 쿠키 없음, 모르는 값(만료 후 7일이 지나 정리된 토큰 포함) | 로그인 화면 |
+| 401 | `REFRESH_TOKEN_EXPIRED` | 14일 동안 재발급하지 않음, 또는 로그인 후 30일 지남 | 로그인 화면 |
+| 401 | `REFRESH_TOKEN_REVOKED` | 로그아웃·재사용 감지로 폐기된 토큰 | 로그인 화면 |
+| 401 | `REFRESH_TOKEN_REUSED` | 이미 재발급에 쓴 토큰이 다시 옴(탈취 의심) → **같은 로그인의 토큰 전체 폐기** | 로그인 화면 |
+| 403 | - | 허용하지 않은 출처(Origin)에서 호출 (CORS) | - |
+- 401이면 `Set-Cookie: refresh_token=; Max-Age=0`으로 브라우저 쿠키도 삭제
+
+### 로그아웃 `POST /api/users/logout`
+Access Token 없이 호출 가능 (Access가 만료된 상태에서도 로그아웃할 수 있도록). 요청 본문 없음
+
+Response `204 No Content` + `Set-Cookie: refresh_token=; Max-Age=0`
+- 이 쿠키가 속한 로그인(계열)의 Refresh Token을 모두 폐기. 다른 기기의 로그인은 유지
+- 멱등: 쿠키가 없거나 이미 로그아웃했어도 204
+- 이미 발급된 Access Token은 만료(최대 15분)까지 서버에서 거부하지 않음 → 클라이언트가 메모리에서 지움 (수명을 짧게 둔 이유, [프로젝트 구조 · 인증](architecture.md#인증-access--refresh-token-v15))
+
+### 인증 토큰 (Access · Refresh)
+| | Access Token | Refresh Token |
+|---|---|---|
+| 형식 | JWT (HS256, `sub`=아이디, `role`) | 무작위 256비트 (Base64URL 43자), DB에는 SHA-256 해시만 |
+| 수명 | 15분 | 14일 (재발급마다 다시 14일, 단 로그인 후 30일을 넘지 않음) |
+| 전달 | 응답 본문 `accessToken` → 요청 헤더 `Authorization: Bearer` | HttpOnly 쿠키 `refresh_token` (`Path=/api/users`, `SameSite=Strict`, `Secure`) |
+| 프론트 보관 | **메모리(JS 변수)** — localStorage에 두지 않음 (XSS로 읽힘) | 브라우저가 관리 (JS 접근 불가) |
+
+401 응답의 `code`로 대응을 나눔 (메시지 문구로 분기하지 않음)
+
+| `code` | 상황 | 대응 |
+|---|---|---|
+| `TOKEN_EXPIRED` | Access Token 만료 | `POST /api/users/refresh` 후 원래 요청 재시도 |
+| `TOKEN_INVALID` | 서명 불일치(위조)·형식 오류 — 만료됐더라도 서명이 틀리면 이쪽 | 재발급하지 말고 로그인 화면 |
+| `null` | `Authorization` 헤더 없음 | 로그인 화면 (새로고침 직후라면 먼저 재발급 시도) |
+| `REFRESH_TOKEN_*` | 재발급 실패 | 로그인 화면 |
+
+프론트엔드 연동 규칙
+- 새로고침하면 메모리의 Access Token이 사라지므로 앱 시작 시 `POST /api/users/refresh`를 한 번 호출해 로그인 상태를 복구
+- **재발급 요청은 한 번에 하나만**: 여러 요청이 동시에 `TOKEN_EXPIRED`를 받으면 재발급 1번을 공유(single-flight)하고 결과를 기다려 재시도. 같은 Refresh Token으로 두 번 재발급하면 두 번째가 재사용(`REFRESH_TOKEN_REUSED`)으로 처리되어 로그인 전체가 끊김 (탭 여러 개도 같은 쿠키를 쓰므로 BroadcastChannel 등으로 공유하거나, 실패 시 로그인 화면)
+- `login`·`refresh`·`logout`은 `credentials: 'include'`, 그 밖의 API는 쿠키가 필요 없음 (Refresh 쿠키는 `Path=/api/users`라 다른 API에 실리지 않음)
+- 프론트엔드와 API를 다른 사이트(등록 도메인이 다름)에 배포하면 `SameSite=Strict` 쿠키가 전송되지 않음 → 서버 `REFRESH_TOKEN_COOKIE_SAME_SITE=None` 필요 ([운영 프로필 7장](operations.md))
 
 ### 내 정보 조회 `GET /api/users/me`
 Response `200 OK` (`MyInfoResponse`, #62)
@@ -859,16 +917,40 @@ Response `200 OK`
     "message": "주문 #10 결제가 완료되었습니다. (36,000원)",
     "createdAt": "2026-11-14T12:00:01",
     "sendStatus": "SENT",
-    "sentAt": "2026-11-14T12:00:05"
+    "sentAt": "2026-11-14T12:00:05",
+    "read": true,
+    "readAt": "2026-11-14T12:03:00"
   }
 ]
 ```
 - `sendStatus`: `PENDING`(발송 대기·재시도 중) / `SENT` / `FAILED`(재시도 한도 초과) / `SKIPPED`(발송 기능 도입 전 기록)
+- `read`·`readAt`(V15): 읽음 여부·처음 읽은 시각. 안 읽었으면 `false`·`null` (V15 이전 알림은 모두 안 읽음). 읽음과 발송 상태는 별개
 
 | 코드 | 상황 |
 |---|---|
 | 400 | `page`·`size` 범위 오류 |
 | 401 | 토큰 없음, 삭제된 회원 |
+
+### 안 읽은 알림 개수 `GET /api/notifications/unread-count`
+Response `200 OK`
+```json
+{ "unreadCount": 3 }
+```
+- 본인 알림 중 `readAt`이 없는 것만 (알림 배지용)
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음, 삭제된 회원 |
+
+### 알림 읽음 처리 `PATCH /api/notifications/{id}/read`
+Response `204 No Content` — 요청 본문 없음
+- 멱등: 이미 읽은 알림도 204이고 `readAt`은 처음 읽은 시각 그대로 (재시도·중복 클릭에 오류 없음)
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음, 삭제된 회원 |
+| 403 | 다른 사람의 알림 |
+| 404 | 알림이 없음 |
 
 ---
 

@@ -2,14 +2,12 @@ package com.sparta.springdeliverymini.service;
 
 import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.LoginRequest;
-import com.sparta.springdeliverymini.dto.LoginResponse;
 import com.sparta.springdeliverymini.dto.MyInfoResponse;
 import com.sparta.springdeliverymini.dto.SignupRequest;
 import com.sparta.springdeliverymini.dto.UserResponse;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.exception.ApiException;
-import com.sparta.springdeliverymini.jwt.JwtProvider;
 import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -28,7 +26,7 @@ public class UserService {
     private final UserRepository userRepository;
     private final StoreRepository storeRepository; // 내 정보 조회의 OWNER 매장 id 목록 (#62)
     private final PasswordEncoder passwordEncoder; // SecurityConfig에 등록한 BCryptPasswordEncoder
-    private final JwtProvider jwtProvider;
+    private final AuthTokenService authTokenService; // 로그인 성공 시 Access·Refresh Token 발급
 
     @Transactional
     public UserResponse signup(SignupRequest request) {
@@ -85,7 +83,9 @@ public class UserService {
         return MyInfoResponse.of(user, storeIds);
     }
 
-    public LoginResponse login(LoginRequest request) {
+    // 쓰기 트랜잭션: Refresh Token 행을 저장함 (클래스 기본값은 읽기 전용)
+    @Transactional
+    public IssuedTokens login(LoginRequest request) {
 
         // 1. 아이디로 회원 조회
         // 아이디/비밀번호 중 어느 쪽이 틀렸는지 노출하지 않도록 같은 메시지 사용 → 401
@@ -99,9 +99,10 @@ public class UserService {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "아이디 또는 비밀번호가 올바르지 않습니다.");
         }
 
-        // 3. JWT 발급
-        // 토큰에 username(subject)과 role을 담음
-        // 이후 요청에서는 JwtAuthenticationFilter가 이 토큰으로 사용자와 권한을 확인
-        return LoginResponse.bearer(jwtProvider.createToken(user.getUsername(), user.getRole()));
+        // 3. 토큰 발급
+        // Access Token(JWT): username(subject)과 role을 담음 → 이후 요청에서 JwtAuthenticationFilter가 사용자와 권한을 확인
+        // Refresh Token: 새 계열(로그인 1번)로 DB에 해시 저장, 원문은 컨트롤러가 HttpOnly 쿠키로 내려보냄
+        // 로그인할 때마다 계열이 새로 생김 → 기기·브라우저별 로그인이 서로 영향 없음 (로그아웃도 그 계열만)
+        return authTokenService.issue(user);
     }
 }

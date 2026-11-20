@@ -2,11 +2,14 @@ package com.sparta.springdeliverymini.controller;
 
 import com.sparta.springdeliverymini.dto.NotificationResponse;
 import com.sparta.springdeliverymini.dto.PageQuery;
+import com.sparta.springdeliverymini.dto.UnreadNotificationCountResponse;
 import com.sparta.springdeliverymini.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -29,5 +32,18 @@ public class NotificationController {
             Authentication authentication) {
         return SliceResponse.of(
                 notificationService.getMyNotifications(authentication.getName(), PageQuery.of(page, size)));
+    }
+
+    // 안 읽은 알림 개수 (V15) — 알림 배지용
+    @GetMapping("/unread-count")
+    public UnreadNotificationCountResponse getMyUnreadCount(Authentication authentication) {
+        return new UnreadNotificationCountResponse(notificationService.countMyUnread(authentication.getName()));
+    }
+
+    // 읽음 처리 (V15) — 본인 알림만, 이미 읽은 알림도 204 (멱등: 재시도·중복 클릭에 오류를 내지 않음)
+    @PatchMapping("/{id}/read")
+    public ResponseEntity<Void> markAsRead(@PathVariable Long id, Authentication authentication) {
+        notificationService.markAsRead(authentication.getName(), id);
+        return ResponseEntity.noContent().build();
     }
 }

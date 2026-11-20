@@ -43,6 +43,29 @@ public class NotificationService {
                 .map(NotificationResponse::from);
     }
 
+    // 읽음 처리 (V15) — 본인 알림만, 이미 읽었으면 아무것도 바꾸지 않고 성공 (멱등, 처음 읽은 시각 유지)
+    // 없는 알림 404, 다른 사람의 알림 403 (결제·주문 단건 조회와 같은 기준)
+    @Transactional
+    public void markAsRead(String username, Long notificationId) {
+        User currentUser = userRepository.findByUsername(username)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "존재하지 않는 회원입니다."));
+        Notification notification = notificationRepository.findById(notificationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "알림을 찾을 수 없습니다."));
+        if (!notification.isRecipient(currentUser.getId())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "본인의 알림만 읽음 처리할 수 있습니다.");
+        }
+        // read_at만 바꾸는 조건부 UPDATE — 동시에 여러 번 와도 처음 한 번만 기록됨 (Notification.readAt 주석)
+        notificationRepository.markReadIfUnread(notificationId, LocalDateTime.now(clock));
+    }
+
+    // 안 읽은 알림 개수 (V15) — 본인 알림만
+    @Transactional(readOnly = true)
+    public long countMyUnread(String username) {
+        User currentUser = userRepository.findByUsername(username)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "존재하지 않는 회원입니다."));
+        return notificationRepository.countByRecipientUserIdAndReadAtIsNull(currentUser.getId());
+    }
+
     // 처음 처리한 이벤트면 알림을 저장하고 true, 이미 처리한 이벤트면 false
     @Transactional
     public boolean handle(DeliveryEventMessage event) {

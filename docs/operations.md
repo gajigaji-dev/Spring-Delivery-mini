@@ -109,7 +109,7 @@ docker run -p 8080:8080 \
 |---|---|---|
 | 허용 출처 | `cors.allowed-origins` ← `CORS_ALLOWED_ORIGINS`(쉼표 구분). 기본(application.yml) 빈 목록, local·dev 기본 `http://localhost:5173,http://localhost:3000`, prod는 기본값 없이 필수 | 출처를 코드가 아닌 배포 설정으로 관리. prod에서 빠뜨리면 `ProdProfileGuard`가 기동을 막음 |
 | 출처 형식 검사 | `scheme://host[:port]`만 허용, 와일드카드(`*`)·경로·끝 슬래시는 바인딩 단계에서 기동 실패 | 와일드카드는 어느 사이트든 사용자의 브라우저로 API를 호출하게 함. 끝 슬래시는 브라우저 `Origin` 헤더와 절대 일치하지 않아 조용히 모두 막히므로 기동 시점에 드러나게 함 |
-| 자격 증명 | `allowCredentials: false` | 인증은 쿠키가 아닌 `Authorization` 헤더(JWT)로만 함 → 쿠키를 보낼 이유가 없음 |
+| 자격 증명 | `allowCredentials: true` (V15, #61에서는 `false`) | Refresh Token을 HttpOnly 쿠키로 주고받기 위해. API 인증은 여전히 `Authorization` 헤더(JWT)이고 쿠키는 `refresh_token`(`Path=/api/users`) 하나뿐. 허용 출처 목록이 곧 재발급·로그아웃 CSRF 방어의 한 축이 됨 ([프로젝트 구조 · 인증](architecture.md#인증-access--refresh-token-v15)) |
 | 허용 메서드 | `GET, POST, PUT, PATCH, DELETE, OPTIONS` | 컨트롤러에서 쓰는 메서드 전체 (권한은 기존 URL 규칙이 그대로 판단) |
 | 허용 요청 헤더 | `Authorization`, `Content-Type`, `Idempotency-Key`, `X-Trace-Id` | JWT, JSON 본문, 결제 멱등성 키(#41), 클라이언트가 정하는 추적 id(#38). 목록에 없는 헤더는 Preflight 403 |
 | 노출 응답 헤더 | `X-Has-Next`, `X-Next-After-Id`, `X-Page`, `X-Size`, `X-Trace-Id`, `Idempotent-Replayed` | 브라우저 JS는 기본 헤더 외에는 노출 목록에 있는 것만 읽을 수 있음 (목록 페이징·오류 추적·멱등 재전송 여부) |
@@ -120,6 +120,14 @@ docker run -p 8080:8080 \
 - 허용하지 않은 출처: Preflight·실제 요청 모두 `CorsFilter`가 403(`Invalid CORS request`)으로 끝냄 → 토큰이 있어도 컨트롤러에 닿지 않음
 - `Origin` 헤더가 없는 요청(curl·서버 간 호출·헬스체크)과 같은 출처 요청은 CORS 대상이 아니라 기존 동작 그대로 — CORS는 브라우저 보호 장치이지 API 접근 제어가 아님 (접근 제어는 JWT·URL 규칙)
 - 관리 포트(8081)에도 같은 필터 체인이 적용되지만 브라우저에서 호출할 일이 없음
+
+Refresh Token 쿠키 (V15) — `auth.refresh-token.*` (`config.RefreshTokenProperties`)
+
+| 환경변수 | 기본 | 설명 |
+|---|---|---|
+| `REFRESH_TOKEN_COOKIE_SECURE` | `true` | HTTPS에서만 전송. Chrome·Firefox는 `http://localhost`도 보안 출처로 취급해 로컬 개발에서도 그대로 동작 (Safari 등에서 로컬 쿠키가 저장되지 않으면 local에서만 `false`) |
+| `REFRESH_TOKEN_COOKIE_SAME_SITE` | `Strict` | 프론트·API가 같은 사이트(등록 도메인 같음, 포트 무관 — `localhost:5173` ↔ `localhost:8090`, `app.example.com` ↔ `api.example.com`)면 `Strict`. 다른 사이트면 `None`(+ `Secure` 필수, 아니면 기동 실패) — 이때 CSRF 방어는 CORS 허용 출처 검사에만 의존 |
+- 수명(`ttl` 14일, 로그인 후 절대 만료 `absolute-ttl` 30일 — V16)과 Access 수명(`jwt.expiration-ms` 15분)은 application.yml 값. 프론트엔드 배포 구조가 정해지면 `SameSite` 값을 확정
 
 변경 방법
 - 출처 추가: 배포 환경의 `CORS_ALLOWED_ORIGINS`에 쉼표로 추가 후 재시작 (예: `https://app.example.com,https://admin.example.com`)

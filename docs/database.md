@@ -23,6 +23,8 @@
 | `V12__add_order_list_indexes.sql` | 주문 목록 페이지 조회용 인덱스: `orders (user_id, id)` 추가, `orders (store_id, id)` 추가 후 역할이 겹치는 `idx_orders_store_id (store_id)` 제거. 행은 변경 없음 (근거: [성능 개선 4장](performance.md#4-인덱스-근거-explain)) |
 | `V13__add_outbox_events_and_notifications.sql` | Kafka Transactional Outbox (#42): `outbox_events`(발행 대기 이벤트: `event_id` UNIQUE, 상태·종류·발행 시각 CHECK, `PENDING` 부분 인덱스), `consumed_events`(Consumer 처리 기록, `event_id` PK), `notifications`(알림 기록, `(event_id, recipient_user_id)` UNIQUE) 추가. 업무 테이블 FK 없음, 기존 행 변경 없음 |
 | `V14__add_idempotency_keys_and_notification_dispatch.sql` | Redis·Kafka 후속 개선: `payment_idempotency_keys`(DB 결제 멱등성 기록, `(user_id, idempotency_key)`·`payment_id` UNIQUE) 추가, `notifications`에 발송 상태 컬럼 추가(기존 알림은 `SKIPPED` — 뒤늦게 발송되지 않음), Outbox FAILED·순서 확인·정리용 인덱스와 `consumed_events`·알림 조회 인덱스 추가. 기존 결제·정산 행 변경 없음 |
+| `V15__add_notification_read_at_and_refresh_tokens.sql` | 알림 읽음·Refresh Token: `notifications.read_at`(NULL 허용, 기존 알림은 안 읽음) + 안 읽은 알림 부분 인덱스, `refresh_tokens`(해시 `token_hash` UNIQUE, FK → users, 폐기 시각 ⇔ 사유 CHECK, 유효 행 계열 부분 인덱스) 추가. 기존 행 변경 없음 |
+| `V16__add_refresh_token_family_expiry.sql` | Refresh Token 후속: `refresh_tokens.family_expires_at`(계열 절대 만료, NOT NULL, `expires_at <= family_expires_at` CHECK) 추가 — 기존 계열은 첫 발급 + 30일로 백필하되 이미 더 늦게 만료되는 토큰이 있으면 그 시각까지. 정리용 `idx_refresh_tokens_expires_at (expires_at)` 추가 |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
@@ -30,7 +32,7 @@
 - **타임아웃**: 마이그레이션도 애플리케이션과 같은 커넥션 풀로 실행되어 `lock_timeout`(5초)·`statement_timeout`(30초)이 적용됨
   - 큰 테이블의 인덱스 생성·백필처럼 오래 걸리는 파일은 맨 위에 `SET LOCAL statement_timeout = 0;` (그 마이그레이션 트랜잭션에만 적용)
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V14__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V17__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -262,8 +264,11 @@
 | next_send_at | timestamp(6) | NOT NULL | 이 시각 이후 발송 시도 (V14) |
 | sent_at | timestamp(6) | `SENT`일 때만 NOT NULL (CHECK) | 발송 시각 (V14) |
 | last_send_error | varchar(500) | | 마지막 발송 실패 원인 (V14) |
+| read_at | timestamp(6) | NULL 허용 | 처음 읽은 시각, NULL = 안 읽음 (V15, 기존 알림은 NULL) |
 
-> 내용(받는 사람·문구)은 생성 후 바꾸지 않고 발송 상태만 UPDATE. 인덱스(V14): `idx_notifications_send_pending (next_send_at, id) WHERE send_status = 'PENDING'`(발송 대상), `idx_notifications_recipient (recipient_user_id, id)`(내 알림 목록)
+> 내용(받는 사람·문구)은 생성 후 바꾸지 않고 발송 상태·읽음 시각만 UPDATE. 인덱스(V14): `idx_notifications_send_pending (next_send_at, id) WHERE send_status = 'PENDING'`(발송 대상), `idx_notifications_recipient (recipient_user_id, id)`(내 알림 목록) / (V15) `idx_notifications_recipient_unread (recipient_user_id) WHERE read_at IS NULL`(안 읽은 개수 — 읽은 알림은 인덱스에 들어가지 않음)
+> `read_at`은 `UPDATE ... SET read_at = ? WHERE id = ? AND read_at IS NULL`로만 기록(엔티티에서는 `insertable·updatable = false`) — 엔티티 저장은 모든 컬럼을 UPDATE하므로, 발송기의 상태 변경과 읽음 처리가 서로의 컬럼을 덮어쓰지 않도록 분리. 조건 덕분에 여러 번 읽음 처리해도 처음 시각 유지
+> 보관 정리(`maintenance.RetentionCleaner`)는 알림을 지우지 않으므로 읽음 처리와 충돌 없음 (읽은 알림도 계속 남음)
 > 세 테이블 모두 업무 테이블에 FK를 두지 않음 — 이벤트는 발생 시점의 독립 기록이라 주문·회원이 지워져도 남아야 하고, FK가 업무 데이터 삭제를 막지 않도록
 
 ### payment_idempotency_keys — DB 결제 멱등성 기록 (V14)
@@ -278,6 +283,24 @@
 
 > 결제와 같은 트랜잭션에 INSERT(키가 있는 결제만) → Redis 기록이 만료·유실되거나 Redis가 내려가 있어도 같은 키 재시도에 처음 응답을 재전송. 응답 본문은 저장하지 않고 결제 행의 불변 값으로 다시 만듦
 > 생성 후 변경 없음, 보관 기간(30일) 뒤 삭제 — `idx_payment_idempotency_keys_created_at (created_at)`. 동작은 [프로젝트 구조 · Redis](architecture.md#redis-41)
+
+### refresh_tokens — Refresh Token (V15)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| user_id | bigint | NOT NULL, FK → users.id | 토큰 주인 |
+| token_hash | varchar(64) | NOT NULL, **UNIQUE** | 토큰 원문의 SHA-256(hex) — 원문은 저장하지 않음 |
+| family_id | uuid | NOT NULL | 로그인 1번 = 계열 1개. 재발급마다 같은 계열에 새 행 |
+| created_at | timestamp(6) | NOT NULL | 발급 시각 |
+| expires_at | timestamp(6) | NOT NULL, `> created_at`, `<= family_expires_at` | 만료 시각 = min(발급 + 14일, 계열 절대 만료) |
+| family_expires_at | timestamp(6) | NOT NULL | 계열 절대 만료 = 로그인 시각 + 30일, 같은 계열은 같은 값 (V16) |
+| revoked_at | timestamp(6) | 사유와 함께 NULL / NOT NULL (CHECK) | 폐기 시각 |
+| revoke_reason | varchar(20) | `ROTATED` / `LOGOUT` / `REUSE_DETECTED` | 재발급에 쓰임 / 로그아웃 / 같은 계열의 재사용 감지로 함께 폐기 |
+
+> 해시·만료 시각은 생성 후 바뀌지 않고, 폐기 상태만 한 번 바뀜(다시 살리는 경로 없음). `ROTATED` 행이 다시 쓰이면 재사용으로 보고 계열 전체를 `REUSE_DETECTED`로 폐기
+> 인덱스: `token_hash` UNIQUE(조회), `idx_refresh_tokens_family_active (family_id) WHERE revoked_at IS NULL`(계열 폐기 대상), `idx_refresh_tokens_expires_at (expires_at)`(보관 정리, V16). 재발급 동시성은 `token_hash`로 `SELECT ... FOR UPDATE` → 같은 토큰의 요청은 한 줄로 처리
+> Redis가 아니라 DB에 둔 이유·동작은 [프로젝트 구조 · 인증](architecture.md#인증-access--refresh-token-v15)
+> 보관 정리(V16): `RetentionCleaner`가 만료 후 7일 지난 행 삭제 (`retention.refresh-tokens`). 만료 전 행은 폐기됐어도 남김 — 재사용 감지 근거
 
 ## 결제 연관관계: `@OneToOne` vs `@ManyToOne`
 

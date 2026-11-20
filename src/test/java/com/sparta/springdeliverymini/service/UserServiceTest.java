@@ -5,7 +5,6 @@ import com.sparta.springdeliverymini.dto.SignupRequest;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.exception.ApiException;
-import com.sparta.springdeliverymini.jwt.JwtProvider;
 import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.junit.jupiter.api.Test;
@@ -32,7 +31,7 @@ class UserServiceTest {
     @Mock private UserRepository userRepository;
     @Mock private StoreRepository storeRepository;
     @Mock private PasswordEncoder passwordEncoder;
-    @Mock private JwtProvider jwtProvider;
+    @Mock private AuthTokenService authTokenService;
 
     @InjectMocks
     private UserService userService;

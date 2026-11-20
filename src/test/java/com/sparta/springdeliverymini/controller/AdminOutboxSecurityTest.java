@@ -123,7 +123,7 @@ class AdminOutboxSecurityTest {
     void 내_알림_목록은_로그인한_모든_역할이_조회할_수_있다() throws Exception {
         NotificationResponse response = new NotificationResponse(1L, OutboxEventType.PAYMENT_COMPLETED, 10L,
                 "주문 #10 결제가 완료되었습니다. (10,000원)", LocalDateTime.of(2026, 11, 14, 12, 0),
-                NotificationSendStatus.SENT, LocalDateTime.of(2026, 11, 14, 12, 0, 5));
+                NotificationSendStatus.SENT, LocalDateTime.of(2026, 11, 14, 12, 0, 5), false, null);
         given(notificationService.getMyNotifications("user1", PageQuery.of(0, 20)))
                 .willReturn(new SliceImpl<>(List.of(response)));
 

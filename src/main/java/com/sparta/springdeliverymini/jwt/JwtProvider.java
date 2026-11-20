@@ -23,6 +23,11 @@ public class JwtProvider {
         this.expirationMs = expirationMs;
     }
 
+    // 로그인·재발급 응답의 expiresIn(초) — 클라이언트가 만료 직전에 미리 재발급할 수 있도록
+    public long getExpirationSeconds() {
+        return expirationMs / 1000;
+    }
+
     public String createToken(String username, Role role) {
         Date now = new Date();
         return Jwts.builder()
