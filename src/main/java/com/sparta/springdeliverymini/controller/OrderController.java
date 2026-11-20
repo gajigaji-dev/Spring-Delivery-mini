@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.controller;
 import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.KeysetQuery;
 import com.sparta.springdeliverymini.dto.OrderCreateRequest;
+import com.sparta.springdeliverymini.dto.OrderDetailResponse;
 import com.sparta.springdeliverymini.dto.OrderResponse;
 import com.sparta.springdeliverymini.dto.OrderStatusUpdateRequest;
 import com.sparta.springdeliverymini.dto.PageQuery;
@@ -61,6 +62,13 @@ public class OrderController {
         return SliceResponse.of(
                 orderService.getOrders(authentication.getName(), PageQuery.of(pageNumber, size)),
                 OrderResponse::id);
+    }
+
+    // 주문 단건 조회 (#62) — CUSTOMER·OWNER만(SecurityConfig), 본인 주문·본인 매장 주문인지는 Service에서 DB 기준으로 확인
+    // 목록 응답 필드 + 결제 정보(결제 전이면 null)
+    @GetMapping("/orders/{id}")
+    public OrderDetailResponse getOrder(@PathVariable Long id, Authentication authentication) {
+        return orderService.getOrder(id, authentication.getName());
     }
 
     // Patch: 주문 삭제가 아닌 주문요청 -> 주문취소로 상태 변경 위함

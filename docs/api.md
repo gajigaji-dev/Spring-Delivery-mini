@@ -71,7 +71,7 @@
 |---|---|---|---|---|---|
 | 회원가입 | POST | `/api/users/signup` | X | - | 201 |
 | 로그인 | POST | `/api/users/login` | X | - | 200 |
-| 내 토큰 정보 조회 | GET | `/api/users/me` | O | 로그인 사용자 | 200 |
+| 내 정보 조회 | GET | `/api/users/me` | O | 로그인 사용자 | 200 |
 | 매장 생성 | POST | `/api/stores` | O | OWNER | 201 |
 | 매장 목록 조회 | GET | `/api/stores?page=&size=` | X | - | 200 |
 | 매장 단건 조회 | GET | `/api/stores/{id}` | X | - | 200 |
@@ -87,9 +87,11 @@
 | 메뉴 삭제 | DELETE | `/api/menus/{id}` | O | OWNER (본인 매장 메뉴) | 204 |
 | 주문 생성 | POST | `/api/orders` | O | CUSTOMER | 201 |
 | 주문 목록 조회 | GET | `/api/orders?page=&size=` / `?afterId=&size=` | O | CUSTOMER / OWNER | 200 |
+| 주문 단건 조회 (결제 정보 포함) | GET | `/api/orders/{id}` | O | CUSTOMER (본인 주문) / OWNER (본인 매장 주문) | 200 |
 | 주문 취소 (결제 취소 포함) | PATCH | `/api/orders/{id}/cancel` | O | CUSTOMER (본인 주문) | 204 |
 | 주문 상태 변경 | PATCH | `/api/orders/{id}/status` | O | OWNER (본인 매장 주문) | 204 |
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
+| 내 결제 목록 조회 | GET | `/api/payments?page=&size=` | O | CUSTOMER (본인 결제) | 200 |
 | 결제 단건 조회 | GET | `/api/payments/{id}` | O | CUSTOMER (본인 결제) | 200 |
 | 내 알림 목록 | GET | `/api/notifications?page=&size=` | O | 로그인 사용자 | 200 |
 | 정산 목록 조회 (관리자) | GET | `/api/admin/settlements?date=&status=` | O | ADMIN | 200 |
@@ -163,16 +165,19 @@ Response `200 OK`
 | 400 | 아이디/비밀번호 누락 |
 | 401 | 아이디 또는 비밀번호 불일치 (어느 쪽이 틀렸는지 구분하지 않음) |
 
-### 내 토큰 정보 조회 `GET /api/users/me`
-Response `200 OK`
+### 내 정보 조회 `GET /api/users/me`
+Response `200 OK` (`MyInfoResponse`, #62)
 ```json
-{ "username": "user1", "authorities": ["ROLE_CUSTOMER"] }
+{ "id": 3, "username": "owner1", "role": "OWNER", "createdAt": "2026-11-18T10:00:00", "storeIds": [2, 5] }
 ```
-- 토큰 인증 확인용. DB를 조회하지 않고 **토큰에 담긴** 아이디·역할을 그대로 돌려줌 → 역할이 DB에서 바뀌어도 토큰이 만료되기 전까지는 이전 역할이 보임 (실제 권한 판단은 각 Service가 DB 기준으로 다시 확인)
+- 토큰의 아이디로 **DB의 현재 회원**을 조회해 응답 → 토큰 발급 뒤 역할이 바뀌었으면 `role`은 바뀐 값
+- `storeIds`: OWNER의 매장 id (id 오름차순). CUSTOMER·ADMIN은 빈 배열 `[]` (null 아님)
+- 별도 표시 이름(닉네임) 컬럼이 없어 화면 표시는 `username` 사용, 비밀번호는 포함하지 않음
+- 변경 전(#62 이전) 응답 `{ "username", "authorities": ["ROLE_..."] }`는 토큰 값을 그대로 돌려주던 형식 → 제거
 
 | 코드 | 상황 |
 |---|---|
-| 401 | 토큰 없음·만료·위조 |
+| 401 | 토큰 없음·만료·위조, 회원이 삭제됨 |
 
 ---
 
@@ -482,6 +487,30 @@ Response `200 OK` — 주문 생성 응답 형식의 배열 ([페이지네이션
 | 400 | `page`·`size`·`afterId` 범위 초과·형식 오류, `page`와 `afterId`를 함께 보냄 |
 | 401 | 토큰 없음 |
 
+### 주문 단건 조회 `GET /api/orders/{id}`
+Response `200 OK` (`OrderDetailResponse`, #62) — 주문 생성 응답 필드 + `payment`
+```json
+{
+  "id": 12, "storeId": 2, "storeName": "치킨집",
+  "items": [{ "menuId": 1, "menuName": "치킨", "unitPrice": 18000, "quantity": 2, "linePrice": 36000 }],
+  "totalPrice": 36000, "deliveryAddress": "서울시", "status": "PAYMENT_COMPLETED",
+  "createdAt": "2026-11-19T12:00:00", "updatedAt": "2026-11-19T12:01:00", "deliveredAt": null,
+  "payment": {
+    "id": 7, "amount": 36000, "paymentMethod": "CARD", "status": "COMPLETED",
+    "paidAt": "2026-11-19T12:01:00", "cancelledAt": null, "refundedAt": null
+  }
+}
+```
+- CUSTOMER: 본인 주문만 / OWNER: 본인 매장에 들어온 주문만 — 역할·소유권은 토큰이 아니라 DB 기준
+- `payment`: 결제 전 주문(결제 없이 취소된 주문 포함)은 `null`. 수수료·정산액은 포함하지 않음
+- 주문·매장·항목은 fetch join 1번 + 결제 1번 → 항목 수와 무관하게 쿼리 3번(회원 포함)
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음, 회원이 삭제됨 |
+| 403 | ADMIN이 요청, 본인 주문·본인 매장 주문이 아님 |
+| 404 | 주문 없음 |
+
 ### 주문 취소 `PATCH /api/orders/{id}/cancel`
 Response `204 No Content` — 주문 상태를 `ORDER_CANCELLED`로 변경
 - 주문수락 전(`ORDER_REQUEST`, `PAYMENT_COMPLETED`)에만 가능
@@ -561,6 +590,17 @@ Idempotency-Key: 3f6c1e0a-8d2b-4c7e-9a51-2b7d0c9e4f13
 | 409 | 주문요청 상태가 아님 (이미 결제됨·취소됨), 중복 결제, 같은 `Idempotency-Key`의 결제가 처리 중이거나 같은 키로 다른 주문이 동시에 결제됨 |
 | 422 | 같은 `Idempotency-Key`로 다른 결제 요청 (`orderId`·`paymentMethod`가 처음과 다름) |
 | 503 | `Idempotency-Key`가 있는데 Redis 장애·타임아웃이고, 그 키로 완료된 결제가 없음 (결제하지 않음) |
+
+### 내 결제 목록 조회 `GET /api/payments`
+Response `200 OK` — 결제 단건 조회와 같은 형식(`PaymentResponse`)의 배열 ([페이지네이션](#공통-사항) `?page=&size=`, id 오름차순, #62)
+- 본인 주문의 결제만 (결제자 = 주문자). 취소·환불된 결제도 포함하며 각 항목은 현재 상태
+- 다음 페이지 여부는 `X-Has-Next` 헤더. 인덱스 근거는 [performance.md 10장](performance.md#10-내-결제-목록-62)
+
+| 코드 | 상황 |
+|---|---|
+| 400 | `page`·`size` 범위 초과 |
+| 401 | 토큰 없음, 회원이 삭제됨 |
+| 403 | OWNER·ADMIN이 요청 (토큰 역할이 CUSTOMER여도 DB 역할이 다르면 403) |
 
 ### 결제 단건 조회 `GET /api/payments/{id}`
 결제의 **현재** 상태 조회 (#53). 결제 응답을 받지 못했을 때(타임아웃 등) 같은 `Idempotency-Key`로 재전송하기 전에 결과를 확인하는 용도

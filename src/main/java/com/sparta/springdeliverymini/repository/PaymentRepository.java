@@ -2,6 +2,9 @@ package com.sparta.springdeliverymini.repository;
 
 import com.sparta.springdeliverymini.entity.Payment;
 import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -24,6 +27,13 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     // 소유권 확인(order.user.id)도 추가 쿼리 없이 처리됨
     @Query("SELECT p FROM Payment p JOIN FETCH p.order WHERE p.id = :id")
     Optional<Payment> findWithOrderById(@Param("id") Long id);
+
+    // 내 결제 목록 (#62) — 주문자 기준(결제자 = 주문자), id 오름차순 페이지 (PageQuery.toPageable())
+    // 응답에 주문 id·주문 상태가 들어가므로 주문을 같은 쿼리에서 함께 조회(@EntityGraph) → 결제마다 주문을 따로 조회하지 않음
+    // 실행 계획: idx_orders_user_id_id(V12)로 본인 주문 → payments.order_id UNIQUE 인덱스로 결제 → id 정렬
+    //   결제 테이블에 user_id가 없어 새 인덱스로 정렬까지 해결할 수 없음 (근거는 docs/performance.md 10장)
+    @EntityGraph(attributePaths = "order")
+    Slice<Payment> findAllByOrderUserId(Long userId, Pageable pageable);
 
     // 환불용 조회 — 행 잠금(SELECT ... FOR UPDATE)
     // 같은 결제를 동시에 환불하면 뒤 요청은 앞 요청이 커밋될 때까지 기다린 뒤 REFUNDED를 읽고 409 → 환불은 한 번만 성공

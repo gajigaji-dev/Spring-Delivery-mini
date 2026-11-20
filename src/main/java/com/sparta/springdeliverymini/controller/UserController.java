@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.controller;
 import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.LoginRequest;
 import com.sparta.springdeliverymini.dto.LoginResponse;
+import com.sparta.springdeliverymini.dto.MyInfoResponse;
 import com.sparta.springdeliverymini.dto.SignupRequest;
 import com.sparta.springdeliverymini.dto.UserResponse;
 import com.sparta.springdeliverymini.service.UserService;
@@ -15,8 +16,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/users")
@@ -41,12 +40,10 @@ public class UserController {
         return ResponseEntity.ok(userService.login(request));
     }
 
-    // 로그인이 필요한 요청 예시 — Authorization: Bearer {토큰} 헤더 필요
+    // 내 정보 조회 (#62) — 로그인 사용자 누구나, 응답은 토큰 값이 아니라 DB 기준
+    // (이전에는 토큰의 username·authorities를 Map으로 그대로 돌려줌 → 역할 변경이 반영되지 않았음)
     @GetMapping("/me")
-    public ResponseEntity<Map<String, Object>> me(Authentication authentication) {
-        return ResponseEntity.ok(Map.of(
-                "username", authentication.getName(),
-                "authorities", authentication.getAuthorities().stream().map(Object::toString).toList()
-        ));
+    public MyInfoResponse me(Authentication authentication) {
+        return userService.getMyInfo(authentication.getName());
     }
 }
