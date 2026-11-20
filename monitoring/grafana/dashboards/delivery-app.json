@@ -1,45 +1,178 @@
 {
   "uid": "delivery-app",
   "title": "Delivery App",
+  "description": "HTTP·DB 기본 지표 + Outbox·Kafka·알림·Redis·스케줄러 (#67). 빨간 점선 = monitoring/alerts.yml 규칙 임계값",
   "schemaVersion": 39,
   "time": { "from": "now-1h", "to": "now" },
   "refresh": "30s",
   "panels": [
+    { "id": 100, "type": "row", "title": "알림 규칙 상태", "collapsed": false, "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 10, "type": "table", "title": "발생·대기 중인 알림 (Prometheus /alerts와 같음, 비어 있으면 정상)",
+      "gridPos": { "x": 0, "y": 1, "w": 24, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "ALERTS", "instant": true, "format": "table" }],
+      "transformations": [
+        { "id": "organize", "options": {
+          "excludeByName": { "Time": true, "Value": true, "__name__": true, "instance": true, "job": true },
+          "indexByName": { "alertname": 0, "alertstate": 1, "severity": 2 },
+          "renameByName": { "alertname": "규칙", "alertstate": "상태", "severity": "심각도" }
+        } }
+      ]
+    },
+
+    { "id": 101, "type": "row", "title": "HTTP · DB", "collapsed": false, "gridPos": { "x": 0, "y": 7, "w": 24, "h": 1 }, "panels": [] },
     {
       "id": 1, "type": "timeseries", "title": "HTTP 요청 수 (초당, URI·상태별)",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{ "refId": "A", "expr": "sum by (uri, status) (rate(http_server_requests_seconds_count{uri!~\"/actuator.*\"}[1m]))", "legendFormat": "{{status}} {{uri}}" }]
     },
     {
       "id": 2, "type": "timeseries", "title": "HTTP 5xx 비율",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "percentunit" } },
       "targets": [{ "refId": "A", "expr": "sum(rate(http_server_requests_seconds_count{status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count[5m])), 1e-9)", "legendFormat": "5xx" }]
     },
     {
       "id": 3, "type": "timeseries", "title": "평균 응답 시간 (URI별)",
-      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "s" } },
       "targets": [{ "refId": "A", "expr": "sum by (uri) (rate(http_server_requests_seconds_sum{uri!~\"/actuator.*\"}[5m])) / sum by (uri) (rate(http_server_requests_seconds_count{uri!~\"/actuator.*\"}[5m]))", "legendFormat": "{{uri}}" }]
     },
     {
       "id": 4, "type": "timeseries", "title": "JVM 힙 사용량",
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "bytes" } },
       "targets": [{ "refId": "A", "expr": "sum(jvm_memory_used_bytes{area=\"heap\"})", "legendFormat": "used" }]
     },
     {
-      "id": 5, "type": "timeseries", "title": "DB 커넥션 풀 (HikariCP)",
-      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "id": 5, "type": "timeseries", "title": "DB 커넥션 풀 (HikariCP) — pending이 쌓이면 풀 부족",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         { "refId": "A", "expr": "sum(hikaricp_connections_active)", "legendFormat": "active" },
-        { "refId": "B", "expr": "sum(hikaricp_connections_pending)", "legendFormat": "pending" }
+        { "refId": "B", "expr": "sum(hikaricp_connections_pending)", "legendFormat": "pending" },
+        { "refId": "C", "expr": "sum(hikaricp_connections_max)", "legendFormat": "max" }
       ]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "HTTP 503 (기동 후 누적, URI별) — Redis 장애·DB 타임아웃·커넥션 대기 초과",
+      "description": "키 있는 결제의 Redis 장애, lock_timeout·statement_timeout, HikariCP 연결 대기 초과가 503으로 응답됨 (docs/operations.md). HTTP 메트릭은 URI·상태 조합의 첫 요청 때 생겨 increase()가 첫 1건을 놓치므로 누적값으로 표시 — 계단이 올라간 시점이 발생 시각, 앱 재시작 시 0부터 (#67)",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "decimals": 0 } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (uri) (http_server_requests_seconds_count{status=\"503\"})", "legendFormat": "{{uri}}" },
+        { "refId": "B", "expr": "sum(hikaricp_connections_timeout_total)", "legendFormat": "커넥션 대기 초과" }
+      ]
+    },
+
+    { "id": 102, "type": "row", "title": "Outbox · Kafka", "collapsed": false, "gridPos": { "x": 0, "y": 32, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 11, "type": "timeseries", "title": "Outbox 이벤트 (발행 대기·실패)",
+      "description": "failed > 0이면 OutboxEventsFailed — 원인 해결 후 POST /api/admin/outbox-events/republish",
+      "gridPos": { "x": 0, "y": 33, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "decimals": 0 } },
+      "targets": [{ "refId": "A", "expr": "outbox_events", "legendFormat": "{{status}}" }]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "가장 오래된 발행 대기 이벤트 경과 시간",
+      "description": "300초를 2분 넘게 유지하면 OutboxPublishDelayed (Kafka 장애·Publisher 중단)",
+      "gridPos": { "x": 8, "y": 33, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {
+        "unit": "s",
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 300 }] },
+        "custom": { "thresholdsStyle": { "mode": "dashed" } }
+      } },
+      "targets": [{ "refId": "A", "expr": "outbox_oldest_pending_age_seconds", "legendFormat": "oldest pending" }]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "DLT 유입 (10분 증가량)",
+      "description": "0보다 크면 OutboxDeadLetters — 원인 해결 후 DLT 재처리 CLI (docs/kafka-outbox.md 7장)",
+      "gridPos": { "x": 16, "y": 33, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "decimals": 0 } },
+      "targets": [{ "refId": "A", "expr": "increase(outbox_dlt_records_total[10m])", "legendFormat": "DLT" }]
+    },
+    {
+      "id": 14, "type": "timeseries", "title": "Kafka 발행·소비 (초당, 결과별)",
+      "description": "발행 = Outbox Publisher의 KafkaTemplate 전송, 소비 = 알림 Consumer 처리 (재시도 포함)",
+      "gridPos": { "x": 0, "y": 41, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (result) (rate(spring_kafka_template_seconds_count[1m]))", "legendFormat": "발행 {{result}}" },
+        { "refId": "B", "expr": "sum by (result) (rate(spring_kafka_listener_seconds_count[1m]))", "legendFormat": "소비 {{result}}" }
+      ]
+    },
+    {
+      "id": 15, "type": "timeseries", "title": "알림 Consumer lag (파티션별)",
+      "description": "1000건을 5분 넘게 넘으면 NotificationConsumerLag. 메시지를 한 번도 받지 않은 파티션은 시계열이 없음",
+      "gridPos": { "x": 8, "y": 41, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {
+        "decimals": 0,
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1000 }] },
+        "custom": { "thresholdsStyle": { "mode": "dashed" } }
+      } },
+      "targets": [{ "refId": "A", "expr": "max by (partition) (kafka_consumer_fetch_manager_records_lag{topic=\"delivery-events\"})", "legendFormat": "partition {{partition}}" }]
+    },
+    {
+      "id": 16, "type": "timeseries", "title": "알림 Consumer 평균 처리 시간",
+      "gridPos": { "x": 16, "y": 41, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{ "refId": "A", "expr": "sum(rate(spring_kafka_listener_seconds_sum[5m])) / sum(rate(spring_kafka_listener_seconds_count[5m]))", "legendFormat": "avg" }]
+    },
+
+    { "id": 103, "type": "row", "title": "알림 발송 · Redis · 정산 스케줄러", "collapsed": false, "gridPos": { "x": 0, "y": 49, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 21, "type": "timeseries", "title": "알림 발송 결과 (10분 증가량)",
+      "description": "failed가 늘면 NotificationSendFailed (재시도 한도 초과로 발송 포기). retry는 다음 주기에 다시 시도",
+      "gridPos": { "x": 0, "y": 50, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "decimals": 0 } },
+      "targets": [{ "refId": "A", "expr": "sum by (result) (increase(notification_send_total[10m]))", "legendFormat": "{{result}}" }]
+    },
+    {
+      "id": 22, "type": "timeseries", "title": "Redis 명령 실패 (5분 증가량, 작업별)",
+      "description": "Redis 헬스체크를 꺼 두었으므로 Redis 장애의 1차 신호. 0보다 큰 상태가 1분 이어지면 RedisCommandFailures",
+      "gridPos": { "x": 12, "y": 50, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "decimals": 0 } },
+      "targets": [{ "refId": "A", "expr": "sum by (operation) (increase(redis_failures_total[5m]))", "legendFormat": "{{operation}}" }]
+    },
+    {
+      "id": 23, "type": "timeseries", "title": "일 정산 스케줄러 실행 (1일 증가량, 결과별)",
+      "description": "skipped_redis_unavailable > 0이면 SettlementSchedulerSkippedByRedis. skipped_locked는 다른 인스턴스가 실행한 정상 상황",
+      "gridPos": { "x": 0, "y": 58, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "decimals": 0 } },
+      "targets": [{ "refId": "A", "expr": "sum by (result) (increase(settlement_scheduler_runs_total[1d]))", "legendFormat": "{{result}}" }]
+    },
+    {
+      "id": 24, "type": "timeseries", "title": "일 정산 집계 시간 vs 락 TTL 절반",
+      "description": "집계 시간이 TTL 절반을 넘으면 SettlementSchedulerNearLockTtl → lock-at-most-for를 늘리거나 집계를 나눔",
+      "gridPos": { "x": 8, "y": 58, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "refId": "A", "expr": "settlement_scheduler_last_duration_seconds", "legendFormat": "마지막 집계 시간" },
+        { "refId": "B", "expr": "0.5 * settlement_scheduler_lock_at_most_seconds", "legendFormat": "락 TTL × 0.5 (임계값)" }
+      ]
+    },
+    {
+      "id": 25, "type": "timeseries", "title": "분산 락 유지 시간 초과 (1일 증가량, 락별)",
+      "description": "0보다 크면 DistributedLockOverrun — 실행 중 락이 풀려 다른 인스턴스가 함께 실행했을 수 있음 (정산 중복은 DB UNIQUE가 막음)",
+      "gridPos": { "x": 16, "y": 58, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "decimals": 0 } },
+      "targets": [{ "refId": "A", "expr": "sum by (lock) (increase(distributed_lock_overrun_total[1d]))", "legendFormat": "{{lock}}" }]
     }
   ]
 }

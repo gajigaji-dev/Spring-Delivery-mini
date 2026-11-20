@@ -6,6 +6,10 @@ import java.time.Duration;
 // 인터페이스로 둔 이유: 스케줄러 단위 테스트에서 Redis 없이 "락 획득·실패·장애"를 바꿔 끼우기 위함
 public interface DistributedLock {
 
+    // 실행이 lockAtMostFor보다 오래 걸린 횟수 (태그 lock = 락 이름). 알림 규칙 DistributedLockOverrun이 사용
+    // 락을 쓰는 쪽에서 기동 시 0으로 등록해 둬야 첫 초과부터 increase()로 잡힘 (처음 증가할 때 생기면 직전 값이 없어 0으로 계산)
+    String OVERRUN_METRIC = "distributed.lock.overrun";
+
     // 락을 잡으면 task를 실행하고 true, 다른 인스턴스가 잡고 있으면 실행하지 않고 false
     // - lockAtMostFor: 락 최대 유지 시간(TTL). 인스턴스가 죽어 해제하지 못해도 이 시간이 지나면 풀림
     //   → 작업 최대 실행 시간보다 넉넉하게 잡아야 함 (짧으면 실행 중에 풀려 다른 인스턴스가 또 실행)

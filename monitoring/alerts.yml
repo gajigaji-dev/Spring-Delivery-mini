@@ -70,9 +70,10 @@ groups:
           summary: "DLT 유입 발생"
           description: "알림 Consumer가 처리에 실패한 메시지가 delivery-events-dlt로 이동함"
 
-      # Consumer 지연 (Kafka 클라이언트 메트릭)
+      # Consumer 지연 (Kafka 클라이언트 메트릭, 파티션별 현재 lag)
+      # records_lag_max는 최근 샘플 구간의 최대값이라 메시지가 없으면 NaN → 현재 값인 records_lag를 씀 (#67)
       - alert: NotificationConsumerLag
-        expr: max(kafka_consumer_fetch_manager_records_lag_max) > 1000
+        expr: max(kafka_consumer_fetch_manager_records_lag{topic="delivery-events"}) > 1000
         for: 5m
         labels:
           severity: warning
