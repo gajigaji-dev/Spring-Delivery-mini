@@ -538,7 +538,8 @@ APP_PORT=8090 docker compose --profile monitoring up -d --build   # Grafana http
 
 - 이번 기간 firing 이력: `RedisCommandFailures`·`OutboxDeadLetters`·`OutboxPublishDelayed`·`OutboxEventsFailed` (`count_over_time(ALERTS{alertstate="firing"}[30m])`)
 - 재현하지 않은 규칙과 이유
-  - `NotificationConsumerLag`: 1000건 이상 밀리게 해야 함 → #68 k6 쓰기 부하 때 함께 관찰
+  - `NotificationConsumerLag`: 1000건 이상 밀리게 해야 함 → #68 k6 쓰기 부하(결제 최대 314건/s)에서도 lag 최대 695건으로 발생하지 않음.
+    Outbox 발행기가 약 92건/s로 앞에서 속도를 제한해 Consumer까지 밀리지 않음 — 대신 대기는 `outbox_events`에 쌓임(최대 20,857건, 가장 오래된 대기 82초 < `OutboxPublishDelayed` 300초) ([성능 개선](performance.md) 11장)
   - `NotificationSendFailed`: 기본 발송기(로그)는 실패하지 않음 → #69 Slack 발송기에서 웹훅 주소를 틀리게 해 확인
   - `SettlementSchedulerSkippedByRedis`·`SettlementSchedulerNearLockTtl`·`DistributedLockOverrun`: 스케줄러가 매일 01:10에만 실행 → 자동 테스트(`SettlementSchedulerTest`·`RedisDistributedLockTest`)로 메트릭 증가를 확인하고, 시계열이 기동 시 0으로 있는지만 수동 확인(`distributed_lock_overrun_total{lock="settlement-daily-aggregation"}` 0)
 - 임계값(300초·1000건 등)은 실측 전 초기값 그대로 — 재현용으로 `for`·임계값을 줄이지 않고 기다림. 조정 근거는 #68 측정 후 기록
