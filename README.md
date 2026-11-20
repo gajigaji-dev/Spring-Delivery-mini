@@ -151,6 +151,7 @@ docker compose down          # 종료 (DB 데이터 유지, 삭제하려면 -v)
 # 1-1) 모니터링 포함 — Prometheus(http://localhost:9090) + Grafana(http://localhost:3000, admin / GRAFANA_ADMIN_PASSWORD)
 #      .env에 GRAFANA_ADMIN_PASSWORD 필수 (없거나 admin이면 Grafana만 기동 실패, 기본 up에는 영향 없음)
 docker compose --profile monitoring up --build -d
+#      대시보드: Grafana → Delivery 폴더 → Delivery App (HTTP·DB, Outbox·Kafka, 알림 발송, Redis, 정산 스케줄러), 알림 규칙 상태: http://localhost:9090/alerts
 
 # 2) 직접 실행 (local) — localhost:5432에 delivery DB, localhost:REDIS_PORT(6380)에 Redis가 있어야 함
 docker compose up -d redis   # 이 프로젝트 전용 Redis (127.0.0.1:6380)
@@ -177,6 +178,7 @@ docker compose up -d kafka   # 이벤트 발행·알림용 Kafka (127.0.0.1:9094
 - ~~DB 기반 멱등성 기록~~ → `payment_idempotency_keys`(V14)
 - ~~결제 단건 조회 API~~ → `GET /api/payments/{id}` (재전송 전 현재 결제 상태 확인, #53)
 - ~~정산 분산 락 TTL 실측~~ → 집계 소요 시간 게이지 + TTL 50% 초과 알림
+- ~~Redis·Outbox·알림 대시보드, 알림 규칙 발생 확인~~ → Grafana 패널 18개 + 장애 재현으로 규칙 4개 firing 확인 (#67, [로컬 확인 가이드 5장](docs/local-verification.md#5-모니터링--대시보드--알림-규칙-발생-67))
 - Redis 고가용성 및 장애 복구 전략 검토
 
 ### Kafka

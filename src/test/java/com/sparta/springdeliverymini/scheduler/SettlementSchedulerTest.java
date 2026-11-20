@@ -142,6 +142,20 @@ class SettlementSchedulerTest {
         assertThat(MDC.get(TraceIdFilter.MDC_KEY)).isNull();
     }
 
+    @Test
+    void 기동_시_실행_결과와_락_초과_카운터를_0으로_등록한다() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        Clock clock = Clock.fixed(LocalDateTime.of(2026, 11, 6, 1, 10).atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
+
+        new SettlementScheduler(aggregationService, clock, ALWAYS_ACQUIRED, registry, 7, AT_MOST, AT_LEAST);
+
+        // 알림 규칙(increase)이 첫 증가부터 잡으려면 증가 전에 시계열이 있어야 함
+        assertThat(registry.get(DistributedLock.OVERRUN_METRIC).tag("lock", SettlementScheduler.LOCK_NAME).counter().count())
+                .isZero();
+        assertThat(registry.get("settlement.scheduler.runs").tag("result", "skipped_redis_unavailable").counter().count())
+                .isZero();
+    }
+
     // ---- traceId(MDC) ----
 
     @Test

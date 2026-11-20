@@ -219,6 +219,7 @@ src/main/resources
   - 엔티티 상태 변경 직후(커밋 전) 기록 → 커밋이 실패하면 같은 traceId의 500 에러 로그가 이어서 남음
 - DB 제약 위반 로그는 제약 조건 이름만 기록 (PostgreSQL 에러 상세에 입력값이 들어 있어서)
 - 메트릭: Actuator + Micrometer Prometheus. `docker compose --profile monitoring up`이면 Prometheus가 `app:8081`을 수집하고 Grafana가 데이터 소스·대시보드(`monitoring/grafana`)를 자동 등록
+  - 대시보드 `Delivery App` 4개 행: 알림 규칙 상태(`ALERTS` 표) / HTTP·DB(요청·5xx·응답 시간·힙·HikariCP·503) / Outbox·Kafka(대기·실패·최고 대기 시간·DLT·발행·소비·lag·처리 시간) / 알림 발송·Redis·정산 스케줄러. 규칙 임계값은 빨간 점선, 패널 설명에 대응 규칙·조치 (#67)
 - 노출 정책: 기본 설정은 health만·Swagger 비활성(운영 기준), local·dev 프로필에서만 prometheus·Swagger UI를 켬
 - 운영 프로필(#54): `prod` — Swagger 비활성(켜면 기동 실패), Actuator는 비공개 관리 포트(8081)에서 health·prometheus만 켜고 나머지 엔드포인트는 비활성, 접속 정보·비밀 값은 환경변수 필수(`config.ProdProfileGuard`), Flyway 자동 baseline 끔. 상세는 [운영 프로필](operations.md)
 - 커넥션 풀·DB 타임아웃(모든 프로필): 풀 10·커넥션 대기 10초, `lock_timeout` 5초·`statement_timeout` 30초 → 넘으면 503 ([운영 프로필 6장](operations.md))
@@ -292,12 +293,13 @@ Redis 헬스체크를 꺼 두었으므로 장애는 메트릭으로 알아챔. �
 | `settlement.scheduler.last.duration.seconds`, `settlement.scheduler.lock.at.most.seconds` | 마지막 집계 소요 시간과 락 TTL | 소요 시간 > TTL의 50% |
 | `distributed.lock.overrun{lock}` | 락 TTL보다 오래 실행된 횟수 | 1건 이상 |
 
-- 카운터는 기동 시 0으로 등록 → 첫 실패부터 `increase()`로 잡힘
+- 카운터는 기동 시 0으로 등록 → 첫 실패부터 `increase()`로 잡힘 (처음 증가할 때 생기는 카운터는 직전 값이 없어 첫 증가를 놓침)
+  - `distributed.lock.overrun`은 락 이름이 태그라 락을 쓰는 쪽이 등록: `SettlementScheduler`가 `settlement-daily-aggregation`을 0으로 등록(#67 점검에서 누락 발견). DLT 재처리 CLI는 수집 대상이 아니라 등록하지 않음
 - 락 TTL(30분)은 위 게이지로 실측해 조정: 소요 시간이 절반을 넘으면 TTL을 늘리거나 집계를 나눔
 
 ### 후속 개선
 - **Redis 고가용성·장애 복구**: 단일 노드 기준 → 복제·Sentinel(또는 클러스터) 구성과 장애 조치 중 기록 유실 시 동작, 복구 절차 검토
-- **알림 전달**: 규칙만 정의됨 → Alertmanager 연동(메신저·메일), Lettuce 명령 지연 메트릭 대시보드
+- **알림 전달**: 규칙만 정의됨 → Alertmanager 연동(메신저·메일), Lettuce 명령 지연 메트릭 대시보드 (Redis 실패·스케줄러 패널은 #67에서 추가)
 - ~~**결제 단건 조회 API**: 재전송 본문은 결제 직후 값이라, 현재 결제 상태는 주문 조회로만 확인 가능~~ → `GET /api/payments/{id}` (#53, 본인 결제의 현재 상태)
 
 ## Kafka · Transactional Outbox (#42)
@@ -394,7 +396,7 @@ sequenceDiagram
 | `outbox.events{status=pending\|failed}` | 발행 대기·발행 포기 건수 (수집 때마다 DB에서 셈, 부분 인덱스) | `failed` > 0 |
 | `outbox.oldest.pending.age.seconds` | 가장 오래된 발행 대기 이벤트의 대기 시간 | 5분 초과 |
 | `outbox.dlt.records` | Consumer가 DLT로 보낸 메시지 수 (DLT 전송 성공 후에만 증가 — 전송 실패 재시도는 세지 않음, #52) | 10분간 1건 이상 |
-| `kafka.consumer.fetch.manager.records.lag.max` | Consumer lag (Kafka 클라이언트 메트릭, Boot 자동 등록) | 1,000건 초과 5분 |
+| `kafka.consumer.fetch.manager.records.lag{topic,partition}` | 파티션별 현재 Consumer lag (Kafka 클라이언트 메트릭, Boot 자동 등록). `records.lag.max`는 최근 샘플 구간의 최대값이라 메시지가 없으면 NaN → #67에서 현재 값으로 변경 | 1,000건 초과 5분 |
 | `notification.send{result}` | 발송 결과 — `sent` / `retry` / `failed` | `failed` 발생 |
 | `retention.deleted{table}` | 정리한 행 수 | - |
 
@@ -435,7 +437,7 @@ docker compose run --rm app --spring.profiles.active=dev,dlt-reprocess --all
 ### 후속 개선
 - **실제 발송 채널**: 이메일·SMS·푸시 연동, 발송 `FAILED` 알림의 재발송 API
 - **대용량 정리**: 행 수가 크게 늘면 주기 삭제 대신 테이블 파티셔닝(파티션 DROP)
-- **알림 전달**: Alertmanager 연동, Outbox·알림 대시보드 패널
+- **알림 전달**: Alertmanager 연동 (~~Outbox·알림 대시보드 패널~~ #67에서 추가)
 
 ## 인증 (Access · Refresh Token, V15)
 

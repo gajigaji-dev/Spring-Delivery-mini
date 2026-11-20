@@ -1,8 +1,8 @@
-# 로컬 확인 가이드 — Redis · Kafka · 주문 목록 · 운영 프로필 · DB 타임아웃 · CORS
+# 로컬 확인 가이드 — Redis · Kafka · 주문 목록 · 운영 프로필 · DB 타임아웃 · CORS · 모니터링
 
 [← README](../README.md) · [프로젝트 구조](architecture.md)
 
-Redis(결제 멱등성·분산 락)와 Kafka(Transactional Outbox·알림·DLT 재처리), 주문 목록 keyset 페이징·prod 프로필·DB 타임아웃(#54, 3장), CORS(#61, 4장)가 로컬에서 실제로 동작하는지 확인하는 방법.
+Redis(결제 멱등성·분산 락)와 Kafka(Transactional Outbox·알림·DLT 재처리), 주문 목록 keyset 페이징·prod 프로필·DB 타임아웃(#54, 3장), CORS(#61, 4장), 모니터링 대시보드·알림 규칙 발생(#67, 5장)이 로컬에서 실제로 동작하는지 확인하는 방법.
 동작 원리·장애 시 동작 표는 [프로젝트 구조](architecture.md)의 Redis 장·Kafka 장, API 형식은 [API 명세](api.md) 참고
 
 > **자동 테스트**(1장)와 **수동 확인**(2~4장 "검증 결과")을 구분해 기록함. 수동 확인은 2-2·2-3·2-5·3장을 2026-11-18에 두 번(#54 마무리, #61 CORS 반영 후) 실행했고 결과는 각 절 끝에 있음. 3-2의 `ProdProfileGuard` 실행 순서는 2026-11-19 수정 후 다시 확인함. 2-4(DLT 재처리)는 2026-11-15에 한 번(11단계 중 10단계 통과, 1단계 미검증)
@@ -480,3 +480,85 @@ curl -s -D - -X OPTIONS localhost:8080/api/orders -H "Origin: https://evil.examp
 
 발견한 점
 - 거부 응답(403) 본문은 Spring 기본 `Invalid CORS request`(text/plain) — 다른 오류처럼 `ApiErrorResponse` 형식이 아님. 브라우저 JS는 CORS로 막힌 응답을 읽을 수 없어 클라이언트 영향은 없고 curl·로그 확인 때만 보임 → 이번에는 그대로 둠
+
+## 5. 모니터링 — 대시보드 · 알림 규칙 발생 (#67)
+
+2-5에서 확인한 "메트릭 값이 오른다"에서 한 걸음 더: **규칙이 실제로 firing되는지**와 **대시보드 패널이 장애 구간을 보여 주는지** 확인. 메트릭·규칙 정의는 [프로젝트 구조](architecture.md) Redis 장 "관측성"·Kafka 장
+
+```bash
+APP_PORT=8090 docker compose --profile monitoring up -d --build   # Grafana http://localhost:3000 (admin / .env의 GRAFANA_ADMIN_PASSWORD)
+```
+
+### 5-1. 대시보드 구성 (`monitoring/grafana/dashboards/delivery-app.json`, 패널 18개 + 행 4개)
+
+| 행 | 패널 | 대응 규칙 |
+|---|---|---|
+| 알림 규칙 상태 | 발생·대기 중인 알림 표 (`ALERTS`, 현재 시점) | 전체 |
+| HTTP · DB | 요청 수·5xx 비율·평균 응답 시간·JVM 힙·HikariCP(active·pending·max)·**HTTP 503 누적**(URI별 + 커넥션 대기 초과) | — |
+| Outbox · Kafka | 발행 대기·실패 건수, 가장 오래된 대기 시간(300초 점선), DLT 유입, Kafka 발행·소비 처리량, Consumer lag(1000 점선), Consumer 평균 처리 시간 | `OutboxPublishDelayed`·`OutboxEventsFailed`·`OutboxDeadLetters`·`NotificationConsumerLag` |
+| 알림 발송 · Redis · 정산 스케줄러 | 알림 발송 결과, Redis 명령 실패(작업별), 스케줄러 실행 결과, 집계 시간 vs 락 TTL 절반, 락 유지 시간 초과 | `NotificationSendFailed`·`RedisCommandFailures`·`SettlementScheduler*`·`DistributedLockOverrun` |
+
+- 패널 설명(ⓘ)에 대응 규칙과 조치(재발행 API, DLT 재처리 CLI 등)를 적어 둠
+- 대시보드 파일을 고치면 Grafana가 약 10초 안에 다시 읽음 (재시작 불필요)
+
+### 5-2. 점검에서 발견해 고친 것
+
+| 발견 | 원인 | 조치 |
+|---|---|---|
+| `distributed_lock_overrun_total` 시계열이 없음 → `DistributedLockOverrun`이 **첫 초과를 놓침** | 카운터가 처음 증가할 때 생성됨. `increase()`는 직전 샘플이 없으면 첫 증가를 0으로 계산 | `SettlementScheduler`가 기동 시 `lock=settlement-daily-aggregation`을 0으로 등록 (`DistributedLock.OVERRUN_METRIC`, `SettlementSchedulerTest`) |
+| `NotificationConsumerLag` 식의 `records_lag_max`가 평시 NaN | 최근 샘플 구간의 최대값이라 메시지가 없으면 NaN (대시보드에서 빈 그래프) | 파티션별 현재 값 `records_lag{topic="delivery-events"}`로 변경 |
+| HTTP 503 패널(`increase`)이 장애 후에도 0 | HTTP 타이머는 URI·상태 조합의 첫 요청 때 생성 → 위와 같은 이유로 첫 1건을 놓침. 미리 등록할 수 없음 | 패널을 기동 후 누적값으로 변경 (계단이 오른 시점 = 발생 시각) |
+
+- 같은 이유로 "요청 수"·"5xx 비율" 패널도 **처음 생긴 URI·상태 조합의 첫 요청**은 반영되지 않음 (추세 확인용이라 그대로 둠)
+- 알림 규칙에 쓰는 앱 카운터(`redis.failures`·`settlement.scheduler.runs`·`notification.send`·`outbox.dlt.records`)는 원래 0으로 등록돼 있어 문제 없음
+
+### 5-3. 장애 재현 → firing 확인
+
+평가 주기는 Prometheus 기본값 1분(`evaluation_interval` 미지정), 수집 15초 → **발생 후 감지까지 최대 약 1분 15초 + `for`**
+
+| 단계 | 하는 일 | 기대 결과 |
+|---|---|---|
+| 1 | `docker compose stop redis` → 새 주문 + `Idempotency-Key` 결제 | 503, `RedisCommandFailures{operation="idempotency.acquire"}` pending → 1분 뒤 firing |
+| 2 | 2-4의 형식 오류 메시지 전송 (Git Bash는 `MSYS_NO_PATHCONV=1` 필요) | 재시도 없이 DLT, `OutboxDeadLetters` firing (`for` 없음) |
+| 3 | `docker compose start redis` → `docker compose stop kafka` → 결제 | 201, 대기 300초 넘으면 `OutboxPublishDelayed` pending → 2분 뒤 firing |
+| 4 | Kafka를 내린 채 계속 둠 | 재시도 10회(약 10분) 뒤 `FAILED` → `OutboxPublishDelayed` 해제, `OutboxEventsFailed` pending → 1분 뒤 firing |
+| 5 | `docker compose start kafka` → 관리자 `POST /api/admin/outbox-events/republish` | `{"republished":1}`, 발행·알림 생성 후 모든 알림 해제 |
+
+#### 검증 결과 (2026-11-20, compose app(8090) + monitoring 프로필, #67 수정 반영 이미지)
+
+| 단계 | 결과 | 시각·실제 값 |
+|---|---|---|
+| 수집 대상·규칙 | 통과 | `delivery-app` up, 9개 로드·평시 inactive, `promtool` `SUCCESS: 9 rules found` |
+| 대시보드 쿼리 | 통과 | Grafana API(`/api/ds/query`)로 패널 쿼리 전체 오류 없음 |
+| 1 Redis 중단 | 통과 | 11:38:35 결제 503(**4.73초** — 2-5 재검증의 약 5초와 같은 현상, 원인 미확인) → 11:39:05 pending → 약 11:40:10 firing. 패널 "Redis 명령 실패" `idempotency.acquire` 1, "HTTP 503 누적" `/api/payments` 1 |
+| 2 DLT | 통과 | 11:38:53 전송 → `outbox_dlt_records_total` 1 → 11:39:49 firing |
+| 3 Kafka 중단 | 통과 | 11:40:26 결제 201(Outbox 이벤트 18) → 11:45:51 pending(대기 315초) → 11:47:53 firing(435초) |
+| 4 FAILED | 통과 | 시도 10회 후 11:50:49 `FAILED` → `OutboxPublishDelayed` 해제, `OutboxEventsFailed` 11:51:50 firing |
+| 5 복구 | 통과 | 11:52 Kafka 시작·재발행 1건 → 11:52:53 알림 0건, pending 0·failed 0, `notification_send_total{result="sent"}` 4 |
+
+- 이번 기간 firing 이력: `RedisCommandFailures`·`OutboxDeadLetters`·`OutboxPublishDelayed`·`OutboxEventsFailed` (`count_over_time(ALERTS{alertstate="firing"}[30m])`)
+- 재현하지 않은 규칙과 이유
+  - `NotificationConsumerLag`: 1000건 이상 밀리게 해야 함 → #68 k6 쓰기 부하 때 함께 관찰
+  - `NotificationSendFailed`: 기본 발송기(로그)는 실패하지 않음 → #69 Slack 발송기에서 웹훅 주소를 틀리게 해 확인
+  - `SettlementSchedulerSkippedByRedis`·`SettlementSchedulerNearLockTtl`·`DistributedLockOverrun`: 스케줄러가 매일 01:10에만 실행 → 자동 테스트(`SettlementSchedulerTest`·`RedisDistributedLockTest`)로 메트릭 증가를 확인하고, 시계열이 기동 시 0으로 있는지만 수동 확인(`distributed_lock_overrun_total{lock="settlement-daily-aggregation"}` 0)
+- 임계값(300초·1000건 등)은 실측 전 초기값 그대로 — 재현용으로 `for`·임계값을 줄이지 않고 기다림. 조정 근거는 #68 측정 후 기록
+
+### 5-4. 평소 Redis · Kafka 상태 확인
+
+| 대상 | 대시보드에서 볼 곳 | 정상 |
+|---|---|---|
+| 전체 | 맨 위 "발생·대기 중인 알림" 표, Prometheus `/alerts` | 비어 있음 / 모두 inactive |
+| Redis | "Redis 명령 실패" | 모든 작업 0 |
+| Kafka 발행 | "Outbox 이벤트", "가장 오래된 발행 대기 이벤트 경과 시간" | 대기·실패 0, 경과 시간 0 (300초를 넘으면 발행 멈춤) |
+| Kafka 소비 | "DLT 유입", "알림 Consumer lag", "Kafka 발행·소비" | DLT 0, lag 0 근처 |
+
+직접 확인 (Git Bash는 `/`로 시작하는 컨테이너 경로가 Windows 경로로 바뀌므로 `MSYS_NO_PATHCONV=1`)
+```bash
+docker compose exec redis redis-cli ping                                    # PONG
+docker compose exec redis redis-cli --scan --pattern 'idempotency:payment:*' # 멱등성 키
+docker compose exec redis redis-cli --scan --pattern 'lock:*'                # 분산 락 (평소에는 없음)
+
+MSYS_NO_PATHCONV=1 docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --all-groups                 # LAG 0이면 다 처리
+```
+- 토픽 메시지·DLT 내용은 2-3·2-4의 consumer 명령, Outbox 상태는 2-3의 SQL
