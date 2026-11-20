@@ -22,6 +22,7 @@
 | 접속 정보 | `DB_URL`, `REDIS_HOST`, `KAFKA_BOOTSTRAP_SERVERS` 환경변수 (기본값 없음) | 개발용 기본값(localhost)으로 조용히 뜨지 않도록 |
 | 필수 값 점검 | `config.ProdProfileGuard` — `DB_URL`·`DB_USERNAME`·`DB_PASSWORD`·`JWT_SECRET`·`REDIS_HOST`·`KAFKA_BOOTSTRAP_SERVERS`·`CORS_ALLOWED_ORIGINS`(#61) 중 비어 있는 것이 있으면 기동 실패 | Redis·Kafka는 처음 쓸 때 접속하고, CORS 출처가 비어도 서버는 정상 기동(브라우저 요청만 403)하므로 배포 시점에 드러나지 않음. 메시지에는 변수 이름만 넣고 값은 넣지 않음. 빈이 아닌 `EnvironmentPostProcessor`로 등록해 빈 생성 전에 검사 → `DB_URL`이 없어도 DataSource 오류보다 먼저 빠진 변수 목록이 나옴(#61) |
 | CORS 허용 출처 | `CORS_ALLOWED_ORIGINS` 환경변수 (기본값 없음, 7장) | 운영 프론트엔드 주소만 명시적으로 허용 |
+| 알림 발송 채널 (#69) | `NOTIFICATION_SENDER`(`log` 기본 / `slack`), `SLACK_WEBHOOK_URL`(기본값 없음). `slack`인데 URL이 비어 있으면 `ProdProfileGuard`가 기동 실패. 시간 초과는 `NOTIFICATION_SLACK_CONNECT_TIMEOUT`(2s)·`NOTIFICATION_SLACK_READ_TIMEOUT`(3s) | URL이 곧 발송 권한이라 설정 파일·저장소·로그에 두지 않음(오류 메시지·`toString`에서도 가림). `log`는 URL이 필요 없어 조건부로만 검사. Slack은 운영 채널 1곳으로 보내는 데모 기능 — 동작·한계는 `architecture.md` Kafka 장 "Slack 발송" |
 | 그 밖의 비밀 값 | Redis 비밀번호·TLS 등은 Spring Boot 표준 환경변수(`SPRING_DATA_REDIS_PASSWORD` 등) | 설정 파일·저장소에 비밀 값을 두지 않음. `.env` 파일도 읽지 않음(local 전용) |
 | Swagger | `springdoc.api-docs.enabled`·`swagger-ui.enabled: false` 명시 + 켜져 있으면 `ProdProfileGuard`가 기동 실패 | 환경변수로 잘못 켜도 API 구조가 공개되지 않도록 |
 | Actuator 포트 | 관리 포트 `MANAGEMENT_PORT`(기본 8081) — 서비스 포트(8080)에는 `/actuator`가 없음 | 관리 포트는 외부에 공개하지 않고 내부 헬스체크·Prometheus만 접근 (dev와 같은 구조) |

@@ -102,7 +102,7 @@ flowchart LR
 |---|---|
 | [프로젝트 구조](docs/architecture.md) | 아키텍처·주문~정산 흐름 다이어그램, 패키지 구조, Redis 키·TTL·장애 시 동작, Kafka·Outbox 보장 범위·장애 시 동작, 요청 처리 흐름, 테스트 |
 | [Kafka Outbox · 알림 이벤트](docs/kafka-outbox.md) | Transactional Outbox 도입 배경·설계 결정, 구현 중 발견한 문제, 검증 결과, 후속 과제 (#42) |
-| [로컬 확인 가이드](docs/local-verification.md) | Redis·Kafka 동작을 자동 테스트와 로컬 실행으로 확인하는 절차 (멱등성 재전송·장애, Outbox 발행·재발행·DLT, DLT 재처리 CLI, 메트릭), 주문 목록 keyset·prod 프로필·DB 타임아웃 확인 (#54), CORS 확인 (#61) |
+| [로컬 확인 가이드](docs/local-verification.md) | Redis·Kafka 동작을 자동 테스트와 로컬 실행으로 확인하는 절차 (멱등성 재전송·장애, Outbox 발행·재발행·DLT, DLT 재처리 CLI, 메트릭), 주문 목록 keyset·prod 프로필·DB 타임아웃 확인 (#54), CORS 확인 (#61), Slack 알림 발송 확인 (#69) |
 | [API 명세](docs/api.md) | API 목록, 주문 상태 흐름, API별 요청·응답·에러 코드 |
 | [ERD](docs/erd.md) | ERD 다이어그램, 테이블 간 관계 |
 | [데이터베이스](docs/database.md) | Flyway 마이그레이션, 테이블 상세·제약조건, 시간대, 결제 연관관계 |
@@ -128,6 +128,7 @@ flowchart LR
 | `KAFKA_PORT` | - | compose가 Kafka를 127.0.0.1에 여는 포트 (기본 9094, local 실행의 기본 접속 주소 `localhost:9094`). 9092는 다른 프로젝트 Kafka와 겹칠 수 있어 사용하지 않음 |
 | `CORS_ALLOWED_ORIGINS` | prod | 브라우저에서 API를 호출할 프론트엔드 출처(쉼표 구분, `scheme://host[:port]`). local·dev 기본 `http://localhost:5173,http://localhost:3000`, 와일드카드·경로·끝 슬래시는 기동 실패 — [운영 프로필 7장](docs/operations.md) |
 | `KAFKA_BOOTSTRAP_SERVERS` | prod | Kafka 주소 (local 기본 `localhost:9094`, compose는 `kafka:9092` 자동 지정). Kafka가 없어도 기동·업무 처리는 되고 이벤트는 회복 후 발행 |
+| `NOTIFICATION_SENDER` · `SLACK_WEBHOOK_URL` | slack일 때 | 알림 발송 채널 `log`(기본) / `slack`(운영 채널 1곳으로 보내는 데모). `slack`이면 Incoming Webhook URL 필수(없으면 기동 실패), URL은 `.env`에만 — [구조 문서 Kafka 장 "Slack 발송"](docs/architecture.md) |
 | `APP_PORT` | - | docker-compose에서 호스트에 여는 포트 (기본 8080) |
 | `DB_PORT` | - | docker-compose가 PostgreSQL을 호스트(127.0.0.1)에 여는 포트 (기본 5432) |
 | `DB_POOL_SIZE` · `DB_LOCK_TIMEOUT` · `DB_STATEMENT_TIMEOUT` | - | 커넥션 풀 크기(기본 10), 잠금 대기(기본 5s)·문장 실행(기본 30s) 타임아웃 — [운영 프로필 6장](docs/operations.md) |

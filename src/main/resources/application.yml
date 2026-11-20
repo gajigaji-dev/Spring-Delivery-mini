@@ -134,13 +134,21 @@ outbox:
 #   enabled: false면 이 인스턴스는 발송하지 않음 (기록 저장은 계속, 여러 인스턴스가 켜져 있어도 SKIP LOCKED로 나눠 발송)
 #   fixed-delay: 발송 주기 / batch-size: 한 번에 발송하는 최대 건수
 #   max-attempts: 이 횟수만큼 실패하면 FAILED (자동 발송 중단) / retry-delay: 실패 후 재시도 간격
+#   sender: 발송 채널 — log(기본, 로그 출력) / slack(운영 채널 1곳으로 Incoming Webhook 발송, #69)
+#   slack.webhook-url: 기본값 없음, SLACK_WEBHOOK_URL 환경변수로만 주입 (URL 자체가 발송 권한 → 설정 파일·저장소에 두지 않음)
+#   slack.connect-timeout / read-timeout: 발송은 알림 행을 잠근 트랜잭션 안에서 하므로 짧게 (Slack 응답은 보통 1초 이내)
 notification:
+  sender: ${NOTIFICATION_SENDER:log}
   dispatcher:
     enabled: true
     fixed-delay: 5s
     batch-size: 100
     max-attempts: 5
     retry-delay: 1m
+  slack:
+    webhook-url: ${SLACK_WEBHOOK_URL:}
+    connect-timeout: 2s
+    read-timeout: 3s
 
 # 보관 기간이 지난 기록 정리 (V14) — config.RetentionProperties, maintenance.RetentionCleaner
 #   enabled: false면 이 인스턴스는 정리하지 않음 / fixed-delay: 정리 주기

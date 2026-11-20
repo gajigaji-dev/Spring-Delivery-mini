@@ -73,4 +73,27 @@ class ProdProfileGuardTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("spring.flyway.baseline-on-migrate");
     }
+
+    // 발송 채널이 slack인데 URL이 없으면 모든 알림이 FAILED로 쌓이기만 함 → 배포 시점에 막음 (#69)
+    @Test
+    void 알림_발송기가_slack인데_웹훅_URL이_없으면_기동을_막는다() {
+        MockEnvironment environment = completeEnvironment();
+        environment.setProperty("notification.sender", "Slack"); // 대소문자 무시
+
+        assertThatThrownBy(() -> ProdProfileGuard.check(environment))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("필수 환경변수가 없습니다: SLACK_WEBHOOK_URL");
+    }
+
+    @Test
+    void 알림_발송기가_slack이고_웹훅_URL이_있으면_통과하고_log면_URL이_없어도_통과한다() {
+        MockEnvironment slack = completeEnvironment();
+        slack.setProperty("notification.sender", "slack");
+        slack.setProperty("SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/secret");
+        assertThatCode(() -> ProdProfileGuard.check(slack)).doesNotThrowAnyException();
+
+        MockEnvironment log = completeEnvironment();
+        log.setProperty("notification.sender", "log");
+        assertThatCode(() -> ProdProfileGuard.check(log)).doesNotThrowAnyException();
+    }
 }
