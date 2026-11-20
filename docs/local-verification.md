@@ -274,6 +274,53 @@ docker compose --profile monitoring up   # Prometheus http://localhost:9090 (.en
 
 - 관찰: compose 앱에서 Redis 컨테이너를 내리면 키 있는 결제의 503이 약 5초 걸림 (local jar → `localhost:6380`은 약 1초). 컨테이너가 멈추면 `redis` 호스트 이름 조회가 실패하는 경로라 Redis `connect-timeout`(1초)보다 오래 걸린 것으로 추정 — 원인은 확인하지 않음, 별도 이슈 후보
 
+### 2-6. Slack 알림 발송 (#69)
+
+Slack 워크스페이스에서 채널 하나에 Incoming Webhook을 만들고, URL은 **루트 `.env`에만** 넣음(`.gitignore` 대상, 코드·설정 파일·명령 기록에 남기지 않음)
+
+```bash
+# .env
+NOTIFICATION_SENDER=slack
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+```
+
+| 단계 | 하는 일 | 기대 결과 |
+|---|---|---|
+| 1 | 앱 기동 (jar local 프로필은 `.env`를 읽음, compose는 `.env` → `NOTIFICATION_SENDER`·`SLACK_WEBHOOK_URL` 전달) | 로그 `알림 발송기: Slack Incoming Webhook (connectTimeout=PT2S, readTimeout=PT3S)`, URL은 로그에 없음 |
+| 2 | 주문 → 결제 | 5초 안에 채널에 `[배달 알림] 결제 완료 알림이 생성되었습니다. (notificationId=N)` 2건(고객·사장님), `send_status = SENT` |
+| 3 | 배달 완료 처리 | `배달 완료` 알림 도착. 문구에 주문 번호·금액·user id 없음 |
+| 4 | 실패 → 재시도 → FAILED: URL 끝 토큰을 일부러 바꾸고 `NOTIFICATION_DISPATCHER_MAX_ATTEMPTS=2`, `NOTIFICATION_DISPATCHER_RETRY_DELAY=10s`로 재기동 후 결제 (compose는 이 두 값을 앱에 넘기지 않음 → 아래 override 파일 사용. `.env`를 고치지 않으려면 잘못된 URL은 셸 환경변수 `SLACK_WEBHOOK_URL`로 넘김 — 셸 값이 `.env`보다 우선) | 첫 실패 `send_status = PENDING`, `send_attempt_count = 1`, 로그 `재시도 예정` → 10초 뒤 `FAILED`, `last_send_error`에 `status=4xx, body=...`(URL 없음), `notification.send{result="failed"}` 증가 |
+| 5 | 미기동 확인: `NOTIFICATION_SENDER=slack`이고 `SLACK_WEBHOOK_URL`을 비운 채 기동 | 기동 실패 — `SLACK_WEBHOOK_URL이 필요합니다` (prod 프로필이면 `필수 환경변수가 없습니다: SLACK_WEBHOOK_URL`) |
+
+```yaml
+# 4단계용 임시 override (저장소 밖에 두고 docker compose -f docker-compose.yml -f <이 파일> up -d app)
+services:
+  app:
+    environment:
+      NOTIFICATION_DISPATCHER_MAX_ATTEMPTS: "2"
+      NOTIFICATION_DISPATCHER_RETRY_DELAY: "10s"
+```
+
+```sql
+SELECT id, event_type, send_status, send_attempt_count, last_send_error, sent_at FROM notifications ORDER BY id DESC LIMIT 10;
+```
+- `failed` 메트릭은 compose에서 관리 포트가 호스트에 열려 있지 않음 → `docker compose exec app wget -qO- localhost:8081/actuator/prometheus | grep notification_send`
+
+- 끝나면 `.env`를 `NOTIFICATION_SENDER=log`로 되돌리거나 두 줄을 지움. 웹훅을 다른 사람에게 보여 줬다면 Slack 앱 설정에서 재발급
+
+#### 검증 결과
+- 자동 테스트(2026-11-20): `SlackNotificationSenderTest`(로컬 HTTP 서버로 2xx·404·503·429·응답 시간 초과·연결 거부, 가짜 HttpClient로 연결 시간 초과, Dispatcher와 묶어 재시도 → FAILED·회복 → SENT), `NotificationSenderConfigTest`(설정 분기), `ProdProfileGuardTest`
+- 실제 Slack 수신(2026-11-20, compose 앱 포트 8091 — 호스트 8080·8090은 다른 프로젝트가 사용, `APP_PORT=8091`):
+  - 1 통과: 기동 로그 `알림 발송기: Slack Incoming Webhook (connectTimeout=PT2S, readTimeout=PT3S)`, 앱 로그 전체에 `hooks.slack.com` 0건
+    (처음엔 `.env`에 `NOTIFICATION_SENDER=slack`이 빠져 있었음 → 빠지면 기본 `log`라 Slack으로 가지 않음)
+  - 2 통과: 주문 25 결제 → 약 2초 뒤 채널에 `[배달 알림] 결제 완료 알림이 생성되었습니다. (notificationId=38)`·`(notificationId=39)` 2건 수신, 두 행 `SENT`
+  - 3 통과(서버 기준): 주문 25 수락 → 배달 완료 → 알림 40 `DELIVERY_COMPLETED` `SENT`
+  - 4 통과: `.env`는 그대로 두고 셸 환경변수로 토큰 끝 4자를 바꾼 URL + 임시 override 파일(`NOTIFICATION_DISPATCHER_MAX_ATTEMPTS=2`·`RETRY_DELAY=10s`,
+    compose 파일은 이 두 값을 넘기지 않음)로 재기동 → 주문 26 결제 → 알림 41·42 `PENDING`·1회·로그 `재시도 예정` → 10초 뒤 `FAILED`·2회,
+    `last_send_error` = `Slack 비정상 응답 status=403, body=invalid_token`(URL 없음, DB·로그 모두 0건), `notification_send_total{result="failed"} 2`·`{result="retry"} 2`
+  - 5 통과: `SLACK_WEBHOOK_URL=` 빈 값으로 기동 → `APPLICATION FAILED TO START`, `notification.sender=slack이면 notification.slack.webhook-url(SLACK_WEBHOOK_URL)이 필요합니다.`
+  - 끝난 뒤 정상 URL로 재기동해 둠
+
 ## 3. 주문 목록 keyset · 운영 프로필 (#54)
 
 > 2026-11-18에 아래 수동 절차를 직접 실행함 (각 절 끝의 검증 결과). 같은 내용은 자동 테스트(1장 `OrderListPagingTest`·`StoreOrderIntegrationTest`·`ProdProfile*`·`DatabaseTimeoutIntegrationTest`)로도 확인하고, 부하 측정은 [성능 개선](performance.md) 9장 절차로 실행함
