@@ -89,6 +89,8 @@ public class SettlementScheduler {
         for (String result : new String[]{"executed", "skipped_locked", "skipped_redis_unavailable"}) {
             meterRegistry.counter("settlement.scheduler.runs", "result", result);
         }
+        // 락 초과 카운터도 0으로 노출 — 없으면 첫 초과 때 처음 생겨 DistributedLockOverrun 규칙이 놓침 (#67 점검에서 발견)
+        meterRegistry.counter(DistributedLock.OVERRUN_METRIC, "lock", LOCK_NAME);
     }
 
     private void countRun(String result) {

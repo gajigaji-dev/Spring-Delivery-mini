@@ -83,7 +83,7 @@ public class RedisDistributedLock implements DistributedLock {
         } finally {
             long elapsedMillis = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
             if (elapsedMillis > lockAtMostFor.toMillis()) {
-                meterRegistry.counter("distributed.lock.overrun", "lock", name).increment();
+                meterRegistry.counter(OVERRUN_METRIC, "lock", name).increment();
                 log.warn("락 유지 시간보다 오래 실행됨 — 실행 중 락이 풀려 다른 인스턴스가 실행했을 수 있음 lock={}, elapsedMs={}, lockAtMostFor={}",
                         name, elapsedMillis, lockAtMostFor);
             }
