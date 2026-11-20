@@ -6,7 +6,7 @@
 | 순서 | 이슈 | 작업 | 견적 | 산출물 |
 |---|---|---|---|---|
 | 1 | ~~#67~~ 완료 | Prometheus·Grafana 모니터링 확인 | 1 ~ 1.5일 (실제 1일 이내) | 대시보드 보강, 알림 규칙 발생 확인, `docs/local-verification.md` 5장 |
-| 2 | #68 | k6 쓰기 경로 부하 테스트 수치 | 2 ~ 3일 | `perf/k6/order-payment.js`, `docs/performance.md` 11장 |
+| 2 | ~~#68~~ 완료 | k6 쓰기 경로 부하 테스트 수치 | 2 ~ 3일 (실제 1일 이내) | `perf/k6/order-payment.js`, `docs/performance.md` 11장 |
 | 3 | #69 | Kafka 알림 → Slack 발송 | 1.5 ~ 2일 | `event.SlackNotificationSender`, `docs/architecture.md` Kafka 장 |
 | 4 | #70 | 프론트엔드 | 10 ~ 14일 | `frontend/` (고객·점주 화면) |
 | | | **합계** | **약 15 ~ 20일** | |
@@ -48,6 +48,8 @@
 - 위험: 노트북 1대에서 앱·DB·Kafka·k6가 경합 → 절대 수치보다 단계별 추세·병목 위치를 기록
 - 측정 중에는 `notification.dispatcher`를 로그 발송기로 둠 (Slack 호출 지연 배제)
 - 개선이 필요한 병목이 나오면 별도 이슈로 분리 (견적에 포함하지 않음)
+- 결과(2026-11-20): 처리량 상한 약 300 흐름/s(노트북 CPU 경합, 풀 20도 같음), 같은 키 동시 결제 중복 0건,
+  Outbox 발행 상한 약 92건/s < 결제 속도 → 별도 이슈 후보 (`docs/performance.md` 11장 "개선 후보")
 
 ## 3. Kafka 알림 → Slack 발송 (#69) — 1.5 ~ 2일
 
