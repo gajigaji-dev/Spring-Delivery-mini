@@ -31,12 +31,19 @@ erDiagram
     users ||--o{ refresh_tokens : "user_id"
     users ||--o{ owner_applications : "user_id (신청자)"
     users ||--o{ owner_applications : "decided_by (처리 관리자)"
+    users ||--o{ social_accounts : "user_id (V22, 공급자별 1개)"
 
     users {
         bigint id PK
         varchar username UK
-        varchar password
+        varchar password "NULL = 소셜 전용 (V22)"
         varchar role "CUSTOMER/OWNER/ADMIN"
+    }
+    social_accounts {
+        bigint id PK
+        bigint user_id FK
+        varchar provider "kakao/google"
+        varchar provider_user_id "UK (provider, provider_user_id)"
     }
     stores {
         bigint id PK
@@ -250,6 +257,7 @@ erDiagram
 | payments ─ payment_idempotency_keys | 1 : 0..1 | `payment_idempotency_keys.payment_id` → `payments.id` (unique) | 키가 있는 결제만 기록 1건 (V14) |
 | payments ─ pg_cancel_requests | 1 : 0..1 | `pg_cancel_requests.payment_id` → `payments.id` (NULL 허용) | 토스 결제의 취소·환불 때 1건 (V20). 보상 취소는 결제 행 없이 `payment_key`만 |
 | users ─ refresh_tokens | 1 : N | `refresh_tokens.user_id` → `users.id` | 로그인(계열)마다, 재발급마다 1건 (V15). 같은 `family_id` 행끼리가 한 로그인 |
+| users ─ social_accounts | 1 : N | `social_accounts.user_id` → `users.id` | 공급자별 최대 1개 (V22). 같은 소셜 계정은 한 회원에만 (`(provider, provider_user_id)` UNIQUE) |
 | users ─ owner_applications | 1 : N (신청자), 1 : N (처리자) | `owner_applications.user_id`, `decided_by` → `users.id` | 회원당 여러 번 신청 가능(거절 후 재신청), 대기 중은 1건 (V17 부분 유니크) |
 
 - **Outbox·알림 테이블(V13)은 FK 없음**: `outbox_events`·`consumed_events`·`notifications`는 `event_id`로만 이어지는 이벤트 기록 — 주문·회원 id는 발생 시점 스냅샷 값이라 원본이 지워져도 남음 ([데이터베이스](database.md#outbox_events--발행-대기-이벤트-v13))

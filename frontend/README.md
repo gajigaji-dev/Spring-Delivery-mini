@@ -2,6 +2,8 @@
 
 React 19 + TypeScript + Vite 7 + React Router 7. 디자인은 **점주 콘솔 V3**(2026-11-21, claude.ai 디자인 캔버스 — 로그인·홈·주문·정산 + 디자인 시스템) 기준.
 
+화면 스크린샷(로그인·사장님 정산·가짜 PG 결제창·고객 주문 상세)은 루트 [README "화면"](../README.md#화면), 파일은 `docs/images/`.
+
 ## 실행
 ```bash
 cp .env.example .env      # VITE_API_BASE_URL (기본 http://localhost:8090, compose 앱이면 8091)
@@ -93,6 +95,13 @@ npm run build             # tsc 타입 검사 + 프로덕션 빌드
 - 클라이언트 키도 프론트 빌드 변수가 아니라 서버 API로 받음 → 키는 루트 `.env` 한 곳
 - **가짜 결제창** (`pages/FakeTossCheckoutPage`, `/payments/fake-toss`): 서버가 `TOSS_MODE=fake`면 config의 `mode: 'FAKE'` → 토스 SDK 대신 이 화면으로 이동. 시나리오 버튼(정상·카드 거절·응답 유실·PG 지연·금액 조작·창 닫기)으로 결과를 고르고, 실제 결제창과 같은 successUrl·failUrl 쿼리로 돌아감
 - 결제 상태 `PARTIALLY_REFUNDED`('부분 환불'), 주문 상세에 누적 환불액 표시 (V21). 관리자 부분 환불 화면은 아직 없음(API만)
+
+## 소셜 로그인 (V22)
+- 로그인·가입 화면 `components/SocialLoginButtons`(가입 화면은 `variant="signup"`으로 문구만 '시작하기', 동작은 같음 — 서버는 처음 로그인 = 고객 가입). 모양은 공급자 가이드 고정값(`base.css` `.btn--kakao` #FEE500·`.btn--google` 흰 바탕 + `components/SocialLogo` 인라인 SVG, 디자인 토큰 미사용), 카카오 먼저 표시: `GET /api/users/social/providers`로 받은 공급자만 버튼 표시(없으면 숨김), 클릭 시 서버 `/oauth2/authorization/{provider}`로 **페이지 전체 이동**
+- 서버 콜백이 Refresh 쿠키만 심고 `/oauth/callback?result=login`으로 보냄 → 앱 시작 refresh(`AuthContext`)가 그대로 로그인을 복구 → `pages/OAuthCallbackPage`가 역할 첫 화면으로. 토큰은 URL에 없음
+- `?error=CODE`는 `api/errorMessages.messageForCode`, 해석은 `api/social.parseOAuthCallback`(모르는 값은 일반 실패)
+- 기존 계정 연결(내 정보 `SocialAccountsSection`): `POST .../link`를 **`credentials: 'include'`**로 호출해 연결 쿠키를 받은 뒤 `?mode=link`로 이동 → 돌아오면 `/me`에 안내. 관리자는 섹션을 숨김, 비밀번호 없는 회원의 마지막 계정은 해제 버튼 비활성
+- 공급자 추가 시 프론트는 `api/social.ts`의 `SOCIAL_LABELS`에 이름만 추가
 
 ## 성능 기본값
 | 항목 | 적용 |

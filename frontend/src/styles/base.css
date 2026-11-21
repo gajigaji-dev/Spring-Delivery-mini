@@ -186,6 +186,46 @@ h2 {
   padding: 0 22px;
 }
 
+/* 소셜 로그인 버튼 — 색은 공급자 가이드 고정값(디자인 토큰 대신): 브랜드 색을 바꾸면 가이드 위반 */
+.btn--social {
+  position: relative;
+}
+
+/* 로고는 왼쪽 고정, 문구는 가운데 — 버튼마다 문구 길이가 달라도 로고 줄이 맞도록 */
+.btn--social__logo {
+  position: absolute;
+  left: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+}
+
+.btn--social__logo:empty {
+  display: none;
+}
+
+.btn--kakao {
+  background: #fee500;
+  color: rgba(0, 0, 0, 0.85);
+}
+
+.btn--kakao:hover:not(:disabled) {
+  background: #f5dc00;
+  color: rgba(0, 0, 0, 0.85);
+}
+
+.btn--google {
+  background: #ffffff;
+  color: #1f1f1f;
+  border-color: #747775;
+}
+
+.btn--google:hover:not(:disabled) {
+  background: #f8f9fa;
+  color: #1f1f1f;
+  border-color: #747775;
+}
+
 .btn--sm {
   height: 36px;
   padding: 0 12px;

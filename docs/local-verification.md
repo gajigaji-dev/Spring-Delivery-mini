@@ -550,6 +550,7 @@ APP_PORT=8090 docker compose --profile monitoring up -d --build   # Grafana http
 
 - 패널 설명(ⓘ)에 대응 규칙과 조치(재발행 API, DLT 재처리 CLI 등)를 적어 둠
 - 대시보드 파일을 고치면 Grafana가 약 10초 안에 다시 읽음 (재시작 불필요)
+- 스크린샷(2026-11-22, compose 8091 · 가짜 PG로 결제 몇 건 후): `docs/images/grafana-outbox.png`(최근 30분 — Kafka 발행·소비, Consumer 처리 시간, 알림 발송 누적 12건), `docs/images/grafana.png`(최근 1시간, 결제 직후). Outbox 대기·DLT·Redis 실패 0
 
 ### 5-2. 점검에서 발견해 고친 것
 
@@ -688,3 +689,40 @@ APP_PORT=8091 NOTIFICATION_SENDER=log docker compose up -d --build app
 - 자동 테스트: `PartialRefundIntegrationTest`(환불 1건씩 정산 차감·이월, 나눠 환불해도 수수료 합계 = 전액, 동시 부분 환불 8건 중 한도 안 3건만, API 201·400·403), `PartialRefundMigrationTest`(기존 전액 환불 백필·차감 기록 연결), `PaymentTest`·`PaymentFeeTest`, 토스 부분 취소는 `TossPaymentIntegrationTest`
 - 로컬 DB(`delivery`)는 위 compose 빌드 때 V18~V21 적용됨 — 기존 전액 환불 데이터가 있는 DB에서 V21 데이터 이전 성공
 
+
+## 9. 소셜 로그인 (V22, 카카오·구글)
+
+### 9-1. 자동 테스트 (2026-11-21, 통과)
+- `SocialLoginIntegrationTest`(21건): 실제 Spring Security OAuth2 필터 + PostgreSQL. 공급자와 통신하는 두 곳(코드 → 토큰 교환, 사용자 정보)만 가짜 빈
+  - 시작 리다이렉트·시작 기록 쿠키(HttpOnly·Lax·세션 없음), 구글 OIDC nonce, 꺼진 공급자 404
+  - 첫 로그인 CUSTOMER 가입 + Refresh 쿠키만 발급(URL에 토큰 없음) → `/api/users/refresh` 호환, 재로그인·동시 첫 로그인 5건 중복 가입 없음, 소셜 전용 회원 비밀번호 로그인 401
+  - 취소(`access_denied`)·쿠키 없음·변조·10분 초과·state 불일치 → `?error=`, 회원 생성 없음
+  - 연결: 연결 쿠키 → `?mode=link` → 그 회원에 연결, 쿠키 없음·5분 초과 → `SOCIAL_LINK_EXPIRED`, 다른 회원이 쓰는 계정 409 계열, 관리자 403, 해제·마지막 수단 409
+- `SocialLoginPropertiesTest`·`SocialCookieSignerTest`·`ProdProfileGuardTest`(소셜 키 + 콜백 주소)
+- 프론트 `api/social.test.ts`(콜백 쿼리 해석·문구·주소)
+
+### 9-2. 공급자 콘솔 설정 (사용자 작업)
+| 공급자 | 설정 | 값 |
+|---|---|---|
+| 카카오 (developers.kakao.com) | 앱 → 플랫폼 키 → REST API 키 | `KAKAO_CLIENT_ID` |
+| | 카카오 로그인 활성화 ON, Redirect URI | `http://localhost:8090/login/oauth2/code/kakao` (compose는 8091) |
+| | 보안 → Client Secret 발급·**사용함** | `KAKAO_CLIENT_SECRET` |
+| | 동의 항목 | 설정 불필요 (회원번호만 사용) |
+| 구글 (console.cloud.google.com) | OAuth 동의 화면(외부·테스트 사용자에 본인 추가) → 사용자 인증 정보 → OAuth 클라이언트 ID(웹) | `GOOGLE_CLIENT_ID`·`GOOGLE_CLIENT_SECRET` |
+| | 승인된 리디렉션 URI | `http://localhost:8090/login/oauth2/code/google` (compose는 8091) |
+
+- 키는 루트 `.env`에만. 앱 재시작 후 `GET /api/users/social/providers`에 공급자가 보이면 켜진 것 (기동 로그 `소셜 로그인 공급자 enabled=[...]`)
+
+### 9-3. 브라우저 확인 (일부 확인 — 2026-11-21 compose 8091, 실제 카카오·구글 키)
+| # | 시나리오 | 기대 결과 |
+|---|---|---|
+| 1 | 로그인 화면 '카카오 로그인' → 동의 | 고객 첫 화면(`/stores`), `/me` 아이디 `kakao_...`, DB `social_accounts` 1행 |
+| 2 | 로그아웃 후 같은 카카오로 다시 로그인 | 같은 회원 (users 행 늘지 않음) |
+| 3 | 동의 화면에서 취소 | `/oauth/callback?error=OAUTH2_CANCELLED` '소셜 로그인을 취소했습니다.' |
+| 4 | 아이디 회원으로 로그인 → 내 정보 → 구글 '연결' | 구글 동의 후 내 정보에 '구글 연결됨' 안내, 로그아웃 후 구글 로그인 = 그 회원 |
+| 5 | 1번 카카오 계정을 4번 회원에 연결 시도 | `SOCIAL_ACCOUNT_ALREADY_LINKED` 안내 |
+| 6 | 1번 회원(비밀번호 없음)에서 카카오 해제 | 버튼 비활성 (API는 409) |
+| 7 | 새로고침 | 로그인 유지 (Refresh 쿠키) |
+
+- 확인 결과(2026-11-21): 4번 연결 흐름을 사장님 `fc110847`(user 12, 비밀번호 있음)로 구글·카카오 모두 통과 → DB `social_accounts` 2행(google 23:58, kakao 23:59). 나머지 시나리오는 아직
+- **이 데이터는 지우지 않고 남겨 둠**(사용자 요청, 이후 수동 확인·시연용). 그래서 1번(새 소셜 회원 가입)을 하려면 연결되지 않은 다른 카카오·구글 계정이 필요하고, 같은 계정으로 하면 `fc110847`(OWNER)로 로그인됨 — 5번(이미 연결된 계정) 확인에는 그대로 쓸 수 있음

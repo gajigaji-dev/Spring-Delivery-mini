@@ -18,6 +18,7 @@ import java.util.List;
 // - API 문서(springdoc)가 켜져 있으면 기동 실패: 환경변수(SPRINGDOC_*)로 잘못 켜도 운영에 API 구조가 공개되지 않도록
 // - Flyway 자동 baseline이 켜져 있으면 기동 실패 (application-prod.yml)
 // - 알림 발송 채널이 slack(notification.sender)인데 SLACK_WEBHOOK_URL이 비어 있으면 기동 실패 (#69)
+// - 소셜 로그인 키(KAKAO_CLIENT_ID·GOOGLE_CLIENT_ID)가 있는데 SOCIAL_FRONTEND_CALLBACK_URL이 비어 있으면 기동 실패 (V22)
 // - 가짜 PG(toss.payments.mode=fake)면 기동 실패 — 운영에서 돈을 받지 않고 결제를 승인한 것처럼 기록하지 않도록
 // 오류 메시지에는 변수 이름만 넣고 값은 넣지 않음 (로그에 비밀 값이 남지 않도록)
 // 빈이 아니라 EnvironmentPostProcessor(META-INF/spring.factories 등록)로 검사 (#61):
@@ -32,6 +33,9 @@ ProdProfileGuard implements EnvironmentPostProcessor, Ordered {
             "CORS_ALLOWED_ORIGINS");
 
     static final String SLACK_WEBHOOK_URL = "SLACK_WEBHOOK_URL";
+
+    static final String SOCIAL_FRONTEND_CALLBACK_URL = "SOCIAL_FRONTEND_CALLBACK_URL";
+    static final List<String> SOCIAL_CLIENT_IDS = List.of("KAKAO_CLIENT_ID", "GOOGLE_CLIENT_ID");
 
     // spring.flyway.baseline-on-migrate: 잘못된 DB(이력 테이블 없이 테이블만 있는 DB)에 붙었을 때 V1을 적용 완료로 기록하고 진행하지 않도록
     static final List<String> MUST_BE_DISABLED = List.of(
@@ -60,6 +64,10 @@ ProdProfileGuard implements EnvironmentPostProcessor, Ordered {
         if (usesSlackSender(environment) && !StringUtils.hasText(environment.getProperty(SLACK_WEBHOOK_URL))) {
             missing.add(SLACK_WEBHOOK_URL);
         }
+        // 소셜 로그인 키가 하나라도 있으면 결과를 받을 프론트 주소 필수 (V22) — 기본값(localhost:5173)으로 보내지 않도록
+        if (usesSocialLogin(environment) && !StringUtils.hasText(environment.getProperty(SOCIAL_FRONTEND_CALLBACK_URL))) {
+            missing.add(SOCIAL_FRONTEND_CALLBACK_URL);
+        }
         if (!missing.isEmpty()) {
             problems.add("필수 환경변수가 없습니다: " + String.join(", ", missing));
         }
@@ -79,6 +87,10 @@ ProdProfileGuard implements EnvironmentPostProcessor, Ordered {
         if (!problems.isEmpty()) {
             throw new IllegalStateException("prod 프로필 설정 오류 — " + String.join(" / ", problems));
         }
+    }
+
+    private static boolean usesSocialLogin(Environment environment) {
+        return SOCIAL_CLIENT_IDS.stream().anyMatch(name -> StringUtils.hasText(environment.getProperty(name)));
     }
 
     // notification.sender는 enum 바인딩(대소문자 무시) 전이라 문자열로 비교

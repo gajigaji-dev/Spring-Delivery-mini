@@ -5,6 +5,7 @@ import com.sparta.springdeliverymini.exception.ApiErrorResponse;
 import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.jwt.JwtAuthenticationFilter;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -42,6 +43,7 @@ public class SecurityConfig {
     private final JwtProvider jwtProvider;
     private final ObjectMapper objectMapper; // 401/403 응답을 GlobalExceptionHandler와 같은 형식(ApiErrorResponse)으로 직렬화
     private final CorsProperties corsProperties;
+    private final ObjectProvider<SocialLoginConfig.SocialLoginSecurity> socialLoginSecurity;
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -70,6 +72,11 @@ public class SecurityConfig {
                         // Refresh Token 재발급·로그아웃은 Access Token 없이 호출 (Access가 이미 만료된 상태에서 쓰는 API)
                         // 인증 근거는 HttpOnly 쿠키의 Refresh Token — 검증은 AuthTokenService에서 DB 기준으로
                         .requestMatchers(HttpMethod.POST, "/api/users/refresh", "/api/users/logout").permitAll()
+
+                        // 소셜 로그인 (V22) — 시작(/oauth2/authorization/*)·콜백(/login/oauth2/code/*)은 Spring Security 필터가 먼저 처리
+                        // 꺼진 공급자의 시작 요청은 필터를 그냥 지나가 404가 되도록 허용. 버튼 표시용 공급자 목록도 토큰 없이
+                        .requestMatchers("/oauth2/authorization/**", "/login/oauth2/code/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/users/social/providers").permitAll()
 
                         // 헬스체크·Prometheus 수집은 토큰 없이 허용 (모니터링 도구가 JWT를 발급받을 수 없으므로)
                         // 실제 노출 여부는 management.endpoints.web.exposure가 결정: 기본(application.yml)은 health만 노출,
@@ -159,6 +166,12 @@ public class SecurityConfig {
                                 writeError(request, response, HttpStatus.FORBIDDEN, "권한이 없습니다."))
                 )
                 .addFilterBefore(new JwtAuthenticationFilter(jwtProvider), UsernamePasswordAuthenticationFilter.class);
+        // 소셜 로그인(oauth2Login, V22) — SocialLoginConfig가 있을 때만 (SecurityConfig만 가져오는 @WebMvcTest에는 없음)
+        // 세션은 여전히 STATELESS: 로그인 시작 기록은 쿠키(CookieAuthorizationRequestRepository), 인증 결과는 저장하지 않음
+        SocialLoginConfig.SocialLoginSecurity social = socialLoginSecurity.getIfAvailable();
+        if (social != null) {
+            social.configure(http);
+        }
         return http.build();
     }
 

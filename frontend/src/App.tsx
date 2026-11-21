@@ -15,6 +15,8 @@ export function App() {
         <Route path="stores/:id" element={<P.storeDetail />} />
         <Route path="login" element={<P.login />} />
         <Route path="signup" element={<P.signup />} />
+        {/* 소셜 로그인·연결 결과 (V22) — 서버 OAuth2 콜백이 ?result= 또는 ?error=를 붙여 보냄 */}
+        <Route path="oauth/callback" element={<P.oauthCallback />} />
 
         <Route path="cart" element={<RequireRole roles={['CUSTOMER']}><P.cart /></RequireRole>} />
         <Route path="orders" element={<RequireRole roles={['CUSTOMER', 'OWNER']}><P.orders /></RequireRole>} />

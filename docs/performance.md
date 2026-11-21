@@ -258,7 +258,7 @@ WHERE rn IN (3740, 7480);   -- 149456, 299106
 | `OrderListPagingTest` (신규) | 8 | 파라미터 없으면 기존처럼 배열 + `X-Page`·`X-Size`·`X-Has-Next` + `X-Next-After-Id`, keyset 응답은 `X-Page` 없음, 마지막·빈 페이지는 `X-Next-After-Id` 없음, `page`+`afterId` 400, `afterId=-1`·`abc`·`size=0`·`101` 400, 토큰 없으면 401 |
 | `OrderServiceTest` | 35 (2건 추가) | keyset은 OFFSET 0 + id 오름차순 `Pageable`로 조회, 고객은 본인 주문 쿼리·ADMIN은 빈 목록 |
 
-## 10. 내 결제 목록 (#62)
+## 10. 내 결제 목록 (#62) · 정산 내역 실측
 
 `GET /api/payments?page=&size=` — 고객 본인 결제를 id 오름차순으로 (`PaymentRepository.findAllByOrderUserId`, `@EntityGraph("order")`)
 
@@ -278,7 +278,35 @@ WHERE o.user_id = ? ORDER BY p.id LIMIT ? OFFSET ?
 - `payments`에는 `user_id`가 없어 `(user_id, id)` 같은 인덱스로 정렬까지 없앨 수 없음. 없애려면 결제에 주문자 컬럼을 중복 저장(반정규화)해야 하는데, 결제 행은 불변이라 값은 안전하지만 스키마·쓰기 경로 변경에 비해 이득이 작음
 - 읽는 행 수 = 그 고객의 결제 수 (결제 ≤ 주문, 주문당 결제 1건). 고객 한 명의 결제는 많아야 수백~수천 건이라 페이지 위치와 관계없이 작음 — 주문 목록 V11의 "전체 주문에 비례"하는 문제와 다름
 - 주문 목록(4장)처럼 고객 결제가 매우 많아져 정렬 비용이 보이면 그때 `payments.user_id` + `(user_id, id)` 인덱스 또는 주문 id 기준 정렬을 검토
-- EXPLAIN 실측은 하지 않음 (로컬 데이터가 작아 계획이 의미 없음). 근거는 위 인덱스 구성
+### EXPLAIN ANALYZE 실측 (2026-11-22, `delivery_perf`)
+
+`delivery_perf`(#68 측정 DB: 주문 411,003 · 결제 110,911 · 고객 1,407)에서 `EXPLAIN (ANALYZE, BUFFERS)`, 캐시에 올라온 상태로 3회 반복한 값. 쿼리는 앱과 같은 모양(`Slice`라 `LIMIT size+1`, 기본 21).
+
+| 대상 | 계획 | 실행 시간 | 읽은 결제 행 |
+|---|---|---|---|
+| 결제 0건·주문 300건 고객, 첫 페이지 | `idx_orders_user_id_id` → 결제 `order_id` UNIQUE 인덱스 (Nested Loop) | 1.5~6.3ms | 0 |
+| 결제 3건 고객, 첫 페이지 | 같음 + 정렬 | 2.2ms | 3 |
+| 결제 1,248건 고객(최다), 첫 페이지 | 결제 PK 순서로 읽으며 주문의 `user_id` 확인, 21건에서 멈춤 | 11.0ms | 574 |
+| 같은 고객, 중간(OFFSET 600)·마지막(OFFSET 1240) 페이지 | **결제 전체 Seq Scan** + Hash Join + 정렬 | **45.8~56.9ms** | **110,911** |
+| 같은 고객, 마지막 페이지 (generic plan, `PREPARE`) | 주문 인덱스 → 결제 인덱스 (Nested Loop) + 정렬 | 5.9ms | 1,248 |
+
+- **위 판단의 "읽는 행 수 = 그 고객의 결제 수"는 결제가 많은 고객에서 틀림**: 값을 넣은 계획(custom plan)은 고객 결제 수를 344건으로 적게 잡아 결제 테이블 전체를 해시 조인함 → 비용이 **전체 결제 수에 비례**. 같은 조건의 generic plan은 고객 결제 수만 읽어 5.9ms
+  - JDBC(pgjdbc)는 같은 문장을 5번 실행한 뒤부터 서버 측 PREPARE를 쓰고, 그 뒤 PostgreSQL이 custom·generic 계획을 비용으로 고름 → 실제 앱에서 어느 쪽이 쓰일지는 보장되지 않음
+- 결제가 적은 대부분의 고객은 1.5~11ms로 문제없음. 결제 11만 건에서 최악 약 57ms라 지금은 인덱스·스키마를 바꾸지 않음
+- 후보(결제가 수십만 건을 넘거나 위 조회가 느린 요청에 잡히면): ① `payments.user_id` 반정규화 + `(user_id, id)` 인덱스 — 결제 행은 불변이라 값이 어긋날 일은 없음 ② 정렬을 `o.id`로 바꿔 `idx_orders_user_id_id` 순서를 그대로 쓰기(주문당 결제 1건이라 순서 의미는 거의 같음) ③ 주문 목록처럼 keyset
+
+### 정산 내역 조회 실측 (#59, 같은 날·같은 DB)
+
+`delivery_perf`에는 정산이 없어 **트랜잭션 안에서** 매장 200개 × 365일 = 73,000행을 만들고 `ANALYZE` 후 측정, `ROLLBACK`(DB에 남기지 않음). 점주는 매장 5개(1,825행).
+
+| 대상 | 계획 | 실행 시간 |
+|---|---|---|
+| 필터 없음, 첫 페이지 | 정산 PK 순서로 읽으며 매장 소유 확인(Memoize), 886행 읽고 멈춤 | 6.2ms |
+| 필터 없음, 마지막 페이지 (OFFSET 1810) | 점주 매장 5개 → `uk_settlements_store_date` 선두 컬럼으로 매장별 365행 → 정렬 | 2.4ms |
+| 상태 + 한 달 기간 | 같은 인덱스로 `(store_id, settlement_date)` 범위 → 155행 → top-N 정렬 | 0.2ms |
+
+- [데이터베이스 문서](database.md) settlements 장의 "인덱스 추가 안 함" 판단이 실측으로도 맞음: 최악이 점주 1명의 정산 전체 정렬(1,825행, 2.4ms)
+- 한계: 정산 데이터가 날짜·매장 균등 분포인 합성 데이터, 트랜잭션 안 `ANALYZE`
 
 ### 주문 단건 조회 (`GET /api/orders/{id}`)
 

@@ -31,8 +31,8 @@ public enum ErrorCode {
     INVALID_IDEMPOTENCY_KEY,     // Idempotency-Key 형식 오류
     PAYMENT_AMOUNT_MISMATCH,     // 토스 승인 요청 금액 ≠ 주문 총액 → 승인하지 않음 (V20)
     INVALID_PG_ORDER_ID,         // 토스 주문번호가 이 주문에 발급한 형식이 아님 → 결제를 다시 시작
-    PG_PAYMENT_REJECTED,
-    INVALID_REFUND_AMOUNT,       // 부분 환불 금액이 남은 결제 금액을 넘음 (V21)         // 토스가 승인을 거절(카드 거절·결제 시간 만료 등) → 결제창을 다시 열어 결제
+    PG_PAYMENT_REJECTED,         // 토스가 승인을 거절(카드 거절·결제 시간 만료 등) → 결제창을 다시 열어 결제
+    INVALID_REFUND_AMOUNT,       // 부분 환불 금액이 남은 결제 금액을 넘음 (V21)
 
     // 404
     ORDER_NOT_FOUND,
@@ -56,5 +56,17 @@ public enum ErrorCode {
     // 503 — 요청은 반영되지 않음, 같은 Idempotency-Key로 재시도
     PAYMENT_UNAVAILABLE,         // 멱등성 저장소(Redis) 장애
     PG_NOT_CONFIGURED,           // 토스 키가 없거나 거부됨 → 토스 결제를 쓸 수 없음 (결제되지 않음)
-    PG_RESULT_UNKNOWN            // 토스 승인 결과를 확인하지 못함(시간 초과 등) → 결제창을 다시 열지 말고 같은 승인 요청을 재시도
+    PG_RESULT_UNKNOWN,           // 토스 승인 결과를 확인하지 못함(시간 초과 등) → 결제창을 다시 열지 말고 같은 승인 요청을 재시도
+
+    // 소셜 로그인 (V22) — API 응답 code, 그리고 OAuth2 콜백이 프론트로 돌려보내는 ?error= 값 (docs/api.md 소셜 로그인 장)
+    SOCIAL_PROVIDER_NOT_SUPPORTED, // 404 지원하지 않거나 키가 설정되지 않은 공급자
+    SOCIAL_LINK_FORBIDDEN,         // 403 관리자 계정은 소셜 연결 불가 (관리자 권한이 소셜 계정 보안에 의존하지 않도록)
+    SOCIAL_ACCOUNT_ALREADY_LINKED, // 409 그 소셜 계정이 이미 다른 회원에 연결됨
+    SOCIAL_PROVIDER_ALREADY_LINKED,// 409 이 회원에 같은 공급자의 다른 소셜 계정이 이미 연결됨 → 해제 후 연결
+    SOCIAL_LAST_LOGIN_METHOD,      // 409 비밀번호가 없는 회원의 마지막 소셜 계정은 해제 불가 (로그인할 방법이 없어짐)
+    // 콜백 리다이렉트 전용
+    OAUTH2_CANCELLED,              // 사용자가 동의 화면에서 취소 (error=access_denied)
+    OAUTH2_REQUEST_EXPIRED,        // 로그인 시작 기록(쿠키)이 없거나 만료·다른 탭에서 덮어씀 → 처음부터 다시
+    SOCIAL_LINK_EXPIRED,           // 연결 요청(쿠키)이 만료·변조·다른 공급자 → 연결 버튼부터 다시
+    OAUTH2_FAILED                  // 그 밖의 실패(공급자 오류·토큰 교환 실패 등) → 다시 시도
 }

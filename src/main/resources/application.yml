@@ -237,6 +237,19 @@ auth:
     cookie-secure: ${REFRESH_TOKEN_COOKIE_SECURE:true}
     cookie-same-site: ${REFRESH_TOKEN_COOKIE_SAME_SITE:Strict}
 
+# 소셜 로그인 (V22, config.SocialLoginProperties) — 키는 .env에만. 공급자별로 id·secret이 둘 다 비면 그 공급자는 꺼짐
+#   공급자 콘솔에 등록할 Redirect URI: {API 주소}/login/oauth2/code/kakao · /login/oauth2/code/google
+#   frontend-callback-url: 로그인 결과(?result=·?error=)를 받는 프론트 화면
+social:
+  frontend-callback-url: ${SOCIAL_FRONTEND_CALLBACK_URL:http://localhost:5173/oauth/callback}
+  providers:
+    kakao:
+      client-id: ${KAKAO_CLIENT_ID:}
+      client-secret: ${KAKAO_CLIENT_SECRET:}
+    google:
+      client-id: ${GOOGLE_CLIENT_ID:}
+      client-secret: ${GOOGLE_CLIENT_SECRET:}
+
 # 로그 — 모든 로그 줄에 요청별 traceId(logging.TraceIdFilter가 MDC에 넣은 값)를 출력
 # 요청 밖(스케줄러 등)에서는 빈 값. 응답 헤더 X-Trace-Id·에러 응답 traceId와 같은 값으로 로그를 찾을 수 있음
 logging:
