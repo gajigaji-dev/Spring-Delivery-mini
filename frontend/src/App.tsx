@@ -21,6 +21,8 @@ export function App() {
         <Route path="notifications" element={<RequireRole><P.notifications /></RequireRole>} />
         <Route path="me" element={<RequireRole><P.me /></RequireRole>} />
 
+        <Route path="owner" element={<RequireRole roles={['OWNER']}><P.ownerHome /></RequireRole>} />
+        <Route path="owner/orders" element={<RequireRole roles={['OWNER']}><P.ownerOrders /></RequireRole>} />
         <Route path="owner/stores" element={<RequireRole roles={['OWNER']}><P.ownerStores /></RequireRole>} />
         <Route path="owner/settlements" element={<RequireRole roles={['OWNER']}><P.ownerSettlements /></RequireRole>} />
 

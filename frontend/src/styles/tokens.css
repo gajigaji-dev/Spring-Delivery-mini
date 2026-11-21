@@ -1,57 +1,123 @@
 /*
- * 디자인 토큰 — 디자인 확정 전 임시 값(무채색 + 강조색 1개).
- * 화면 CSS는 색·간격·글꼴을 직접 쓰지 않고 이 변수만 참조 → 디자인이 정해지면 이 파일만 바꾸면 됨
+ * 디자인 토큰 — 점주 콘솔 V3 디자인(2026-11-21) 기준.
+ * 화면 CSS는 색·간격·글꼴을 직접 쓰지 않고 이 변수만 참조한다.
+ * 디자인이 라이트 전용(오트 배경)이라 다크 모드는 두지 않음 — 시스템 다크 설정에서도 같은 화면
  */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 
-  /* 색 */
-  --color-bg: #ffffff;
-  --color-surface: #f6f7f9;
-  --color-border: #e2e5ea;
-  --color-text: #1b1f24;
-  --color-text-muted: #5f6873;
-  --color-primary: #2f6fed;
-  --color-primary-text: #ffffff;
-  --color-ok: #1f8a4c;
-  --color-warn: #b26a00;
-  --color-danger: #c62828;
+  /* 브랜드 — 토마토는 "지금 해야 할 일"(대기 주문·주 버튼·로고)에만 */
+  --tomato: #ff5b37; /* 로고·강조 면 */
+  --tomato-600: #cf3e1e; /* 버튼·텍스트 (흰 글자 대비 4.5:1 이상) */
+  --tomato-700: #b23214;
+  --tomato-soft: #ffe9e1;
+  --tomato-tint: #fff8f5; /* 대기 행 배경 */
+  --tomato-line: #f6cdbf;
+  --tomato-select: #fff1ec;
 
-  /* 글꼴 — 웹폰트 도입 시 사용 굵기만 직접 호스팅 + preload (외부 CSS·전체 굵기 요청 금지) */
-  --font-sans: system-ui, -apple-system, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
-  --font-size-sm: 0.875rem;
-  --font-size-md: 1rem;
-  --font-size-lg: 1.25rem;
-  --font-size-xl: 1.5rem;
-  --font-weight-regular: 400;
-  --font-weight-bold: 700;
+  /* 잉크·오트 — 오트 배경 → 흰 면 → 연한 상태 면, 구분선 대신 명도 차이 */
+  --ink: #1b1a17;
+  --ink-hover: #3a3833;
+  --oat: #f6f4ef;
+  --oat-2: #ece8df; /* 세그먼트·소프트 버튼 바탕 */
+  --oat-3: #e3ded3; /* 테두리 */
+  --oat-4: #fbfaf7; /* 표 머리 */
+  --oat-input: #faf8f4;
+  --surface: #ffffff;
+  --line: #ece8df;
+  --line-soft: #f1eee8;
+  --line-strong: #e7e3da;
+  --bar-idle: #ddd7cb;
+  --track: #eeebe5;
 
-  /* 간격·모양 */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --radius: 8px;
-  --content-max: 1080px;
-  --gutter: 16px;
+  /* 글자 */
+  --text: #1b1a17;
+  --text-2: #5e5a52;
+  --text-muted: #6b675f;
+  --text-faint: #8c877c;
 
-  /* 움직임 — transform·opacity만 움직여 레이아웃 재계산을 피함 */
+  /* 상태 의미 — 대기(행동 필요)·진행·완료·예정·실패·취소 */
+  --wait-bg: #ffe9e1;
+  --wait-fg: #b23214;
+  --prog-bg: #e2f0f6;
+  --prog-fg: #0b5f84;
+  --done-bg: #e4f2e9;
+  --done-fg: #146b3e;
+  --done-deep: #0e4f2f;
+  --done-bar: #2e7d4f;
+  --hold-bg: #fff1d1;
+  --hold-fg: #8a5600;
+  --fail-bg: #fde5e2;
+  --fail-fg: #ae1f14;
+  --fail-text: #8e1a10;
+  --mute-bg: #eeebe5;
+  --mute-fg: #5e5a52;
+  --mute-bar: #c9c3b7;
+
+  /* 잉크 다크 패널(돈) — 화면당 하나 */
+  --dark-label: #ffc56b;
+  --dark-text: #bdb8ad;
+  --dark-line: #4a4740;
+  --dark-fee: #ff9a7e;
+  --dark-ok: #8fd6a8;
+
+  /* 글꼴 — Plus Jakarta Sans(숫자·라틴) + Gothic A1(한글), 사용 굵기(400·600·700·800)만 직접 호스팅 */
+  --font-sans: 'Plus Jakarta Sans', 'Gothic A1', system-ui, -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+  --fs-mega: 56px; /* 화면당 하나의 핵심 금액 */
+  --fs-title: 32px; /* 페이지 제목 */
+  --fs-section: 19px; /* 섹션 제목 */
+  --fs-body: 15px; /* 본문·표 */
+  --fs-sm: 14px;
+  --fs-xs: 13px;
+  --fs-min: 12.5px; /* 최소 */
+
+  /* 간격 4·8·12·16·20·24·32·40 */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+
+  /* 모서리 3단계: 칩 999 · 버튼·입력 12 · 면 20 */
+  --r-chip: 999px;
+  --r-ctl: 12px;
+  --r-card: 16px;
+  --r-surface: 20px;
+
+  --h-btn: 44px; /* 모바일 48 */
+  --content-max: 1280px;
+  --gutter: 40px;
+
+  /* 그림자는 떠 있는 요소(메뉴·전표·토스트·로그인 패널)에만 */
+  --shadow-menu: 0 16px 40px rgba(27, 26, 23, 0.12);
+  --shadow-panel: 0 24px 60px rgba(27, 26, 23, 0.08);
+  --shadow-toast: 0 12px 32px rgba(27, 26, 23, 0.25);
+  --shadow-pill: 0 1px 2px rgba(27, 26, 23, 0.08);
+  --focus-ring: 0 0 0 4px rgba(255, 91, 55, 0.15);
+  --scrim: rgba(27, 26, 23, 0.45);
+  --header-bg: rgba(246, 244, 239, 0.9);
+
+  /* 움직임 — transform·opacity 위주 */
   --duration-fast: 120ms;
   --duration-base: 200ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --color-bg: #111418;
-    --color-surface: #1a1e24;
-    --color-border: #2c323a;
-    --color-text: #e8eaed;
-    --color-text-muted: #9aa3ad;
-    --color-primary: #6b9bff;
-    --color-primary-text: #0b1220;
+@media (max-width: 960px) {
+  :root {
+    --gutter: 24px;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --gutter: 16px;
+    --fs-mega: 44px;
+    --fs-title: 26px;
+    --h-btn: 48px;
   }
 }
 

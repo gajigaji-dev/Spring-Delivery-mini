@@ -9,9 +9,10 @@ type AuthStatus = 'loading' | 'anonymous' | 'authenticated';
 interface AuthContextValue {
   status: AuthStatus;
   me: MyInfo | null;
-  login: (username: string, password: string) => Promise<void>;
+  /** 로그인 후 /me(DB 기준) 결과를 돌려줌 — 역할별 첫 화면 이동에 사용 */
+  login: (username: string, password: string) => Promise<MyInfo>;
   logout: () => Promise<void>;
-  reloadMe: () => Promise<void>;
+  reloadMe: () => Promise<unknown>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -25,6 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const info = await authApi.me();
     setMe(info);
     setStatus('authenticated');
+    return info;
   }, []);
 
   useEffect(() => {
@@ -32,7 +34,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // (StrictMode에서 effect가 두 번 돌아도 single-flight라 재발급은 1번)
     let cancelled = false;
     refreshAccessToken()
-      .then((ok) => (ok ? loadMe() : setStatus('anonymous')))
+      .then(async (ok) => {
+        if (ok) await loadMe();
+        else setStatus('anonymous');
+      })
       .catch(() => {
         if (!cancelled) setStatus('anonymous');
       });
@@ -52,7 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (username: string, password: string) => {
       const { accessToken } = await authApi.login(username, password);
       tokenStore.set(accessToken);
-      await loadMe();
+      return loadMe();
     },
     [loadMe],
   );

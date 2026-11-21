@@ -13,6 +13,8 @@ export default defineConfig({
       output: {
         // 라이브러리는 화면 코드보다 덜 바뀜 → 별도 청크로 두면 배포 후에도 브라우저 캐시가 유지됨
         manualChunks(id) {
+          // 웹폰트 CSS는 첫 렌더 뒤 동적으로 받으므로 vendor(즉시 로드)에 섞지 않음
+          if (id.includes('@fontsource')) return undefined;
           if (id.includes('node_modules')) return 'vendor';
         },
       },

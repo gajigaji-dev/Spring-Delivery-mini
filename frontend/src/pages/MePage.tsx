@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { refreshAccessToken } from '../api/client';
 import { ownerApplicationApi } from '../api/endpoints';
 import type { OwnerApplication } from '../api/types';
@@ -38,6 +39,7 @@ export default function MePage() {
 /** 고객 → 사장님 전환 신청 (V17 승인제). 승인되면 토큰을 재발급받아 사장님 화면으로 */
 function OwnerApplicationSection() {
   const { reloadMe } = useAuth();
+  const navigate = useNavigate();
   const { data: latest, error, loading, reload } = useAsync(() => ownerApplicationApi.mine(), []);
   const [businessName, setBusinessName] = useState('');
   const [actionError, setActionError] = useState<unknown>(null);
@@ -65,6 +67,7 @@ function OwnerApplicationSection() {
     try {
       await refreshAccessToken();
       await reloadMe();
+      navigate('/owner');
     } catch (err) {
       setActionError(err);
     } finally {
