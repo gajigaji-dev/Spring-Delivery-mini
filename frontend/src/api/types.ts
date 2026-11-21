@@ -58,7 +58,14 @@ export interface Order {
   storeName: string;
   items: OrderItem[];
   totalPrice: number;
+  /** 한 줄 주소 (도로명 + 상세) — 기존 주문도 항상 있음. 화면 표시는 이 값 */
   deliveryAddress: string;
+  /** 나눈 주소 (#77) — V18 이전 주문은 null */
+  zipCode: string | null;
+  roadAddress: string | null;
+  detailAddress: string | null;
+  /** 배달 요청사항 (선택, V19) — 없으면 null */
+  deliveryRequest: string | null;
   status: OrderStatus;
   createdAt: string;
   updatedAt: string;

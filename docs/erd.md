@@ -53,7 +53,11 @@ erDiagram
         bigint user_id FK
         bigint store_id FK
         bigint total_price
-        varchar delivery_address
+        varchar delivery_address "한 줄 주소"
+        varchar zip_code "V18, 이전 주문 NULL"
+        varchar road_address
+        varchar detail_address
+        varchar delivery_request "V19, 선택"
         varchar status
         timestamp delivered_at "정산 기간 기준"
     }

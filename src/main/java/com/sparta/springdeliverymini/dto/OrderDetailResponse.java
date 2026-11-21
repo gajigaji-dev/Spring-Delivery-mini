@@ -18,6 +18,10 @@ public record OrderDetailResponse(
         List<OrderItemResponse> items,
         long totalPrice,
         String deliveryAddress,
+        String zipCode,           // OrderResponse와 같이 V18 이전 주문은 null
+        String roadAddress,
+        String detailAddress,
+        String deliveryRequest,   // 배달 요청사항 (없으면 null)
         OrderStatus status,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
@@ -32,6 +36,10 @@ public record OrderDetailResponse(
                 order.getOrderItems().stream().map(OrderItemResponse::from).toList(),
                 order.getTotalPrice(),
                 order.getDeliveryAddress(),
+                order.getAddress() == null ? null : order.getAddress().getZipCode(),
+                order.getAddress() == null ? null : order.getAddress().getRoadAddress(),
+                order.getAddress() == null ? null : order.getAddress().getDetailAddress(),
+                order.getDeliveryRequest(),
                 order.getStatus(),
                 order.getCreatedAt(),
                 order.getUpdatedAt(),

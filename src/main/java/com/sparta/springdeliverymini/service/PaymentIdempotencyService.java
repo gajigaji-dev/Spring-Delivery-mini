@@ -6,6 +6,7 @@ import com.sparta.springdeliverymini.config.PaymentIdempotencyProperties;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.service.PaymentService.IdempotentPayment;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -124,7 +125,7 @@ public class PaymentIdempotencyService {
             return new PaymentResult(paymentService.pay(request, username), false);
         }
         if (!KEY_PATTERN.matcher(idempotencyKey).matches()) {
-            throw new ApiException(HttpStatus.BAD_REQUEST,
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_IDEMPOTENCY_KEY,
                     "Idempotency-Key는 영문·숫자·'-'·'_'로 1~64자여야 합니다.");
         }
 
@@ -214,7 +215,7 @@ public class PaymentIdempotencyService {
 
     private static void requireSameRequest(String storedFingerprint, String fingerprint) {
         if (!storedFingerprint.equals(fingerprint)) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT,
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, ErrorCode.IDEMPOTENCY_KEY_REUSED,
                     "같은 Idempotency-Key로 다른 결제 요청을 보낼 수 없습니다.");
         }
     }
@@ -272,12 +273,12 @@ public class PaymentIdempotencyService {
 
     private static ApiException unavailable(DataAccessException e) {
         log.warn("결제 멱등성 저장소(Redis) 사용 불가 — 결제하지 않고 503", e);
-        return new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
+        return new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.PAYMENT_UNAVAILABLE,
                 "일시적으로 결제를 처리할 수 없습니다. 잠시 후 같은 Idempotency-Key로 다시 시도해 주세요.");
     }
 
     private static ApiException inProgress() {
-        return new ApiException(HttpStatus.CONFLICT,
+        return new ApiException(HttpStatus.CONFLICT, ErrorCode.PAYMENT_IN_PROGRESS,
                 "같은 Idempotency-Key의 결제가 처리 중입니다. 잠시 후 다시 시도해 주세요.");
     }
 }

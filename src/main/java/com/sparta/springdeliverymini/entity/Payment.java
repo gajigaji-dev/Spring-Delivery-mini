@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.entity;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.exception.InvalidPaymentStatusException;
 import jakarta.persistence.*;
 
@@ -97,7 +98,8 @@ public class Payment extends BaseEntity {
             throw new IllegalArgumentException("취소 시각이 필요합니다.");
         }
         if (status != PaymentStatus.COMPLETED) {
-            throw new InvalidPaymentStatusException("완료된 결제만 취소할 수 있습니다. 현재 상태: " + status);
+            throw new InvalidPaymentStatusException(alreadyClosedCode(),
+                    "완료된 결제만 취소할 수 있습니다. 현재 상태: " + status);
         }
         this.status = PaymentStatus.CANCELLED;
         this.cancelledAt = cancelledAt;
@@ -111,15 +113,22 @@ public class Payment extends BaseEntity {
             throw new IllegalArgumentException("환불 시각이 필요합니다.");
         }
         if (status != PaymentStatus.COMPLETED) {
-            throw new InvalidPaymentStatusException("완료된 결제만 환불할 수 있습니다. 현재 상태: " + status);
+            throw new InvalidPaymentStatusException(alreadyClosedCode(),
+                    "완료된 결제만 환불할 수 있습니다. 현재 상태: " + status);
         }
         if (order.getStatus() != OrderStatus.DELIVERY_COMPLETED) {
-            throw new InvalidPaymentStatusException("배달완료된 주문의 결제만 환불할 수 있습니다. 배달 전 주문은 주문 취소를 이용하세요.");
+            throw new InvalidPaymentStatusException(ErrorCode.PAYMENT_NOT_REFUNDABLE,
+                    "배달완료된 주문의 결제만 환불할 수 있습니다. 배달 전 주문은 주문 취소를 이용하세요.");
         }
         if (refundedAt.isBefore(order.getDeliveredAt())) {
             throw new IllegalArgumentException("환불 시각은 배달완료 시각보다 앞설 수 없습니다.");
         }
         this.status = PaymentStatus.REFUNDED;
         this.refundedAt = refundedAt;
+    }
+
+    // 이미 끝난 결제(취소·환불)에 다시 취소·환불을 요청한 경우의 구분 값 — 중복 요청으로 안내하기 위함
+    private ErrorCode alreadyClosedCode() {
+        return status == PaymentStatus.REFUNDED ? ErrorCode.PAYMENT_ALREADY_REFUNDED : ErrorCode.PAYMENT_ALREADY_CANCELLED;
     }
 }

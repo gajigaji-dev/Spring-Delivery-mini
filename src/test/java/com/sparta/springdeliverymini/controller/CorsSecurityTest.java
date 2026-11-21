@@ -79,7 +79,7 @@ class CorsSecurityTest {
     void 허용_출처의_실제_요청은_페이징_헤더를_브라우저에_노출한다() throws Exception {
         PageQuery firstPage = PageQuery.of(0, 20);
         given(orderService.getOrders("customer1", firstPage)).willReturn(
-                new SliceImpl<>(List.of(new OrderResponse(7L, 1L, "치킨집", List.of(), 10000L, "서울시",
+                new SliceImpl<>(List.of(new OrderResponse(7L, 1L, "치킨집", List.of(), 10000L, "서울시", null, null, null, null,
                         OrderStatus.ORDER_REQUEST, null, null, null)), firstPage.toPageable(), true));
 
         mockMvc.perform(get("/api/orders")

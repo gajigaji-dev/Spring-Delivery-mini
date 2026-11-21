@@ -38,10 +38,25 @@ public class GlobalExceptionHandler {
     }
 
     // Order 엔티티의 상태 전이 규칙 위반 (예: 결제 전 주문 수락, 결제완료 주문 취소) → 409
+    // code로 이미 결제됨·이미 취소됨·취소 불가를 구분 (#77) — 화면 안내가 다름
     @ExceptionHandler(InvalidOrderStatusException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidOrderStatus(InvalidOrderStatusException e,
                                                                      HttpServletRequest request) {
-        return clientError(HttpStatus.CONFLICT, e.getMessage(), request);
+        return clientError(HttpStatus.CONFLICT, e.getCode(), e.getMessage(), request);
+    }
+
+    // 배달 요청사항 형식 위반 (Order, #77 후속) → 400
+    @ExceptionHandler(InvalidDeliveryRequestException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidDeliveryRequest(InvalidDeliveryRequestException e,
+                                                                         HttpServletRequest request) {
+        return clientError(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_DELIVERY_REQUEST, e.getMessage(), request);
+    }
+
+    // 배송 주소 형식 위반 (DeliveryAddress, #77) → 400
+    @ExceptionHandler(InvalidAddressException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidAddress(InvalidAddressException e,
+                                                                 HttpServletRequest request) {
+        return clientError(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_ADDRESS, e.getMessage(), request);
     }
 
     // Settlement 엔티티의 상태 전이 규칙 위반 (예: 확정 전 지급, 이미 지급된 정산 재지급) → 409
@@ -55,7 +70,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(InvalidPaymentStatusException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidPaymentStatus(InvalidPaymentStatusException e,
                                                                        HttpServletRequest request) {
-        return clientError(HttpStatus.CONFLICT, e.getMessage(), request);
+        return clientError(HttpStatus.CONFLICT, e.getCode(), e.getMessage(), request);
     }
 
     // OutboxEvent 엔티티의 상태 전이 규칙 위반 (예: FAILED가 아닌 이벤트 재발행) → 409
@@ -170,9 +185,14 @@ public class GlobalExceptionHandler {
 
     private ResponseEntity<ApiErrorResponse> clientError(HttpStatus status, String message,
                                                          HttpServletRequest request) {
-        log.warn("요청 실패 status={} message={}", status.value(), message);
+        return clientError(status, null, message, request);
+    }
+
+    private ResponseEntity<ApiErrorResponse> clientError(HttpStatus status, ErrorCode code, String message,
+                                                         HttpServletRequest request) {
+        log.warn("요청 실패 status={} code={} message={}", status.value(), code, message);
         return jsonError(status)
-                .body(ApiErrorResponse.of(status, message, request.getRequestURI()));
+                .body(ApiErrorResponse.of(status, code, message, request.getRequestURI()));
     }
 
     private String frameworkMessage(HttpStatus status) {

@@ -1,7 +1,6 @@
 package com.sparta.springdeliverymini.dto;
 
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -15,8 +14,19 @@ public record OrderCreateRequest(
         @Size(max = 50, message = "주문 항목은 50개 이하여야 합니다.")
         List<@NotNull(message = "주문 항목이 비어 있습니다.") @Valid OrderItemRequest> items,
 
-        @NotBlank(message = "배송 주소를 입력해야 합니다.")
-        @Size(max = 255, message = "배송 주소는 255자 이하여야 합니다.")
-        String deliveryAddress
+        // 배송 주소 (#77) — 주소 검색(다음 우편번호 서비스) 결과의 우편번호·도로명 주소 + 사용자가 입력한 상세 주소
+        // 형식 검증은 entity.DeliveryAddress에서 (위반 시 400 + code INVALID_ADDRESS)
+        // 예전 한 줄 주소(deliveryAddress)는 받지 않음 — 보내도 무시되고 우편번호 누락으로 400
+        String zipCode,
+        String roadAddress,
+        String detailAddress,           // 선택 (단독 주택 등)
+
+        // 배달 요청사항 (선택, 100자 이하) — 형식 검증은 Order 생성자 (위반 시 400 + code INVALID_DELIVERY_REQUEST)
+        String deliveryRequest
 ) {
+
+    // 요청사항 없이 만드는 기존 호출용 (테스트 등)
+    public OrderCreateRequest(List<OrderItemRequest> items, String zipCode, String roadAddress, String detailAddress) {
+        this(items, zipCode, roadAddress, detailAddress, null);
+    }
 }

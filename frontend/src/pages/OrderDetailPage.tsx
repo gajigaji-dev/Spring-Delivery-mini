@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { orderApi, paymentApi } from '../api/endpoints';
+import { isStaleOrderState } from '../api/errorMessages';
 import { useAuth } from '../auth/AuthContext';
 import { DelayedSpinner } from '../components/DelayedSpinner';
 import { ErrorMessage } from '../components/ErrorMessage';
@@ -37,6 +38,7 @@ export default function OrderDetailPage() {
   const [actionError, setActionError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
 
+  // after: 성공했거나 주문 상태가 이미 바뀌어(409 이미 결제·취소됨) 다시 할 일이 없을 때 실행
   const run = async (action: () => Promise<unknown>, after?: () => void) => {
     setBusy(true);
     setActionError(null);
@@ -46,6 +48,11 @@ export default function OrderDetailPage() {
       reload();
     } catch (err) {
       setActionError(err);
+      // 다른 탭·기기에서 이미 결제·취소된 경우 — 버튼이 최신 상태와 맞도록 주문을 다시 불러옴 (#77)
+      if (isStaleOrderState(err)) {
+        after?.();
+        reload();
+      }
     } finally {
       setBusy(false);
     }
@@ -63,8 +70,14 @@ export default function OrderDetailPage() {
         주문 #{order.id} <StatusBadge label={orderStatusLabel[order.status]} />
       </h1>
       <p>
-        {order.storeName} · {order.deliveryAddress}
+        {order.storeName} · {order.zipCode && <span className="muted num">({order.zipCode}) </span>}
+        {order.deliveryAddress}
       </p>
+      {order.deliveryRequest && (
+        <p className="order-req">
+          <span className="muted">요청사항</span> {order.deliveryRequest}
+        </p>
+      )}
       <div className="table-wrap">
         <table>
           <thead>

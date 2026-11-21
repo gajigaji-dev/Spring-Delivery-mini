@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.repository.*;
@@ -68,7 +70,7 @@ class SettlementAggregationServiceTest {
 
     // 매장(store)의 배달완료 주문 결제 → refundedAt에 환불
     private Payment refundedPayment(long amount, LocalDateTime refundedAt) {
-        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, "서울시", OrderStatus.DELIVERY_COMPLETED);
+        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, TestAddresses.seoul(), OrderStatus.DELIVERY_COMPLETED);
         ReflectionTestUtils.setField(order, "deliveredAt", LocalDateTime.of(2026, 11, 1, 12, 0));
         Payment payment = new Payment(order, amount, new BigDecimal("0.0500"), PaymentMethod.CARD, LocalDateTime.of(2026, 11, 1, 11, 0));
         payment.refund(refundedAt);

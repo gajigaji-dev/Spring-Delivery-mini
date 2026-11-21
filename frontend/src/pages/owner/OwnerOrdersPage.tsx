@@ -117,7 +117,10 @@ export default function OwnerOrdersPage() {
               </Link>
               <span className="num">{orderTimeLabel(o.createdAt, today)}</span>
             </div>
-            <div className="o-it">{itemsLabel(o)}</div>
+            <div className="o-it">
+              {itemsLabel(o)}
+              {o.deliveryRequest && <span className="o-req">요청 · {o.deliveryRequest}</span>}
+            </div>
             <div className={`o-amt num${o.status === 'ORDER_CANCELLED' ? ' o-amt--x' : ''}`}>{won(o.totalPrice)}</div>
             <div>
               <span className={`chip ${CHIP[o.status][1]}`}>{CHIP[o.status][0]}</span>
@@ -140,6 +143,7 @@ export default function OwnerOrdersPage() {
               </Link>
             </div>
             <div className="ocard__items">{itemsLabel(o)}</div>
+            {o.deliveryRequest && <p className="o-req">요청 · {o.deliveryRequest}</p>}
             <div className={`o-amt num${o.status === 'ORDER_CANCELLED' ? ' o-amt--x' : ''}`} style={{ textAlign: 'left', fontSize: 20 }}>
               {won(o.totalPrice)}
             </div>

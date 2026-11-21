@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.entity;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.exception.InvalidPaymentStatusException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -21,7 +23,7 @@ class PaymentTest {
 
     private static Order order(OrderStatus status) {
         Store store = new Store("치킨집", new User("owner1", "pw", Role.OWNER));
-        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, "서울시", status);
+        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, TestAddresses.seoul(), status);
         if (status == OrderStatus.DELIVERY_COMPLETED) {
             ReflectionTestUtils.setField(order, "deliveredAt", DELIVERED_AT);
         }

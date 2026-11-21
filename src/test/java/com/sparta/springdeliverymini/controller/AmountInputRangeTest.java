@@ -65,7 +65,7 @@ class AmountInputRangeTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                { "items": [{ "menuId": 1, "quantity": 2147483648 }], "deliveryAddress": "서울시" }
+                                { "items": [{ "menuId": 1, "quantity": 2147483648 }], "zipCode": "06236", "roadAddress": "서울 강남구 테헤란로 152" }
                                 """)) // Integer.MAX_VALUE + 1
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(NOT_READABLE));

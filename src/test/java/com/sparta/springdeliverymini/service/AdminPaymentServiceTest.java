@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
@@ -51,7 +53,7 @@ class AdminPaymentServiceTest {
 
     private static Payment payment(OrderStatus orderStatus) {
         Store store = new Store("치킨집", new User("owner1", "pw", Role.OWNER));
-        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, "서울시", orderStatus);
+        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, TestAddresses.seoul(), orderStatus);
         ReflectionTestUtils.setField(order, "id", 10L);
         if (orderStatus == OrderStatus.DELIVERY_COMPLETED) {
             ReflectionTestUtils.setField(order, "deliveredAt", DELIVERED_AT);
@@ -91,7 +93,7 @@ class AdminPaymentServiceTest {
 
         assertThat(output).contains("결제 환불 paymentId=1, orderId=10, amount=18009, status=COMPLETED->REFUNDED");
         // 회원 아이디·배달 주소는 로그에 남기지 않음
-        assertThat(output).doesNotContain("customer1").doesNotContain("서울시");
+        assertThat(output).doesNotContain("customer1").doesNotContain("테헤란로");
     }
 
     @Test

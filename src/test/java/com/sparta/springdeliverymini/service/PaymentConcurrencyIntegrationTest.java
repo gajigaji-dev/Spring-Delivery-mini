@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.TestcontainersConfiguration;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.entity.*;
@@ -69,7 +71,7 @@ class PaymentConcurrencyIntegrationTest {
         User customer = userRepository.save(new User("customer1", "encoded-password", Role.CUSTOMER));
         Store store = storeRepository.save(new Store("치킨집", owner));
         Menu menu = menuRepository.save(new Menu("후라이드 치킨", 18000, "바삭한 치킨", store));
-        Order newOrder = new Order(customer, store, "서울시", OrderStatus.ORDER_REQUEST);
+        Order newOrder = new Order(customer, store, TestAddresses.seoul(), OrderStatus.ORDER_REQUEST);
         newOrder.addItem(menu, 2);
         Order order = orderRepository.save(newOrder);
         PaymentRequest request = new PaymentRequest(order.getId(), PaymentMethod.CARD.name());

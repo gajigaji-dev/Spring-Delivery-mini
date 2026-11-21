@@ -96,7 +96,7 @@ class OwnerSettlementIntegrationTest {
     private Long delivered(Long menuId, String owner, LocalDateTime deliveredAt) {
         clock.set(deliveredAt.minusHours(1));
         OrderResponse order = orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menuId, 1)), "서울시"), "customer1");
+                new OrderCreateRequest(List.of(new OrderItemRequest(menuId, 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
         PaymentResponse payment = paymentService.pay(new PaymentRequest(order.id(), "CARD"), "customer1");
         orderService.statusOrder(order.id(), owner, OrderStatus.ORDER_ACCEPTED);
         clock.set(deliveredAt);

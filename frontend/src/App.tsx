@@ -9,7 +9,9 @@ export function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route index element={<P.stores />} />
+        {/* 랜딩: 비로그인 방문자용 사장님 소개, 로그인 사용자는 역할별 첫 화면으로 이동 */}
+        <Route index element={<P.landing />} />
+        <Route path="stores" element={<P.stores />} />
         <Route path="stores/:id" element={<P.storeDetail />} />
         <Route path="login" element={<P.login />} />
         <Route path="signup" element={<P.signup />} />

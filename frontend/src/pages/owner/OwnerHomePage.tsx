@@ -246,6 +246,7 @@ function Ticket({
           #{order.id}
         </Link>
         <span className="it">{itemsLabel(order)}</span>
+        {order.deliveryRequest && <span className="o-req">요청 · {order.deliveryRequest}</span>}
       </div>
       <div className="t-amt num">{won(order.totalPrice)}</div>
       <div className="t-act">

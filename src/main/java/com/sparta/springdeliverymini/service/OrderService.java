@@ -11,6 +11,7 @@ import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
@@ -112,7 +113,7 @@ public class OrderService {
         }
 
         Order order = orderRepository.findDetailById(orderId)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "주문이 없습니다."));
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.ORDER_NOT_FOUND, "주문이 없습니다."));
 
         // CUSTOMER: 주문자 본인인지 / OWNER: 주문이 들어간 매장의 주인인지 → 아니면 403
         boolean accessible = currentUser.getRole() == Role.CUSTOMER
@@ -159,7 +160,7 @@ public class OrderService {
         List<Long> menuIds = request.items().stream().map(OrderItemRequest::menuId).toList();
         Set<Long> distinctMenuIds = new HashSet<>(menuIds);
         if (distinctMenuIds.size() != menuIds.size()) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "같은 메뉴는 한 항목으로 합쳐서 주문해주세요.");
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.DUPLICATE_ORDER_ITEM, "같은 메뉴는 한 항목으로 합쳐서 주문해주세요.");
         }
 
         // 3. 주문할 메뉴를 한 번에 조회
@@ -167,7 +168,7 @@ public class OrderService {
         Map<Long, Menu> menus = menuRepository.findAllByIdInAndDeletedFalse(distinctMenuIds).stream()
                 .collect(Collectors.toMap(Menu::getId, Function.identity()));
         if (menus.size() != distinctMenuIds.size()) {
-            throw new ApiException(HttpStatus.NOT_FOUND, "메뉴가 없습니다.");
+            throw new ApiException(HttpStatus.NOT_FOUND, ErrorCode.MENU_NOT_FOUND, "메뉴가 없습니다.");
         }
 
         // 4. 모든 메뉴가 같은 매장의 메뉴인지 확인 → 다르면 400
@@ -176,19 +177,21 @@ public class OrderService {
         boolean sameStore = menus.values().stream()
                 .allMatch(menu -> menu.getStore().getId().equals(store.getId()));
         if (!sameStore) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "한 주문에는 같은 매장의 메뉴만 담을 수 있습니다.");
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.MIXED_STORE_ORDER, "한 주문에는 같은 매장의 메뉴만 담을 수 있습니다.");
         }
 
         // 5. 처음 생성되는 주문은 항상 주문요청 상태
         // 총액 = 항목별 메뉴 가격 × 수량의 합 (Order.addItem에서 계산)
         // 금액은 long(원 단위 정수)으로 계산, long 범위를 넘으면 잘못된 값이 저장되지 않도록 400
-        Order order = new Order(customer, store, request.deliveryAddress(), OrderStatus.ORDER_REQUEST);
+        // 배송 주소 형식(우편번호 5자리·길이·제어 문자)은 DeliveryAddress가 검증 → 위반 시 400 INVALID_ADDRESS
+        DeliveryAddress address = new DeliveryAddress(request.zipCode(), request.roadAddress(), request.detailAddress());
+        Order order = new Order(customer, store, address, request.deliveryRequest(), OrderStatus.ORDER_REQUEST);
         try {
             for (OrderItemRequest item : request.items()) {
                 order.addItem(menus.get(item.menuId()), item.quantity());
             }
         } catch (ArithmeticException e) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "주문 금액이 너무 큽니다. 수량을 줄여주세요.");
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.ORDER_AMOUNT_TOO_LARGE, "주문 금액이 너무 큽니다. 수량을 줄여주세요.");
         }
 
         return OrderResponse.from(orderRepository.save(order));
@@ -222,6 +225,7 @@ public class OrderService {
                 .orElseThrow(() ->
                         new ApiException(
                                 HttpStatus.NOT_FOUND,
+                                ErrorCode.ORDER_NOT_FOUND,
                                 "주문이 없습니다."
                         )
                 );
@@ -286,6 +290,7 @@ public class OrderService {
                 .orElseThrow(() ->
                         new ApiException(
                                 HttpStatus.NOT_FOUND,
+                                ErrorCode.ORDER_NOT_FOUND,
                                 "주문이 없습니다."
                         )
                 );
