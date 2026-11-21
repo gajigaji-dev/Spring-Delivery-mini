@@ -66,6 +66,8 @@ class OrderAddressMigrationTest {
         assertThat(row.get("zip_code")).isNull();
         assertThat(row.get("road_address")).isNull();
         assertThat(row.get("detail_address")).isNull();
+        // V19 배달 요청사항도 기존 주문은 NULL
+        assertThat(jdbc.queryForObject("SELECT delivery_request FROM orders WHERE id = 1", String.class)).isNull();
     }
 
     @Test

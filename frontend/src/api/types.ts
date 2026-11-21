@@ -64,6 +64,8 @@ export interface Order {
   zipCode: string | null;
   roadAddress: string | null;
   detailAddress: string | null;
+  /** 배달 요청사항 (선택, V19) — 없으면 null */
+  deliveryRequest: string | null;
   status: OrderStatus;
   createdAt: string;
   updatedAt: string;

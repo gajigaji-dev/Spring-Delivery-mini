@@ -19,6 +19,14 @@ public record OrderCreateRequest(
         // 예전 한 줄 주소(deliveryAddress)는 받지 않음 — 보내도 무시되고 우편번호 누락으로 400
         String zipCode,
         String roadAddress,
-        String detailAddress            // 선택 (단독 주택 등)
+        String detailAddress,           // 선택 (단독 주택 등)
+
+        // 배달 요청사항 (선택, 100자 이하) — 형식 검증은 Order 생성자 (위반 시 400 + code INVALID_DELIVERY_REQUEST)
+        String deliveryRequest
 ) {
+
+    // 요청사항 없이 만드는 기존 호출용 (테스트 등)
+    public OrderCreateRequest(List<OrderItemRequest> items, String zipCode, String roadAddress, String detailAddress) {
+        this(items, zipCode, roadAddress, detailAddress, null);
+    }
 }

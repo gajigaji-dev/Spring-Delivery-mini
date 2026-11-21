@@ -646,6 +646,8 @@ APP_PORT=8091 NOTIFICATION_SENDER=log docker compose up -d --build app
 - 프론트 `npm test`: `validateAddress.test.ts`, `postcode.test.ts`, `errorMessages.test.ts`
 
 ### 7-2. 브라우저 확인 (아직 — 사용자 확인 항목)
+- (확인함, 2026-11-21 헤드리스 Chromium) 스크립트 URL에 파라미터 없이 로드 → "허용되지 않는 파라미터" 오류 없음, '테헤란로 152' 검색 → 결과 선택 시 06236·도로명 채움·검색 창 닫힘·상세 주소 포커스. 예전 `?autoload=false`는 현재 스크립트가 거부함
+- (확인함, 2026-11-21 헤드리스 Chromium, 13개 항목) 장바구니 기본 체험용 주소, '주소 검색' 전환 시 경고, 요청사항 칩·글자 수, 주문 본문(zipCode 00000·deliveryRequest), 주문 상세·사장님 홈·주문 관리의 요청사항 표시 — 로컬 compose 앱이 V17 이미지라 주문 API 응답은 가로채서 확인(서버 저장·400은 `OrderAddressErrorCodeIntegrationTest`)
 - 고객 로그인 → 메뉴 담기 → 장바구니 '주소 검색' → 검색 창이 화면 안에 열림 → 주소 선택 시 우편번호·도로명이 채워지고 상세 주소 칸으로 포커스
 - 주소를 고르지 않고 '주문하기' → 주소 칸 아래 안내, 요청은 나가지 않음
 - 주문 상세에 `(우편번호) 한 줄 주소` 표시, V18 이전 주문은 우편번호 없이 기존 주소 그대로

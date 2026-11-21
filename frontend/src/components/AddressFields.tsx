@@ -53,7 +53,7 @@ export function AddressFields({ value, onChange, errors }: Props) {
 
   return (
     <fieldset className="address">
-      <legend>배달 주소</legend>
+      <legend className="sr-only">배달 주소 검색</legend>
       <div className="address__row">
         <label className="address__zip">
           우편번호
@@ -90,7 +90,10 @@ export function AddressFields({ value, onChange, errors }: Props) {
         />
       </label>
       <label>
-        상세 주소 <span className="muted">(선택)</span>
+        {/* .form label은 grid라 글자와 span을 한 덩어리로 묶어야 한 줄에 나옴 */}
+        <span>
+          상세 주소 <span className="muted">(선택)</span>
+        </span>
         <input
           ref={detailRef}
           value={value.detailAddress}

@@ -29,6 +29,7 @@ function order(id: number, status: OrderStatus, createdAt: string, totalPrice = 
     zipCode: null,
     roadAddress: null,
     detailAddress: null,
+    deliveryRequest: null,
     status,
     createdAt,
     updatedAt: createdAt,

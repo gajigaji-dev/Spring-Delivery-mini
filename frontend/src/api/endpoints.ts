@@ -59,7 +59,8 @@ export const orderApi = {
   list: (afterId: number | null, size = 20) => getPage<Order>('/api/orders', { afterId: afterId ?? undefined, size }),
   get: (id: number) => get<OrderDetail>(`/api/orders/${id}`),
   // 주소는 우편번호·도로명·상세로 나눠 보냄 (#77) — 상세 주소가 비면 보내지 않음(서버는 null로 저장)
-  create: async (items: { menuId: number; quantity: number }[], address: AddressInput) =>
+  // 배달 요청사항은 비면 보내지 않음(서버는 null로 저장)
+  create: async (items: { menuId: number; quantity: number }[], address: AddressInput, deliveryRequest = '') =>
     (
       await request<Order>('/api/orders', {
         method: 'POST',
@@ -68,6 +69,7 @@ export const orderApi = {
           zipCode: address.zipCode,
           roadAddress: address.roadAddress,
           detailAddress: address.detailAddress || undefined,
+          deliveryRequest: deliveryRequest || undefined,
         },
       })
     ).data,

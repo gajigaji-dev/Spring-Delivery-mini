@@ -1,10 +1,11 @@
 /**
- * 다음(카카오) 우편번호 서비스 (#77) — https://postcode.map.daum.net/guide
+ * 카카오(구 다음) 우편번호 서비스 (#77) — https://postcode.map.kakao.com/guide
  * 키 발급 없이 쓰는 공개 스크립트. 장바구니에서 '주소 검색'을 누를 때 처음 한 번만 불러옴
  * (모든 화면의 첫 로딩에 외부 스크립트를 넣지 않도록).
  */
-// autoload=false: 비동기로 불러올 때 공식 가이드 방식 — 준비가 끝나면 daum.postcode.load(callback)이 호출됨
-const SCRIPT_URL = 'https://t1.kakaocdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js?autoload=false';
+// 쿼리 파라미터를 붙이지 않음 — 현재 스크립트는 파라미터가 있으면 "허용되지 않는 파라미터" 오류를 띄움
+// (예전 가이드의 ?autoload=false는 없어짐). 스크립트가 실행되면 kakao.Postcode가 바로 생기므로 onload에서 꺼내 씀
+const SCRIPT_URL = 'https://t1.kakaocdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
 const LOAD_TIMEOUT_MS = 10_000;
 
 /** oncomplete로 받는 값 중 쓰는 것만 */
@@ -26,17 +27,24 @@ interface PostcodeConstructor {
   new (options: { oncomplete: (data: PostcodeData) => void; width?: string; height?: string }): PostcodeInstance;
 }
 
+// 현재 이름은 kakao, daum은 예전 코드 호환용 별칭 (스크립트가 둘을 같은 객체로 맞춤)
 declare global {
   interface Window {
-    daum?: { Postcode?: PostcodeConstructor; postcode?: { load: (callback: () => void) => void } };
+    kakao?: { Postcode?: PostcodeConstructor };
+    daum?: { Postcode?: PostcodeConstructor };
   }
+}
+
+function loadedPostcode(): PostcodeConstructor | undefined {
+  return window.kakao?.Postcode ?? window.daum?.Postcode;
 }
 
 let loading: Promise<PostcodeConstructor> | null = null;
 
 /** 스크립트를 한 번만 불러옴. 실패하면 다음 호출에서 다시 시도 */
 export function loadPostcode(): Promise<PostcodeConstructor> {
-  if (window.daum?.Postcode) return Promise.resolve(window.daum.Postcode);
+  const ready = loadedPostcode();
+  if (ready) return Promise.resolve(ready);
   if (loading) return loading;
 
   loading = new Promise<PostcodeConstructor>((resolve, reject) => {
@@ -50,21 +58,14 @@ export function loadPostcode(): Promise<PostcodeConstructor> {
       loading = null;
       reject(error);
     };
-    // 타이머는 load 콜백까지 유지 — 스크립트는 받았지만 내부 리소스를 못 받아 멈추는 경우도 시간 초과로 처리
     script.onload = () => {
-      const daum = window.daum;
-      if (!daum?.postcode) {
+      const Postcode = loadedPostcode();
+      if (!Postcode) {
         fail(new Error('missing'));
         return;
       }
-      daum.postcode.load(() => {
-        if (!daum.Postcode) {
-          fail(new Error('missing'));
-          return;
-        }
-        clearTimeout(timer);
-        resolve(daum.Postcode);
-      });
+      clearTimeout(timer);
+      resolve(Postcode);
     };
     script.onerror = () => fail(new Error('load error'));
     document.head.appendChild(script);

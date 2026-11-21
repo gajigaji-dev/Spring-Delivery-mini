@@ -23,6 +23,7 @@ public enum ErrorCode {
 
     // 400 — 다시 입력하면 해결
     INVALID_ADDRESS,             // 우편번호·도로명·상세 주소 형식 위반 (DeliveryAddress)
+    INVALID_DELIVERY_REQUEST,    // 배달 요청사항 100자 초과·제어 문자 (Order)
     DUPLICATE_ORDER_ITEM,        // 같은 메뉴가 여러 항목으로 나뉨 → 수량으로 합쳐서 요청
     MIXED_STORE_ORDER,           // 한 주문에 여러 매장 메뉴
     ORDER_AMOUNT_TOO_LARGE,      // 총액이 long 범위를 넘음

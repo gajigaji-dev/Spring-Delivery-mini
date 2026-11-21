@@ -45,6 +45,13 @@ public class GlobalExceptionHandler {
         return clientError(HttpStatus.CONFLICT, e.getCode(), e.getMessage(), request);
     }
 
+    // 배달 요청사항 형식 위반 (Order, #77 후속) → 400
+    @ExceptionHandler(InvalidDeliveryRequestException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidDeliveryRequest(InvalidDeliveryRequestException e,
+                                                                         HttpServletRequest request) {
+        return clientError(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_DELIVERY_REQUEST, e.getMessage(), request);
+    }
+
     // 배송 주소 형식 위반 (DeliveryAddress, #77) → 400
     @ExceptionHandler(InvalidAddressException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidAddress(InvalidAddressException e,

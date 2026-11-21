@@ -4,6 +4,7 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import com.sparta.springdeliverymini.exception.ErrorCode;
+import com.sparta.springdeliverymini.exception.InvalidDeliveryRequestException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import jakarta.persistence.*;
 import org.hibernate.annotations.BatchSize;
@@ -12,6 +13,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.regex.Pattern;
 
 // BaseEntity 상속 → created_at(주문 시각), updated_at(상태 변경 시각) 자동 기록
 @Entity
@@ -61,6 +63,10 @@ public class Order extends BaseEntity {
     @Embedded
     private DeliveryAddress address;
 
+    // 배달 요청사항 (선택, V19) — 생성 때 한 번 정하고 바꾸지 않음. 없으면 NULL
+    @Column(length = DELIVERY_REQUEST_MAX)
+    private String deliveryRequest;
+
     // 주문 상태
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -72,11 +78,26 @@ public class Order extends BaseEntity {
     // DB에서도 "배달완료 상태 ⇔ delivered_at 있음"을 CHECK 제약으로 강제 (V6)
     private LocalDateTime deliveredAt;
 
+    public static final int DELIVERY_REQUEST_MAX = 100;
+    private static final Pattern CONTROL_CHARS = Pattern.compile("\\p{Cntrl}");
+
     // 항목 없이 생성 → addItem()으로 항목을 담음 (총액은 0원에서 시작)
     public Order(
             User user,
             Store store,
             DeliveryAddress address,
+            OrderStatus status
+    ) {
+        this(user, store, address, null, status);
+    }
+
+    // 배달 요청사항은 앞뒤 공백을 지우고, 비었으면 NULL로 저장
+    // 100자 초과·줄바꿈 등 제어 문자는 400 (사장님 주문 티켓·알림의 한 줄 표시가 깨지지 않도록)
+    public Order(
+            User user,
+            Store store,
+            DeliveryAddress address,
+            String deliveryRequest,
             OrderStatus status
     ) {
         if (address == null) {
@@ -86,7 +107,22 @@ public class Order extends BaseEntity {
         this.store = store;
         this.address = address;
         this.deliveryAddress = address.fullAddress();
+        this.deliveryRequest = normalizeDeliveryRequest(deliveryRequest);
         this.status = status;
+    }
+
+    private static String normalizeDeliveryRequest(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String trimmed = value.strip();
+        if (trimmed.length() > DELIVERY_REQUEST_MAX) {
+            throw new InvalidDeliveryRequestException("배달 요청사항은 " + DELIVERY_REQUEST_MAX + "자 이하여야 합니다.");
+        }
+        if (CONTROL_CHARS.matcher(trimmed).find()) {
+            throw new InvalidDeliveryRequestException("배달 요청사항에 줄바꿈 등 사용할 수 없는 문자가 있습니다.");
+        }
+        return trimmed;
     }
 
     // 주문 항목 추가 + 총액 갱신

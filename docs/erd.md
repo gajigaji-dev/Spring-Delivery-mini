@@ -57,6 +57,7 @@ erDiagram
         varchar zip_code "V18, 이전 주문 NULL"
         varchar road_address
         varchar detail_address
+        varchar delivery_request "V19, 선택"
         varchar status
         timestamp delivered_at "정산 기간 기준"
     }

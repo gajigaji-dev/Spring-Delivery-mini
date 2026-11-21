@@ -185,7 +185,7 @@ public class OrderService {
         // 금액은 long(원 단위 정수)으로 계산, long 범위를 넘으면 잘못된 값이 저장되지 않도록 400
         // 배송 주소 형식(우편번호 5자리·길이·제어 문자)은 DeliveryAddress가 검증 → 위반 시 400 INVALID_ADDRESS
         DeliveryAddress address = new DeliveryAddress(request.zipCode(), request.roadAddress(), request.detailAddress());
-        Order order = new Order(customer, store, address, OrderStatus.ORDER_REQUEST);
+        Order order = new Order(customer, store, address, request.deliveryRequest(), OrderStatus.ORDER_REQUEST);
         try {
             for (OrderItemRequest item : request.items()) {
                 order.addItem(menus.get(item.menuId()), item.quantity());

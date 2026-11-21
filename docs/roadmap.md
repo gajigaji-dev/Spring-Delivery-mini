@@ -91,8 +91,8 @@
 |---|---|---|---|---|
 | 1 | ~~#76~~ 완료 (PR #80) | 사장님 실시간 주문 알림 (SSE) | 1.5 ~ 2일 | 실제 1일 이내 |
 | 2 | #77 | 주소·결제 예외 처리 (우편번호·도로명·상세 분리 V18, 결제 오류 코드·화면 문구) | 1 ~ 1.5일 | 구현·자동 테스트 완료 (2026-11-21), 브라우저 확인·PR 대기 |
-| 3 | 미정 | 토스페이먼츠 테스트 모드 (공식 공개 테스트 키, 승인 금액 대조, 결제 키 저장 V19, 취소 연동) | 2 ~ 3일 | |
-| 4 | 미정 | 소셜 로그인 (카카오 + 구글, 소셜 계정 연결 V20, 성공 시 기존 Refresh 쿠키) | 2.5 ~ 4일 | |
+| 3 | 미정 | 토스페이먼츠 테스트 모드 (공식 공개 테스트 키, 승인 금액 대조, 결제 키 저장 V20, 취소 연동) | 2 ~ 3일 | |
+| 4 | 미정 | 소셜 로그인 (카카오 + 구글, 소셜 계정 연결 V21, 성공 시 기존 Refresh 쿠키) | 2.5 ~ 4일 | |
 
 ### #76 결과
 - 산출물: `GET /api/owner/order-events`, `event.OwnerOrderStreamRegistry`, `config.OpenEntityManagerInViewConfig`, 프론트 `api/orderStream.ts`·`owner/orderStreamController.ts`
@@ -103,4 +103,5 @@
 - 주소: V18(`zip_code`·`road_address`·`detail_address`, 기존 주문은 NULL — 백필 안 함), `entity.DeliveryAddress`(@Embeddable, 생성 시 검증 → 400 `INVALID_ADDRESS`), `delivery_address`는 한 줄 주소로 계속 채움 → 기존 조회·화면 영향 없음
 - 오류 코드: `exception.ErrorCode`에 주문·결제 코드 추가, `Invalid*StatusException`에 code (`docs/api.md` 공통 사항 표)
 - 프론트: `components/AddressFields`(다음 우편번호 embed, 실패 시 직접 입력), `address/validateAddress`, `api/errorMessages`(code별 문구), 이미 결제·취소된 주문 409 시 다시 불러오기
-- 남은 것: 브라우저에서 실제 우편번호 검색 확인
+- 후속(같은 브랜치): 체험용 주소(기본값, 프론트만)·배달 요청사항(V19) — 이후 마이그레이션 번호가 하나씩 밀림(토스 V20, 소셜 V21)
+- 남은 것: 실제 휴대폰 확인

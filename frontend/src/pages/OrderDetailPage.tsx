@@ -73,6 +73,11 @@ export default function OrderDetailPage() {
         {order.storeName} · {order.zipCode && <span className="muted num">({order.zipCode}) </span>}
         {order.deliveryAddress}
       </p>
+      {order.deliveryRequest && (
+        <p className="order-req">
+          <span className="muted">요청사항</span> {order.deliveryRequest}
+        </p>
+      )}
       <div className="table-wrap">
         <table>
           <thead>

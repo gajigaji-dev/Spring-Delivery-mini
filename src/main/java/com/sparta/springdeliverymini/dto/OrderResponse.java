@@ -16,6 +16,7 @@ public record OrderResponse(
         String zipCode,           // 우편번호·도로명·상세 (#77) — V18 이전 주문은 null
         String roadAddress,
         String detailAddress,
+        String deliveryRequest,   // 배달 요청사항 (없으면 null, V19)
         OrderStatus status,
         LocalDateTime createdAt,  // 주문 시각 (BaseEntity)
         LocalDateTime updatedAt,  // 마지막 상태 변경 시각 (BaseEntity)
@@ -32,6 +33,7 @@ public record OrderResponse(
                 order.getAddress() == null ? null : order.getAddress().getZipCode(),
                 order.getAddress() == null ? null : order.getAddress().getRoadAddress(),
                 order.getAddress() == null ? null : order.getAddress().getDetailAddress(),
+                order.getDeliveryRequest(),
                 order.getStatus(),
                 order.getCreatedAt(),
                 order.getUpdatedAt(),

@@ -67,6 +67,7 @@
   | 상태 | code | 상황 | 클라이언트 대응 |
   |---|---|---|---|
   | 400 | `INVALID_ADDRESS` | 우편번호 5자리 아님, 도로명 없음·150자 초과, 상세 100자 초과, 제어 문자 | 주소 칸 안내 |
+  | 400 | `INVALID_DELIVERY_REQUEST` | 배달 요청사항 100자 초과·제어 문자 (V19) | 요청사항 칸 안내 |
   | 400 | `DUPLICATE_ORDER_ITEM` | 같은 메뉴가 여러 항목 | 장바구니 확인 |
   | 400 | `MIXED_STORE_ORDER` | 여러 매장 메뉴가 섞임 | 장바구니 확인 |
   | 400 | `ORDER_AMOUNT_TOO_LARGE` | 총액이 long 범위 초과 | 수량 줄이기 |
@@ -583,7 +584,8 @@ Request
   ],
   "zipCode": "06236",
   "roadAddress": "서울 강남구 테헤란로 152 (역삼동)",
-  "detailAddress": "101동 1203호"
+  "detailAddress": "101동 1203호",
+  "deliveryRequest": "문 앞에 두고 벨 눌러 주세요"
 }
 ```
 - `items`: 필수, 1~50개. 모두 같은 매장의 메뉴여야 함
@@ -595,6 +597,8 @@ Request
   - `detailAddress`: 선택, 100자 이하 (빈 값이면 `null`로 저장)
   - 줄바꿈·탭 등 제어 문자 거부. 위반은 400 + `code: INVALID_ADDRESS`
   - 예전 한 줄 `deliveryAddress`는 더 이상 받지 않음 (보내도 무시 → 우편번호 누락 400)
+  - 데모 화면은 기본으로 체험용 주소 `00000` / `체험용 주소 (실제 배달되지 않음)`를 보냄 (실제 집 주소가 저장되지 않도록, 서버는 형식만 검증)
+- `deliveryRequest`: 배달 요청사항, 선택, 앞뒤 공백 제외 100자 이하, 제어 문자 거부(V19). 비면 `null`로 저장. 위반은 400 + `code: INVALID_DELIVERY_REQUEST`
 - 총액은 요청으로 받지 않고 서버에서 `항목별 메뉴 가격 × 수량의 합`으로 계산
 - 매장은 요청으로 받지 않고 메뉴의 매장으로 연결
 
@@ -609,7 +613,7 @@ Response `201 Created`
   "totalPrice": 38000,
   "deliveryAddress": "서울 강남구 테헤란로 152 (역삼동) 101동 1203호",
   "zipCode": "06236", "roadAddress": "서울 강남구 테헤란로 152 (역삼동)", "detailAddress": "101동 1203호",
-  "status": "ORDER_REQUEST",
+  "deliveryRequest": "문 앞에 두고 벨 눌러 주세요", "status": "ORDER_REQUEST",
   "createdAt": "2026-10-08T14:03:00", "updatedAt": "2026-10-08T14:03:00",
   "deliveredAt": null
 }
@@ -621,7 +625,7 @@ Response `201 Created`
 
 | 코드 | 상황 |
 |---|---|
-| 400 | 입력 값 검증 실패, 주소 형식(`INVALID_ADDRESS`), 같은 메뉴 중복(`DUPLICATE_ORDER_ITEM`), 다른 매장의 메뉴가 섞임(`MIXED_STORE_ORDER`), 총액이 너무 큼(`ORDER_AMOUNT_TOO_LARGE`) |
+| 400 | 입력 값 검증 실패, 주소 형식(`INVALID_ADDRESS`), 요청사항 형식(`INVALID_DELIVERY_REQUEST`), 같은 메뉴 중복(`DUPLICATE_ORDER_ITEM`), 다른 매장의 메뉴가 섞임(`MIXED_STORE_ORDER`), 총액이 너무 큼(`ORDER_AMOUNT_TOO_LARGE`) |
 | 401 | 토큰 없음 |
 | 403 | OWNER가 요청 |
 | 404 | 항목 중 하나라도 메뉴가 없거나 삭제됨 (`MENU_NOT_FOUND`) |

@@ -442,6 +442,18 @@
   white-space: nowrap;
 }
 
+/* 배달 요청사항 — 품목 아래 한 줄 (길면 말줄임) */
+.o-req {
+  display: block;
+  margin: 2px 0 0;
+  font-size: var(--fs-min);
+  font-weight: 600;
+  color: var(--tomato-700);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .o-amt {
   font-size: 16px;
   font-weight: 800;

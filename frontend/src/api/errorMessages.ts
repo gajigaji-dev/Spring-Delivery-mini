@@ -8,6 +8,7 @@ import { ApiError } from './client';
 const CODE_MESSAGES: Record<string, string> = {
   // 주소·주문 입력
   INVALID_ADDRESS: '배달 주소를 확인해 주세요. 주소 검색으로 우편번호와 도로명 주소를 선택해야 합니다.',
+  INVALID_DELIVERY_REQUEST: '배달 요청사항을 확인해 주세요. 100자 이하로, 줄바꿈 없이 입력해야 합니다.',
   DUPLICATE_ORDER_ITEM: '같은 메뉴가 여러 번 담겼습니다. 장바구니를 확인해 주세요.',
   MIXED_STORE_ORDER: '한 번에 한 매장의 메뉴만 주문할 수 있습니다.',
   ORDER_AMOUNT_TOO_LARGE: '주문 금액이 너무 큽니다. 수량을 줄여 주세요.',

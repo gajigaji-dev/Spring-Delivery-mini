@@ -130,6 +130,40 @@ class OrderAddressErrorCodeIntegrationTest {
                 .andExpect(jsonPath("$[0].deliveryAddress").value("서울시 예전 주소 3층"));
     }
 
+    // ===== 배달 요청사항 (V19) =====
+
+    @Test
+    void 배달_요청사항을_보내면_저장되고_조회_응답에_포함된다() throws Exception {
+        String body = mockMvc.perform(auth(post("/api/orders"), customer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"items\": [{\"menuId\": " + menu.getId() + ", \"quantity\": 1}], "
+                                + "\"zipCode\": \"00000\", \"roadAddress\": \"체험용 주소 (실제 배달되지 않음)\", "
+                                + "\"deliveryRequest\": \" 문 앞에 두고 벨 눌러 주세요 \"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.deliveryRequest").value("문 앞에 두고 벨 눌러 주세요"))
+                .andReturn().getResponse().getContentAsString();
+        long orderId = ((Number) JsonPath.read(body, "$.id")).longValue();
+
+        mockMvc.perform(auth(get("/api/orders/" + orderId), customer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.deliveryRequest").value("문 앞에 두고 벨 눌러 주세요"));
+        assertThat(jdbc.queryForObject("SELECT delivery_request FROM orders WHERE id = ?", String.class, orderId))
+                .isEqualTo("문 앞에 두고 벨 눌러 주세요");
+    }
+
+    @Test
+    void 배달_요청사항이_100자를_넘으면_400_INVALID_DELIVERY_REQUEST이고_주문은_저장되지_않는다() throws Exception {
+        mockMvc.perform(auth(post("/api/orders"), customer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"items\": [{\"menuId\": " + menu.getId() + ", \"quantity\": 1}], "
+                                + "\"zipCode\": \"06236\", \"roadAddress\": \"서울 강남구 테헤란로 152\", "
+                                + "\"deliveryRequest\": \"" + "가".repeat(101) + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_DELIVERY_REQUEST"));
+
+        assertThat(orderRepository.count()).isZero();
+    }
+
     // ===== 오류 코드 =====
 
     @Test

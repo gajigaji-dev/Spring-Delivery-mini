@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.entity;
 
 import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.exception.ErrorCode;
+import com.sparta.springdeliverymini.exception.InvalidDeliveryRequestException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -186,6 +187,34 @@ class OrderTest {
                 .isInstanceOf(InvalidOrderStatusException.class)
                 .hasMessage("취소된 주문은 결제할 수 없습니다.")
                 .extracting("code").isEqualTo(ErrorCode.ORDER_ALREADY_CANCELLED);
+    }
+
+    // ===== 배달 요청사항 (V19) =====
+
+    @Test
+    void 배달_요청사항은_앞뒤_공백을_지워_저장하고_비었으면_null이다() {
+        DeliveryAddress address = TestAddresses.seoul();
+
+        assertThat(new Order(null, null, address, "  문 앞에 두고 벨 눌러 주세요 ", OrderStatus.ORDER_REQUEST).getDeliveryRequest())
+                .isEqualTo("문 앞에 두고 벨 눌러 주세요");
+        assertThat(new Order(null, null, address, "   ", OrderStatus.ORDER_REQUEST).getDeliveryRequest()).isNull();
+        assertThat(new Order(null, null, address, OrderStatus.ORDER_REQUEST).getDeliveryRequest()).isNull();
+    }
+
+    @Test
+    void 배달_요청사항은_100자까지_허용하고_넘으면_거부한다() {
+        DeliveryAddress address = TestAddresses.seoul();
+
+        assertThat(new Order(null, null, address, "가".repeat(100), OrderStatus.ORDER_REQUEST).getDeliveryRequest()).hasSize(100);
+        assertThatThrownBy(() -> new Order(null, null, address, "가".repeat(101), OrderStatus.ORDER_REQUEST))
+                .isInstanceOf(InvalidDeliveryRequestException.class)
+                .hasMessage("배달 요청사항은 100자 이하여야 합니다.");
+    }
+
+    @Test
+    void 배달_요청사항에_줄바꿈이_있으면_거부한다() {
+        assertThatThrownBy(() -> new Order(null, null, TestAddresses.seoul(), "문 앞에\n두세요", OrderStatus.ORDER_REQUEST))
+                .isInstanceOf(InvalidDeliveryRequestException.class);
     }
 
     @Test
