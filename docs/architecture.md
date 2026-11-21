@@ -90,6 +90,9 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── RetentionProperties.java         # 보관 기간 정리 설정(retention.*) 바인딩·검증 (V14)
 │   ├── BackgroundTaskConfig.java        # 알림 발송·보관 기간 정리 주기 작업 등록, 발송기 선택(log·slack) 빈 (V14, #69)
 │   ├── OwnerStreamConfig.java           # 실시간 주문 알림 하트비트 주기 작업 등록 (#76)
+│   ├── TossPaymentsProperties.java      # 토스 키(test_ 키만)·시간 초과·취소 재시도 설정(toss.payments.*) 바인딩·검증 (V20)
+│   ├── TossPaymentsConfig.java          # PG 취소 재시도 주기 작업 등록 (V20)
+│   ├── RedisClientConfig.java           # Lettuce DNS 조회 상한(= connect-timeout) — compose Redis 장애 시 5초 지연 원인 조치
 │   ├── OwnerStreamProperties.java       # 사장님 실시간 주문 알림 설정(owner-stream.*) 바인딩·검증 (#76)
 │   ├── OpenEntityManagerInViewConfig.java # open-in-view를 직접 등록하고 SSE 경로만 제외 — 긴 응답이 DB 커넥션을 잡지 않도록 (#76)
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing, 생성·수정 시각을 Clock 기준으로 기록
@@ -150,6 +153,12 @@ src/main/java/com/sparta/springdeliverymini
 ├── scheduler
 │   ├── SettlementScheduler.java         # 매일 01:10 최근 N일 정산 자동 집계 (분산 락을 잡은 인스턴스만), 실행 결과·소요 시간 메트릭
 │   └── FixedDelayTask.java              # 전용 스레드로 fixed-delay 반복 실행 (알림 발송·보관 기간 정리) (V14)
+├── pg
+│   ├── TossPaymentsClient.java          # 토스 코어 API 인터페이스(승인·조회·취소) — toss.payments.mode로 구현 선택 (V20·V21)
+│   ├── TossPaymentsHttpClient.java      # real: 토스 테스트 서버 호출 — Basic 인증, 멱등 키, 확정 거절/결과 불명 예외 구분
+│   ├── FakeTossPaymentsClient.java      # fake: 토스에 접속하지 않는 가짜 PG (메모리, 장애 시나리오, prod 불가) (V21)
+│   ├── TossPayment.java                 # 토스 Payment 응답 중 쓰는 값만 (상태·금액·승인 시각)
+│   └── TossApiException.java / TossUnknownResultException.java # 토스가 거절(4xx) / 처리 여부 모름(시간 초과·5xx·처리 중)
 ├── maintenance
 │   └── RetentionCleaner.java            # 보관 기간이 지난 발행 완료 이벤트·처리 기록·멱등성 기록 삭제 (V14), 만료된 Refresh Token (V16)
 ├── lock
@@ -162,6 +171,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── MenuRepository.java
 │   ├── OrderRepository.java
 │   ├── PaymentRepository.java
+│   ├── PgCancelRequestRepository.java   # PG 취소 요청 — 시도할 행 FOR UPDATE SKIP LOCKED, 같은 결제는 순서대로 (V20·V21)
+│   ├── PaymentRefundRepository.java     # 환불 1건 — 미차감 환불·기간별 환불 (정산 차감 단위, V21)
 │   ├── SettlementRepository.java
 │   ├── SettlementStatusHistoryRepository.java       # 정산 상태 변경 이력 (처리자 함께 조회)
 │   ├── SettlementAggregationFailureRepository.java  # 정산 집계 실패 기록
@@ -189,6 +200,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── ConsumedEvent.java               # Consumer가 처리한 이벤트 (eventId PK) (#42)
 │   ├── Notification.java / NotificationSendStatus.java # 알림 기록, 발송 상태(PENDING → SENT / FAILED, SKIPPED) (#42, V14)
 │   ├── PaymentIdempotencyKey.java       # DB 결제 멱등성 기록 — 결제와 같은 트랜잭션에 저장 (V14)
+│   ├── PaymentRefund.java               # 환불 1건 (V21) — 정산 차감 단위, 생성 후 불변
+│   ├── PgProvider.java / PgCancelRequest.java / PgCancelStatus.java # PG 공급자(TOSS), PG 취소 요청 PENDING → DONE / FAILED (V20)
 │   └── RefreshToken.java / RefreshTokenRevokeReason.java # Refresh Token(해시만), 폐기 사유 ROTATED·LOGOUT·REUSE_DETECTED (V15)
 ├── dto                                  # 요청(Request) / 응답(Response) 객체, PageQuery(목록 page·size 검증, id 오름차순 고정), KeysetQuery(주문 목록 afterId·size, #54)
 └── exception
@@ -283,6 +296,9 @@ src/main/resources
   - 결제: 처리 중 기록을 못 남기면 새 결제는 하지 않고 503(이미 커밋된 결제의 재시도는 DB 기록으로 재전송). 결제 후 완료 기록·실패 후 삭제가 실패하면 결제 결과는 그대로 응답하고 로그·메트릭만 → 이후 재시도는 DB 기록으로 재전송
   - 스케줄러: 락 확인이 안 되면 실행하지 않음 (다음 실행의 catch-up·관리자 재집계로 보충)
   - 명령 타임아웃 1초(`spring.data.redis.timeout`) — Lettuce 기본 60초 동안 요청이 묶이지 않도록
+  - **DNS 조회 상한 1초** (`config.RedisClientConfig`, 2026-11-21) — compose에서 Redis 중단 시 503이 5초 넘게 걸리던 원인
+    - 원인: Lettuce는 `netty-resolver-dns`가 있으면 Netty 자체 DNS 조회기를 씀. Redis 컨테이너가 멈추면 Docker 내장 DNS가 `redis`를 호스트 DNS로 넘겨 NXDOMAIN까지 약 4초(앱 컨테이너 `getent hosts redis` 3.9초, 정상 18ms). `connect-timeout`(1초)은 TCP 연결에만 걸려 이름 조회에는 적용되지 않음. local jar는 `localhost`라 조회가 없어 1초
+    - 조치: Lettuce `ClientResources`의 DNS 조회기를 질의 상한 = `connect-timeout`으로 교체 → 키 있는 결제 503이 3.9~9.5초 → **1.02~1.04초**(compose 실측 3회, `docs/local-verification.md` 2-5)
   - Redis 헬스체크는 끔 (`management.health.redis.enabled: false`) — 키 없는 결제·조회 등 나머지 API는 정상이므로 인스턴스 전체가 DOWN 처리되지 않도록
 - 단일 Redis 노드 기준. 복제·클러스터 장애 조치(failover) 중 기록 유실은 DB 제약이 최종 방어 (Redlock은 쓰지 않음)
 
@@ -578,6 +594,31 @@ Refresh Token이 쿠키라 다른 사이트가 재발급·로그아웃을 위조
   `/api/users/refresh`가 DB 역할로 새 Access를 주므로 프론트는 승인 확인 후 재발급 → `/me` 재조회
 - 진행 중 주문이 있으면 신청·승인 409 (전환 후 고객 API가 403이 되어 그 주문을 다룰 수 없으므로). 승인 직전 1번만 검사 — 같은 순간 들어온 새 주문은 막지 못함
 - 상세 API·오류는 [API 명세 — 사장님 전환 신청](api.md#사장님-전환-신청-v17), 테이블은 [데이터베이스](database.md#owner_applications--사장님-전환-신청-v17)
+
+## 토스페이먼츠 결제 (테스트 모드, V20)
+
+API·오류 코드·중복 방지 장치는 [API · 토스페이먼츠 결제](api.md)가 기준. 여기는 구조만.
+
+```
+TossPaymentController ─▶ PaymentIdempotencyService.confirmToss (Idempotency-Key 규칙, 모의 결제와 공통)
+                          └▶ TossPaymentService.confirm   (@Transactional 없음 — 외부 호출을 트랜잭션 밖에서)
+                               ├ PaymentService.findTossPayment / validateTossConfirm   (읽기 트랜잭션)
+                               ├ TossPaymentsClient.confirm → (결과 불명) getPayment     (HTTP, 트랜잭션 밖)
+                               ├ PaymentService.recordTossPayment                       (주문 행 잠금 → 기록, 모의 결제와 같은 completePayment)
+                               └ (기록 불가) PgCancelService.requestCompensation        (REQUIRES_NEW)
+
+OrderService.cancelOrder / AdminPaymentService.refund
+  └ PgCancelService.requestCancel (MANDATORY — 같은 트랜잭션에 pg_cancel_requests INSERT + 이벤트)
+       └ 커밋 후 PgCancelProcessor.onRequested (AFTER_COMMIT, 1회 시도)
+         실패분은 pg-cancel-retry 주기 작업 → processDue (SKIP LOCKED + 임대, 백오프, FAILED + 메트릭)
+```
+
+- **왜 승인 호출을 트랜잭션 밖에서**: 토스 응답(최대 15초)을 기다리는 동안 커넥션·주문 행 잠금을 잡으면 사장님 수락·고객 취소가 막히고 풀이 마름(#76 open-in-view와 같은 문제). 대신 승인 전후로 주문 상태를 두 번 확인하고, 그 사이 바뀌었으면 보상 취소
+- **왜 취소 호출을 커밋 후에**: 커밋 전에 토스 취소가 성공하고 커밋이 실패하면 "환불됐는데 주문은 살아 있음". DB를 먼저 확정하고 외부 호출은 재시도 가능한 기록(Outbox와 같은 방식)으로
+- **부분 취소 (V21)**: 관리자 부분 환불 1건 = 취소 요청 1건(`amount`·`balance_after`). 같은 결제의 요청은 순서대로 하나씩, 결과 불명 뒤 재시도는 토스 잔액을 먼저 조회해 이미 반영됐으면 다시 보내지 않음
+- **가짜 PG 모드 (V21)**: `TossPaymentsClient`를 인터페이스로 나눠 `toss.payments.mode`로 구현 선택 — `real`(`TossPaymentsHttpClient`) / `fake`(`FakeTossPaymentsClient`, 메모리, prod 기동 불가). 서버의 승인·취소 코드는 그대로, PG만 바뀜 → 응답 유실·PG 지연 같은 장애를 버튼으로 재현
+- **메트릭**: `pg_cancel_attempts_total{result=done|retry|failed}` — 알림 `PgCancelFailed`(failed 증가, `monitoring/alerts.yml`)
+- **한계·후속**: 승인 결과를 끝내 확인하지 못한 채 고객이 떠나면 토스에는 승인됐지만 결제 기록이 없는 건이 남을 수 있음(화면이 자동 재시도하고, 로그에 결제 키를 남김). 주기적인 토스 대사(조회 API로 미기록 승인 찾기), 고객 화면의 환불 진행 상태 표시, 부분 취소는 후속
 
 ## 요청 처리 흐름
 

@@ -30,6 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 
 // Redis 장애·타임아웃에서 결제 멱등성 처리가 안전하게 실패하는지 검증 (#41)
@@ -42,7 +43,7 @@ class PaymentIdempotencyRedisFailureTest {
             new PaymentIdempotencyProperties(Duration.ofMinutes(1), Duration.ofHours(24));
     private static final PaymentRequest REQUEST = new PaymentRequest(1L, PaymentMethod.CARD.name());
     private static final PaymentResponse RESPONSE = new PaymentResponse(10L, 1L, 36000, PaymentMethod.CARD,
-            OrderStatus.PAYMENT_COMPLETED, LocalDateTime.of(2026, 11, 14, 12, 0), PaymentStatus.COMPLETED, null, null);
+            OrderStatus.PAYMENT_COMPLETED, LocalDateTime.of(2026, 11, 14, 12, 0), PaymentStatus.COMPLETED, null, null, 0);
 
     private static final String FINGERPRINT = PaymentIdempotencyService.fingerprint(REQUEST);
 
@@ -50,7 +51,8 @@ class PaymentIdempotencyRedisFailureTest {
     private PaymentService paymentService;
 
     private PaymentIdempotencyService service(StringRedisTemplate redis) {
-        return new PaymentIdempotencyService(paymentService, redis, JsonMapper.builder().build(), PROPERTIES,
+        return new PaymentIdempotencyService(paymentService, mock(TossPaymentService.class), redis,
+                JsonMapper.builder().build(), PROPERTIES,
                 new SimpleMeterRegistry());
     }
 

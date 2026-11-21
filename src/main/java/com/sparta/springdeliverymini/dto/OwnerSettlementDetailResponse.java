@@ -24,6 +24,7 @@ public record OwnerSettlementDetailResponse(
 
     // 차감한 환불 1건 — 금액은 차감 시점 스냅샷(settlement_refunds)
     public record RefundDeduction(
+            Long refundId,        // 환불 1건 id (V21 — 같은 결제의 부분 환불이 여러 건일 수 있음)
             Long paymentId,
             Long orderId,
             long amount,
@@ -34,13 +35,14 @@ public record OwnerSettlementDetailResponse(
 
         static RefundDeduction from(SettlementRefund r) {
             return new RefundDeduction(
+                    r.getPaymentRefund().getId(),
                     r.getPayment().getId(),
                     r.getPayment().getOrder().getId(),
                     r.getAmount(),
                     r.getFeeAmount(),
                     r.getSettlementAmount(),
                     r.getPayment().getOrder().getDeliveredAt(),
-                    r.getPayment().getRefundedAt());
+                    r.getPaymentRefund().getRefundedAt());
         }
     }
 

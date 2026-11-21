@@ -71,6 +71,9 @@ class OrderServiceTest {
     @Mock
     private OutboxEventRecorder outboxEventRecorder;
 
+    @Mock
+    private PgCancelService pgCancelService; // 토스 결제 취소 요청 (V20)
+
     // 배달완료 시각을 고정해 deliveredAt이 Clock 기준으로 기록되는지 확인
     private static final LocalDateTime FIXED_NOW = LocalDateTime.of(2026, 11, 5, 23, 59, 59);
     private final Clock fixedClock = Clock.fixed(FIXED_NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
@@ -81,7 +84,7 @@ class OrderServiceTest {
     @BeforeEach
     void setUp() {
         orderService = new OrderService(orderRepository, menuRepository, userRepository, storeService,
-                paymentRepository, fixedClock, outboxEventRecorder);
+                paymentRepository, fixedClock, outboxEventRecorder, pgCancelService);
     }
 
     private final User customer = user(1L, "customer1", Role.CUSTOMER);

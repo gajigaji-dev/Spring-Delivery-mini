@@ -20,6 +20,11 @@ export function App() {
         <Route path="orders" element={<RequireRole roles={['CUSTOMER', 'OWNER']}><P.orders /></RequireRole>} />
         <Route path="orders/:id" element={<RequireRole roles={['CUSTOMER', 'OWNER']}><P.orderDetail /></RequireRole>} />
         <Route path="payments" element={<RequireRole roles={['CUSTOMER']}><P.payments /></RequireRole>} />
+        {/* 토스 결제창이 돌아오는 주소 (V20) — 전체 페이지 이동이라 앱 시작 시 refresh로 로그인을 되살린 뒤 표시 */}
+        <Route path="payments/toss/success" element={<RequireRole roles={['CUSTOMER']}><P.tossSuccess /></RequireRole>} />
+        <Route path="payments/toss/fail" element={<RequireRole roles={['CUSTOMER']}><P.tossFail /></RequireRole>} />
+        {/* 가짜 결제창 — 서버가 가짜 PG 모드일 때만 쓰임 (V21) */}
+        <Route path="payments/fake-toss" element={<RequireRole roles={['CUSTOMER']}><P.fakeTossCheckout /></RequireRole>} />
         <Route path="notifications" element={<RequireRole><P.notifications /></RequireRole>} />
         <Route path="me" element={<RequireRole><P.me /></RequireRole>} />
 

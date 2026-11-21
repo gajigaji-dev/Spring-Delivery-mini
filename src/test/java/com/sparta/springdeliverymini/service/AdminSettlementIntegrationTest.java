@@ -54,6 +54,7 @@ class AdminSettlementIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
     @Autowired private SettlementRepository settlementRepository;
     @Autowired private SettlementStatusHistoryRepository settlementStatusHistoryRepository;
     @Autowired private SettlementAggregationFailureRepository settlementAggregationFailureRepository;
@@ -76,6 +77,7 @@ class AdminSettlementIntegrationTest {
         settlementStatusHistoryRepository.deleteAllInBatch();
         settlementAggregationFailureRepository.deleteAllInBatch();
         settlementRepository.deleteAllInBatch();
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();

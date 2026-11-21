@@ -55,8 +55,9 @@ class PaymentRefundMigrationTest {
                         + "(2, 1, '2026-11-04', 1, 10000, 500, 9500, 'PAID', ?, ?)",
                 CONFIRMED_AT, PAID_OUT_AT);
 
-        // 3. 최신 버전까지 적용
-        flyway(dataSource, "latest").migrate();
+        // 3. V20까지 적용 — V21(부분 환불)이 환불 차감 단위(payment_id → payment_refund_id)와 결제 상태 제약을 바꿈
+        //    V9 규칙은 V21 직전 스키마에서 확인하고, V21 이후 규칙·데이터 이전은 PartialRefundMigrationTest가 검증
+        flyway(dataSource, "20").migrate();
     }
 
     @AfterAll

@@ -189,6 +189,13 @@ public class Order extends BaseEntity {
     // 결제 완료: ORDER_REQUEST → PAYMENT_COMPLETED
     // 이미 결제됐거나(중복 결제) 취소된 주문은 불가 — 화면 안내가 달라서 code를 나눔
     public void pay() {
+        requirePayable();
+        this.status = OrderStatus.PAYMENT_COMPLETED;
+    }
+
+    // 결제할 수 있는 상태인지만 확인 (상태는 바꾸지 않음)
+    // 토스 승인 API를 부르기 전에 미리 걸러 냄 → 결제할 수 없는 주문이 승인(실제 청구)까지 가지 않음 (service.TossPaymentService)
+    public void requirePayable() {
         if (this.status == OrderStatus.ORDER_CANCELLED) {
             throw new InvalidOrderStatusException(ErrorCode.ORDER_ALREADY_CANCELLED, "취소된 주문은 결제할 수 없습니다.");
         }
@@ -196,7 +203,6 @@ public class Order extends BaseEntity {
             // 결제완료·수락·배달완료 = 이미 결제된 주문
             throw new InvalidOrderStatusException(ErrorCode.ORDER_ALREADY_PAID, "이미 결제된 주문입니다.");
         }
-        this.status = OrderStatus.PAYMENT_COMPLETED;
     }
 
     // 주문 수락: PAYMENT_COMPLETED → ORDER_ACCEPTED

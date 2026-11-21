@@ -95,6 +95,35 @@ payment:
     processing-ttl: 1m
     completed-ttl: 24h
 
+# 토스페이먼츠 테스트 모드 결제 (V20) — config.TossPaymentsProperties, pg.TossPaymentsClient, docs/api.md 토스페이먼츠 결제 장
+# mode: real(기본) | fake — fake는 키 없이 가짜 결제창(/payments/fake-toss)으로 흐름 전체를 시연 (pg.FakeTossPaymentsClient)
+# client-key·secret-key: 기본값 없음, TOSS_CLIENT_KEY·TOSS_SECRET_KEY 환경변수로만 (공식 문서의 공개 테스트 키, test_ck_·test_sk_만 허용)
+#   둘 다 없으면 토스 결제를 끔 → 화면은 모의 결제(POST /api/payments)를 보여 줌
+# 시간 초과: confirm-timeout + query-timeout(+ 연결)이 payment.idempotency.processing-ttl(1m)보다 짧아야 함
+#   승인 결과를 모르면(시간 초과) 조회로 확인하고, 그래도 모르면 503 PG_RESULT_UNKNOWN → 같은 승인 요청 재시도(토스 멱등 키로 승인은 한 번)
+# cancel: 취소 요청(pg_cancel_requests) 주기 재시도 — 커밋 직후 1회 시도 후 실패분만
+#   재시도 간격 = min(initial-backoff × 2^(실패 횟수-1), max-backoff) → 10s, 20s, 40s ... 최대 10분, max-attempts번 실패하면 FAILED
+#   lease: 작업자가 행을 가져간 뒤 다른 작업자가 가져가지 못하는 시간 (connect + cancel-timeout보다 길어야 함)
+toss:
+  payments:
+    # real: 토스 테스트 서버(테스트 키, 실제 돈 없음) / fake: 토스에 접속하지 않는 가짜 PG — 오프라인 데모·장애 재현, prod 불가 (V21)
+    mode: ${TOSS_MODE:real}
+    client-key: ${TOSS_CLIENT_KEY:}
+    secret-key: ${TOSS_SECRET_KEY:}
+    base-url: https://api.tosspayments.com
+    connect-timeout: 3s
+    confirm-timeout: 15s
+    query-timeout: 5s
+    cancel-timeout: 15s
+    cancel:
+      enabled: true
+      fixed-delay: 10s
+      batch-size: 20
+      max-attempts: 10
+      initial-backoff: 10s
+      max-backoff: 10m
+      lease: 1m
+
 # 일 정산 자동 확정 — scheduler.SettlementScheduler
 # enabled: false면 스케줄 실행 안 함 (config.SchedulingConfig)
 # cron: 초 분 시 일 월 요일, Asia/Seoul 기준. D일은 D+1 01:00에 확정 가능 → 10분 여유를 두고 01:10

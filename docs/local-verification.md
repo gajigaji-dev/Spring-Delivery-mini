@@ -273,7 +273,9 @@ docker compose --profile monitoring up   # Prometheus http://localhost:9090 (.en
 | 복구 후 | 통과 | pending 0·failed 0, `notification_send_total{result="sent"}` 2 |
 | `outbox_dlt_records_total` | 미확인 | 0 (이번에 DLT를 만들지 않음) |
 
-- 관찰: compose 앱에서 Redis 컨테이너를 내리면 키 있는 결제의 503이 약 5초 걸림 (local jar → `localhost:6380`은 약 1초). 컨테이너가 멈추면 `redis` 호스트 이름 조회가 실패하는 경로라 Redis `connect-timeout`(1초)보다 오래 걸린 것으로 추정 — 원인은 확인하지 않음, 별도 이슈 후보
+- 관찰: compose 앱에서 Redis 컨테이너를 내리면 키 있는 결제의 503이 약 5초 걸림 (local jar → `localhost:6380`은 약 1초)
+  - **원인 확인·조치 (2026-11-21, #78 브랜치)**: 앱 컨테이너에서 `getent hosts redis`가 Redis 정상 시 18ms, 중단 시 **3.9초**(Docker 내장 DNS가 모르는 이름을 호스트 DNS로 넘김). Lettuce는 Netty 자체 DNS 조회기(`netty-resolver-dns`)를 쓰고, `connect-timeout`은 TCP 연결에만 걸려 이름 조회 시간이 그대로 더해짐(재현 3.9초·9.5초)
+  - 조치 `config.RedisClientConfig`(DNS 질의 상한 = `connect-timeout` 1초) 후 compose 재측정: Redis 정상 201 / 중단 3회 모두 503 **1.02~1.04초**
 
 ### 2-6. Slack 알림 발송 (#69)
 
@@ -656,3 +658,33 @@ APP_PORT=8091 NOTIFICATION_SENDER=log docker compose up -d --build app
   - 남은 수동 확인: 실제 휴대폰·Safari, 스크린리더 낭독
 - 고객 매장 목록(`/stores`): 헤드리스 Chromium으로 확인함(2026-11-21, 34개 항목, 로컬 매장 5곳·메뉴 13개) — 목록 수·순서·메뉴 수·최저가가 API 값과 일치, 이름·메뉴 검색, 결과 없음·초기화, 필터 2종, 정렬 3종, 카드 → 상세 → 뒤로 시 조건 유지, 1440 4열·834 2열·390 1열, 가로 스크롤 없음, 요청 가로채기로 로딩 스켈레톤·오류 → 다시 시도·빈 목록 확인, 콘솔 오류 없음
 - 개발자 도구에서 `t1.kakaocdn.net` 요청 차단 → '주소 검색' → 직접 입력 안내 후 우편번호·도로명 입력 가능
+
+## 8. 토스페이먼츠 테스트 모드 결제 (#78, V20)
+
+### 8-1. 자동 테스트 (2026-11-21, 통과)
+- `TossPaymentIntegrationTest`(18건, 실제 PostgreSQL·Redis + 가짜 토스 클라이언트): 승인 기록·PG 컬럼, 같은 결제 키 재전송, `Idempotency-Key` 재전송, 금액·주문번호 불일치 시 승인 미호출, 거절, 시간 초과 → 조회로 기록, 결과 불명 503 → 같은 요청 재시도로 기록, 승인 중 주문 취소 → 보상 취소, 주문 취소·관리자 환불 → 커밋 후 토스 취소, 취소 시간 초과 → 백오프 재시도에서 `ALREADY_CANCELED_PAYMENT`면 DONE
+- `TossPaymentsClientTest`(로컬 HTTP 서버): Basic 인증·멱등 키·경로 인코딩, 4xx 확정 거절 / 5xx·처리 중 409·시간 초과·해석 불가 = 결과 불명
+- `TossPaymentServiceTest`·`PgCancelRequestTest`·`TossPaymentsPropertiesTest`, 프론트 `payments/tossConfirm.test.ts`
+
+### 8-2. 실제 테스트 결제창 확인 (아직 — 사용자 확인 항목)
+준비: 루트 `.env`에 공식 문서의 공개 테스트 키 "API 개별 연동 키"(`TOSS_CLIENT_KEY=test_ck_…`, `TOSS_SECRET_KEY=test_sk_…`) → 앱 재시작(compose면 `docker compose up -d --build app`, 빌드 시 V20 적용). 기동 로그 `토스페이먼츠 결제: 켜짐(테스트 모드)`
+
+| # | 시나리오 | 기대 결과 |
+|---|---|---|
+| 1 | 고객 로그인 → 주문 → 주문 상세 | '토스페이먼츠로 결제 (테스트)' 버튼 (키가 없으면 '카드 결제' 모의 결제) |
+| 2 | 버튼 → 결제창에서 카드 결제 | `/payments/toss/success` → '결제가 완료되었습니다', 주문 상세 결제완료. DB `payments.pg_payment_key`·`pg_order_id` 채워짐 |
+| 3 | 2의 성공 화면에서 새로 고침 | 같은 결제 결과(재전송), 결제 1건 그대로 |
+| 4 | 결제창을 닫음 | `/payments/toss/fail` → '결제를 취소했습니다', 주문은 결제 전 |
+| 5 | 성공 주소의 `amount`를 바꿔 직접 열기 | 400 금액 불일치 안내, 결제 기록 없음 (10분 뒤 토스 쪽 만료) |
+| 6 | 결제완료 주문 취소 | 주문 취소 → `pg_cancel_requests` DONE, 토스 개발자센터 테스트 결제 내역에서 취소 확인 |
+| 7 | (선택) 앱의 `toss.payments.base-url`을 응답 없는 주소로 바꾸고 승인 | 503 `PG_RESULT_UNKNOWN` 안내 + '다시 확인' 버튼, 결제창을 다시 열지 않음 |
+
+### 8-3. 가짜 PG 모드 (V21, `TOSS_MODE=fake`)
+- 자동 테스트: `FakeTossPaymentIntegrationTest`(앱 전체를 fake로 띄워 가짜 결제창 인증 → 승인(응답 유실) → 부분 환불 → 가짜 부분 취소, 금액 조작 거절), `FakeTossPaymentsClientTest`(시나리오별 약속)
+- compose 확인 (2026-11-21, 통과): `APP_PORT=8091 TOSS_MODE=fake NOTIFICATION_SENDER=log docker compose up -d --build app` → 기동 로그 `가짜 PG 모드`, config `mode: FAKE`. 주문 519를 `PG_DELAYED`로 승인 → 첫 요청 503 `PG_RESULT_UNKNOWN`, 같은 요청 재시도 201
+- 브라우저 확인 (아직 — 사용자 확인 항목): 주문 상세 '가짜 결제창으로 결제 (시연)' → 시나리오 버튼별 결과(성공·카드 거절·응답 유실·PG 지연 자동 재시도·금액 조작 400·창 닫기)
+
+### 8-4. 부분 환불 (V21)
+- 자동 테스트: `PartialRefundIntegrationTest`(환불 1건씩 정산 차감·이월, 나눠 환불해도 수수료 합계 = 전액, 동시 부분 환불 8건 중 한도 안 3건만, API 201·400·403), `PartialRefundMigrationTest`(기존 전액 환불 백필·차감 기록 연결), `PaymentTest`·`PaymentFeeTest`, 토스 부분 취소는 `TossPaymentIntegrationTest`
+- 로컬 DB(`delivery`)는 위 compose 빌드 때 V18~V21 적용됨 — 기존 전액 환불 데이터가 있는 DB에서 V21 데이터 이전 성공
+

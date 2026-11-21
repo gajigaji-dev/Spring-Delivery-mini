@@ -85,6 +85,15 @@ npm run build             # tsc 타입 검사 + 프로덕션 빌드
 - 이벤트 본문은 토스트 문구에만 쓰고, 화면 데이터는 항상 주문 목록 API 결과
 - **알림 소리**: 브라우저 자동 재생 정책상 사용자가 클릭하기 전에는 소리를 낼 수 없음 → '알림 소리 켜기' 클릭 안에서 `AudioContext`를 만들고 resume(확인용으로 한 번 울림, 막히면 오류 토스트). 음원 파일 없이 Web Audio로 두 음 생성. 새로고침하면 다시 켜야 함(저장해도 클릭 전에는 소리가 안 나므로 저장하지 않음)
 
+## 토스페이먼츠 결제 (#78, 테스트 모드)
+- 주문 상세: `GET /api/payments/toss/config`가 `enabled`면 '토스페이먼츠로 결제 (테스트)', 아니면(키 없음·조회 실패) 기존 모의 '카드 결제'
+- 버튼 → `checkout`(금액·주문번호는 서버가 정함) → `payments/tossSdk.ts`가 SDK v2(`js.tosspayments.com/v2/standard`)를 **누를 때 처음 한 번만** 불러 결제창을 엶(리다이렉트 방식)
+- 돌아오는 주소: `/payments/toss/success?order={주문 id}` / `/payments/toss/fail?order=` — 토스가 `orderId`(토스 주문번호)를 따로 붙여서 주문 id는 `order`
+- 성공 화면(`pages/TossSuccessPage`): 서버 승인 요청, `Idempotency-Key` = 토스 주문번호 → 새로 고침해도 승인 한 번. 결과 불명(`PG_RESULT_UNKNOWN`·처리 중·네트워크)은 같은 요청을 1·2·4초 간격 자동 재시도(`payments/tossConfirm.ts`), 그래도 모르면 '다시 확인'만 — **결제창을 다시 여는 버튼은 두지 않음**(새 결제 = 이중 결제 위험)
+- 클라이언트 키도 프론트 빌드 변수가 아니라 서버 API로 받음 → 키는 루트 `.env` 한 곳
+- **가짜 결제창** (`pages/FakeTossCheckoutPage`, `/payments/fake-toss`): 서버가 `TOSS_MODE=fake`면 config의 `mode: 'FAKE'` → 토스 SDK 대신 이 화면으로 이동. 시나리오 버튼(정상·카드 거절·응답 유실·PG 지연·금액 조작·창 닫기)으로 결과를 고르고, 실제 결제창과 같은 successUrl·failUrl 쿼리로 돌아감
+- 결제 상태 `PARTIALLY_REFUNDED`('부분 환불'), 주문 상세에 누적 환불액 표시 (V21). 관리자 부분 환불 화면은 아직 없음(API만)
+
 ## 성능 기본값
 | 항목 | 적용 |
 |---|---|

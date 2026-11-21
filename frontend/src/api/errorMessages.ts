@@ -32,6 +32,14 @@ const CODE_MESSAGES: Record<string, string> = {
   PAYMENT_ALREADY_REFUNDED: '이미 환불된 결제입니다.',
   PAYMENT_NOT_REFUNDABLE: '배달 완료 전 결제는 환불 대신 주문 취소를 이용해 주세요.',
   INVALID_PAYMENT_STATUS: '결제 상태가 바뀌었습니다. 화면을 새로 고쳐 확인해 주세요.',
+
+  // 토스페이먼츠 (V20)
+  PAYMENT_AMOUNT_MISMATCH: '결제 금액이 주문 금액과 달라 결제하지 않았습니다. 주문에서 다시 결제해 주세요.',
+  INVALID_PG_ORDER_ID: '결제 정보가 이 주문과 맞지 않습니다. 주문에서 다시 결제해 주세요.',
+  PG_PAYMENT_REJECTED: '결제가 승인되지 않았습니다. 카드 정보를 확인하고 다시 결제해 주세요.',
+  PG_NOT_CONFIGURED: '지금은 토스 결제를 사용할 수 없습니다. (결제되지 않았습니다)',
+  INVALID_REFUND_AMOUNT: '환불 금액이 남은 결제 금액보다 큽니다.',
+  PG_RESULT_UNKNOWN: '결제 결과를 확인하고 있습니다. 결제창을 다시 열지 말고 잠시 후 다시 확인해 주세요.',
 };
 
 const STATUS_MESSAGES: Record<number, string> = {

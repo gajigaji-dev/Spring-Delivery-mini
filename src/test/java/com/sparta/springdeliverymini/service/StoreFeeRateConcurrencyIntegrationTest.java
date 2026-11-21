@@ -50,6 +50,7 @@ class StoreFeeRateConcurrencyIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
 
     private StoreResponse store;
     private MenuResponse menu;
@@ -65,6 +66,7 @@ class StoreFeeRateConcurrencyIntegrationTest {
 
     @AfterEach
     void tearDown() {
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();

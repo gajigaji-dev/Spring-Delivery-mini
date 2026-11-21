@@ -9,6 +9,7 @@ import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
+import com.sparta.springdeliverymini.repository.PaymentRefundRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
@@ -54,9 +55,13 @@ class PaymentConcurrencyIntegrationTest {
     @Autowired
     private PaymentRepository paymentRepository;
 
+    @Autowired
+    private PaymentRefundRepository paymentRefundRepository;
+
     @AfterEach
     void tearDown() {
         // FK 순서대로 삭제: payments → orders(order_items는 ON DELETE CASCADE로 함께 삭제) → menus → stores → users
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();

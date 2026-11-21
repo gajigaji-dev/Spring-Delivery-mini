@@ -73,6 +73,9 @@
   | 400 | `ORDER_AMOUNT_TOO_LARGE` | 총액이 long 범위 초과 | 수량 줄이기 |
   | 400 | `UNSUPPORTED_PAYMENT_METHOD` | CARD 외 결제 수단 | 카드 결제 |
   | 400 | `INVALID_IDEMPOTENCY_KEY` | `Idempotency-Key` 형식 오류 | 새로고침 |
+  | 400 | `PAYMENT_AMOUNT_MISMATCH` / `INVALID_PG_ORDER_ID` | 토스 승인 요청의 금액·주문번호가 주문과 다름 — 승인하지 않음 (V20) | 주문에서 다시 결제 |
+  | 400 | `PG_PAYMENT_REJECTED` | 토스가 승인 거절(카드 거절·결제 시간 만료) | 결제창 다시 |
+  | 400 | `INVALID_REFUND_AMOUNT` | 부분 환불 금액이 남은 결제 금액을 넘음 (V21) | 금액 확인 |
   | 404 | `ORDER_NOT_FOUND` / `MENU_NOT_FOUND` / `PAYMENT_NOT_FOUND` | 대상 없음 (메뉴는 삭제 포함) | 목록으로 |
   | 409 | `ORDER_ALREADY_PAID` | 결제완료 이후 주문에 결제 (중복 결제 요청, 다른 키로 이미 결제됨 포함) | 주문 다시 불러오기, 저장한 결제 키 버림 |
   | 409 | `ORDER_ALREADY_CANCELLED` | 취소된 주문에 결제·취소 | 주문 다시 불러오기 |
@@ -84,6 +87,8 @@
   | 409 | `PAYMENT_IN_PROGRESS` | 같은 `Idempotency-Key` 결제가 처리 중 | 잠시 후 **같은 키로** 재시도 (키를 버리지 않음) |
   | 422 | `IDEMPOTENCY_KEY_REUSED` | 같은 `Idempotency-Key`로 다른 결제 요청 | 새 키 |
   | 503 | `PAYMENT_UNAVAILABLE` | 멱등성 저장소(Redis) 장애 — 결제하지 않음 | 잠시 후 같은 키로 재시도 |
+  | 503 | `PG_NOT_CONFIGURED` | 토스 키 없음·시크릿 키 거부 — 결제하지 않음 (V20) | 모의 결제 또는 나중에 |
+  | 503 | `PG_RESULT_UNKNOWN` | 토스 승인 결과를 확인하지 못함 (V20) | **결제창을 다시 열지 말고** 같은 승인 요청 재시도 |
 
 - 운영 엔드포인트 (Actuator)
 
@@ -125,6 +130,9 @@
 | 결제 | POST | `/api/payments` | O | CUSTOMER (본인 주문) | 201 |
 | 내 결제 목록 조회 | GET | `/api/payments?page=&size=` | O | CUSTOMER (본인 결제) | 200 |
 | 결제 단건 조회 | GET | `/api/payments/{id}` | O | CUSTOMER (본인 결제) | 200 |
+| 토스 결제 사용 여부 (V20) | GET | `/api/payments/toss/config` | O | CUSTOMER | 200 |
+| 토스 결제창 값 (V20) | POST | `/api/payments/toss/checkout` | O | CUSTOMER (본인 주문) | 200 |
+| 토스 결제 승인 (V20) | POST | `/api/payments/toss/confirm` | O | CUSTOMER (본인 주문) | 201 |
 | 내 알림 목록 | GET | `/api/notifications?page=&size=` | O | 로그인 사용자 | 200 |
 | 안 읽은 알림 개수 | GET | `/api/notifications/unread-count` | O | 로그인 사용자 | 200 |
 | 알림 읽음 처리 | PATCH | `/api/notifications/{id}/read` | O | 로그인 사용자 (본인 알림) | 204 |
@@ -136,6 +144,7 @@
 | 정산 재집계 (관리자) | POST | `/api/admin/settlements/reaggregate?date=&storeId=` | O | ADMIN | 200 |
 | 정산 집계 실패 기록 (관리자) | GET | `/api/admin/settlements/aggregation-failures?status=` | O | ADMIN | 200 |
 | 결제 환불 (관리자) | PATCH | `/api/admin/payments/{id}/refund` | O | ADMIN | 200 |
+| 결제 부분 환불 (관리자, V21) | POST | `/api/admin/payments/{id}/refunds` | O | ADMIN | 201 |
 | Outbox 이벤트 목록 (관리자) | GET | `/api/admin/outbox-events?status=&page=&size=` | O | ADMIN | 200 |
 | Outbox 이벤트 재발행 (관리자) | POST | `/api/admin/outbox-events/{id}/republish` | O | ADMIN | 200 |
 | Outbox FAILED 일괄 재발행 (관리자) | POST | `/api/admin/outbox-events/republish?limit=` | O | ADMIN | 200 |
@@ -777,6 +786,83 @@ Response `200 OK` — 결제 응답과 같은 형식(`PaymentResponse`)
 | 403 | OWNER·ADMIN이 요청, 본인 결제가 아님 |
 | 404 | 결제 없음 |
 
+### 토스페이먼츠 결제 (V20, 테스트 모드)
+공식 문서의 **공개 테스트 키**로 결제창(SDK v2 `payment().requestPayment`, 카드)을 열고 서버가 승인하는 흐름. 실제 돈은 오가지 않음
+- 키: `TOSS_CLIENT_KEY`(`test_ck_…`)·`TOSS_SECRET_KEY`(`test_sk_…`) 환경변수로만(`.env`). 둘 다 없으면 토스 결제 꺼짐 → 화면은 모의 결제(`POST /api/payments`). 하나만 있거나 `live_` 키면 기동 실패
+- 모의 결제(`POST /api/payments`)는 그대로 둠 — 테스트·부하 테스트·키 없는 로컬 데모용
+- **가짜 PG 모드** (`TOSS_MODE=fake`, V21): 토스 서버에 아예 접속하지 않고 결제창·승인·조회·취소를 메모리에서 흉내(`pg.FakeTossPaymentsClient`). 키 없이 시연, 장애 재현용 — prod 프로필에서는 기동 실패
+  - 화면은 토스 SDK 대신 `/payments/fake-toss`(가짜 결제창)로 이동 → 결과는 실제와 같은 `successUrl`·`failUrl` → 이후 서버 승인·금액 대조·멱등 처리는 실제와 같은 코드
+  - 가짜 결제창의 인증 단계 `POST /api/payments/fake-toss/authorize {tossOrderId, amount, scenario}` → `{paymentKey}` (fake 모드에서만 존재, CUSTOMER)
+  - `scenario`: `SUCCESS` / `CARD_REJECTED`(승인 거절) / `RESPONSE_LOST`(승인됐는데 응답 유실 → 서버가 조회로 확인해 기록) / `PG_DELAYED`(첫 승인 미처리 → 503 `PG_RESULT_UNKNOWN` → 같은 요청 재시도로 승인)
+  - 한계: 메모리 보관(재시작하면 가짜 결제 기록이 사라짐), 인스턴스 1대
+
+```
+화면                         서버                                   토스
+ │ GET  /toss/config  ───────▶ enabled·clientKey
+ │ POST /toss/checkout ──────▶ 주문 확인 → tossOrderId·금액 (저장 없음)
+ │ requestPayment ─────────────────────────────────────────────────▶ 결제창(카드 인증)
+ │ ◀──────────── successUrl?order=&paymentKey=&orderId=&amount= ◀──┘
+ │ POST /toss/confirm ───────▶ ① 결제 키 기록 있음? → 재전송
+ │                             ② 금액 = 주문 총액? 주문번호 = 이 주문? 결제 가능한 상태?  (아니면 승인 안 함)
+ │                             ③ 승인 (트랜잭션 밖, 멱등 키 confirm-{paymentKey}) ─────▶ /v1/payments/confirm
+ │                             ④ 응답 대조 → 주문 행 잠금 → 결제 기록 (모의 결제와 같은 규칙)
+ │ ◀─────────────────── 201 PaymentResponse
+```
+
+#### 결제 사용 여부 `GET /api/payments/toss/config` (CUSTOMER)
+```json
+{ "enabled": true, "clientKey": "test_ck_...", "mode": "REAL" }
+```
+- 클라이언트 키는 브라우저용 공개 값. 시크릿 키는 내려보내지 않음. 키를 서버 `.env` 한 곳에서만 관리하려고 프론트 빌드 변수 대신 이 API로 전달
+
+#### 결제창 값 `POST /api/payments/toss/checkout` (CUSTOMER, 본인 주문)
+Request `{ "orderId": 1 }` → Response `200`
+```json
+{ "clientKey": "test_ck_...", "customerKey": "cust_3f2a...(40자)", "tossOrderId": "order-1-9c1e0f6a2b3d4e5f",
+  "amount": 36000, "orderName": "후라이드 치킨 외 1건" }
+```
+- `tossOrderId` = `order-{주문 id}-{난수 16자리}`: 공개 테스트 키는 여러 개발자가 함께 쓰므로 주문 id만으로는 토스 쪽에서 겹칠 수 있어 난수를 붙임. **저장하지 않음** — 승인 때 형식·주문 id를 확인하고 금액은 주문 총액과 다시 대조
+- `customerKey`: 회원 id 해시(토스 규칙 22~50자) — 아이디·이메일 등을 토스에 보내지 않음
+- 오류: 409 `ORDER_ALREADY_PAID`·`ORDER_ALREADY_CANCELLED`(결제할 수 없는 주문), 503 `PG_NOT_CONFIGURED`(키 없음)
+
+#### 결제창 이동 주소 (프론트)
+- 성공 `/payments/toss/success?order={주문 id}` — 토스가 `paymentKey`·`orderId`(토스 주문번호)·`amount`를 붙임. 이름이 겹치지 않도록 이 서비스의 주문 id는 `order`
+- 실패 `/payments/toss/fail?order={주문 id}` — 토스가 `code`·`message`를 붙임 (`PAY_PROCESS_CANCELED` = 구매자가 창을 닫음). 서버 승인 전이라 결제되지 않음
+- 인증 후 **10분 안에** 승인해야 함. 승인하지 않은 결제는 만료되고 청구되지 않음
+
+#### 결제 승인 `POST /api/payments/toss/confirm` (CUSTOMER, 본인 주문)
+Request (헤더 `Idempotency-Key` 선택 — 화면은 `tossOrderId`를 키로 보냄)
+```json
+{ "orderId": 1, "paymentKey": "tgen_...", "tossOrderId": "order-1-9c1e0f6a2b3d4e5f", "amount": 36000 }
+```
+Response `201 Created` — 모의 결제와 같은 `PaymentResponse`. 재전송이면 헤더 `Idempotent-Replayed: true`
+
+| 상태 | code | 상황 | 토스 승인 | 화면 대응 |
+|---|---|---|---|---|
+| 400 | `PAYMENT_AMOUNT_MISMATCH` | `amount` ≠ 주문 총액 (또는 승인 응답 금액·주문번호가 요청과 다름 → 보상 취소) | 호출 안 함 | 주문에서 다시 결제 |
+| 400 | `INVALID_PG_ORDER_ID` | `tossOrderId`가 이 주문에 발급한 형식이 아님 | 호출 안 함 | 주문에서 다시 결제 |
+| 400 | `PG_PAYMENT_REJECTED` | 토스가 거절(카드 거절·결제 시간 만료 등), 결과 확인 결과 `ABORTED`·`EXPIRED` | 거절됨 | 결제창 다시 |
+| 409 | `ORDER_ALREADY_PAID` / `ORDER_ALREADY_CANCELLED` | 승인 전 확인에서 걸림 → 승인 안 함 / **승인 후** 기록 시점에 걸림 → 보상 취소 | 상황별 | 주문 다시 불러오기 |
+| 409 | `PAYMENT_IN_PROGRESS` · 422 `IDEMPOTENCY_KEY_REUSED` · 503 `PAYMENT_UNAVAILABLE` | `Idempotency-Key` 규칙 (모의 결제와 같음) | — | 같은 키로 재시도 / 새 키 |
+| 503 | `PG_RESULT_UNKNOWN` | 승인 결과를 모름(시간 초과·연결 끊김·5xx) + 결제 조회로도 확인 못 함 | 됐을 수도 있음 | **결제창을 다시 열지 말고** 같은 요청 재시도 |
+| 503 | `PG_NOT_CONFIGURED` | 키 없음, 시크릿 키 거부(401) | — | 결제되지 않음 |
+
+중복 금전 처리를 막는 장치
+- **승인 1번**: 토스 멱등 키 `confirm-{paymentKey}` — 같은 결제 키의 승인 재시도(시간 초과 후·동시 요청)에 토스가 처음 응답을 돌려줌. 결제 키 하나는 한 번만 승인됨(`ALREADY_PROCESSED_PAYMENT` → 조회해서 `DONE`이면 기록)
+- **기록 1번**: `payments.pg_payment_key` UNIQUE + 주문당 결제 1건. 같은 결제 키가 이미 기록돼 있으면 토스를 다시 부르지 않고 처음 결과를 재전송
+- **결과를 모르면 실패로 단정하지 않음**: 시간 초과 → `GET /v1/payments/{paymentKey}`로 확인 → `DONE`이면 기록, 승인 불가 상태면 400, 그 밖에는 503 `PG_RESULT_UNKNOWN`. 화면은 같은 요청을 1·2·4초 간격으로 자동 재시도하고, 그래도 모르면 '다시 확인' 버튼(같은 요청)만 보여 줌
+- **승인됐는데 기록할 수 없으면 보상 취소**: 승인을 기다리는 사이 주문이 취소됨·다른 결제 키로 이미 결제됨 → `pg_cancel_requests`에 기록하고 토스 전액 취소. 단, 원인이 불분명한 기록 실패(DB 장애 등)는 취소하지 않음 — 같은 요청 재시도 때 토스가 승인 응답을 재전송해 기록됨
+- 토스 응답을 기다리는 동안 DB 커넥션·주문 행 잠금을 잡지 않음(승인 전 확인·기록은 각각 짧은 트랜잭션). 시간 초과: 연결 3초, 승인 15초, 조회 5초 — 합계가 멱등성 `processing-ttl`(1분)보다 짧음
+
+#### 취소·환불과 토스 결제 취소
+- 주문 취소(`PATCH /api/orders/{id}/cancel`)·관리자 환불(전액 `PATCH .../refund`, 부분 `POST .../refunds`)의 응답·규칙은 그대로. 토스를 거친 결제면 같은 트랜잭션에 `pg_cancel_requests` 행을 남김 (취소 금액 `amount`, 반영 후 남아야 할 토스 잔액 `balance_after`)
+- 토스 취소 API(`POST /v1/payments/{paymentKey}/cancel`, `cancelAmount` = 이번 금액)는 **커밋 후** 호출: 커밋 직후 1회 → 실패·시간 초과는 주기 작업(10초)이 백오프(10초부터 2배, 최대 10분)로 재시도, 10번 실패하면 `FAILED` + 알림 `PgCancelFailed`
+  - 주문 행 잠금을 쥔 채 외부 응답을 기다리지 않고, 커밋이 실패했는데 돈만 돌려주는 일이 없도록
+  - 중복 환불 없음: 두 번째 시도부터는 토스 결제를 먼저 조회해 **잔액 ≤ `balance_after`면 이미 반영**된 것으로 `DONE`(취소를 다시 보내지 않음). 부분 취소는 두 번 보내면 두 번 환불되므로 이 확인이 필수. 전액 취소된 결제의 `ALREADY_CANCELED_PAYMENT`도 `DONE`
+  - 같은 결제의 취소 요청은 **생긴 순서대로 하나씩** — 앞 요청이 `DONE`이 아니면(PENDING·FAILED) 뒤 요청은 기다림 → 잔액 비교가 정확함
+  - 멱등 키는 시도마다 다름(`cancel-{요청 id}-{시도 번호}`) — 토스는 같은 키의 **오류 응답**도 15일간 그대로 돌려주므로 일시 오류를 같은 키로 재시도하면 계속 실패함. 중복은 위의 잔액 확인이 막음
+- 고객 화면은 취소 즉시 `CANCELLED`. 토스 쪽 환불이 끝났는지는 `pg_cancel_requests.status`로 확인(화면 표시는 후속)
+
 ---
 
 ## 관리자 — 정산
@@ -933,8 +1019,9 @@ Response `200 OK` — 최근 실패 순, 없으면 빈 배열
 ## 관리자 — 결제
 
 ### 결제 환불 `PATCH /api/admin/payments/{id}/refund`
-배달완료 주문의 결제를 **전액** 환불 — `COMPLETED` → `REFUNDED`, 환불 시각(`refundedAt`)을 서버 시각으로 기록. 요청 본문 없음
-- 고객 결제액·플랫폼 수수료·매장 정산액이 모두 취소됨 (결제에 저장된 금액 그대로)
+배달완료 주문의 결제에서 **남은 금액 전부** 환불 — `COMPLETED`·`PARTIALLY_REFUNDED` → `REFUNDED`, 환불 시각(`refundedAt`)을 서버 시각으로 기록. 요청 본문 없음
+- 부분 환불이 없던 결제면 결제 금액 전부 = V21 이전 전액 환불과 같은 금액·수수료
+- 고객 결제액·플랫폼 수수료·매장 정산액이 취소됨 — 환불 1건(`payment_refunds`)으로 기록되어 정산에서 차감
 - 주문 상태는 `DELIVERY_COMPLETED` 그대로 (최종 상태)
 - 정산은 여기서 바꾸지 않음 → 다음에 집계되는 정산에서 차감, 이미 만들어진 정산(확정·지급 포함)은 바뀌지 않음 ([정산 기준 9장](settlement-policy.md#9-결제-취소환불과-차기-정산-반영))
 - 배달 전 주문은 고객의 주문 취소(`PATCH /api/orders/{id}/cancel`)로 처리
@@ -949,6 +1036,38 @@ Response `200 OK` — 결제 응답 (`status: REFUNDED`)
 | 409 | 배달완료 전 주문, 이미 환불·취소된 결제 (환불 시각은 처음 값 유지) |
 
 - 같은 결제에 환불 요청이 동시에 들어와도 행 잠금으로 한 번만 성공, 나머지는 409
+- 토스 결제면 커밋 후 토스 취소(남은 금액) 요청 — [토스페이먼츠 결제](#토스페이먼츠-결제-v20-테스트-모드)
+
+### 결제 부분 환불 `POST /api/admin/payments/{id}/refunds` (V21)
+배달완료 주문의 결제에서 **금액을 지정해** 환불. 남은 금액 안에서 여러 번 가능, 남은 금액 전부면 `REFUNDED`
+
+Request
+```json
+{ "amount": 3000, "reason": "음료 누락" }
+```
+- `amount`: 양수 원 단위(필수), `reason`: 200자 이하(선택, 없으면 "환불")
+
+Response `201 Created`
+```json
+{
+  "refundId": 7, "paymentId": 1, "orderId": 1,
+  "amount": 3000, "feeAmount": 150, "settlementAmount": 2850, "reason": "음료 누락",
+  "refundedAt": "2026-11-06T10:00:00",
+  "paymentStatus": "PARTIALLY_REFUNDED", "refundedAmount": 3000, "refundableAmount": 33000
+}
+```
+- 수수료는 환불액 비율대로 함께 취소 — 누적 기준 반올림이라 여러 번 나눠도 합계가 전액 환불과 같음 ([금액 처리 정책](money-policy.md))
+- 환불 1건마다 정산에서 따로 차감(환불 시각 이후 처음 집계되는 정산), 이미 만들어진 정산은 바뀌지 않음
+- 결제 응답·주문 상세의 결제에 `refundedAmount`(누적 환불액) 추가, 상태 `PARTIALLY_REFUNDED` 추가
+- 토스 결제면 커밋 후 이번 금액만큼 토스 **부분 취소**(`cancelAmount`) 요청 — 같은 결제의 부분 취소는 순서대로 하나씩, 결과를 모르는 재시도 전에는 토스 잔액으로 반영 여부 확인
+
+| 코드 | 상황 |
+|---|---|
+| 400 | 금액 없음·0 이하, 사유 200자 초과 / `INVALID_REFUND_AMOUNT` 남은 금액 초과 |
+| 401 · 403 · 404 | 토큰 없음 · ADMIN 아님 · 결제 없음 |
+| 409 | 배달완료 전 주문(`PAYMENT_NOT_REFUNDABLE`), 이미 전액 환불·취소된 결제 |
+
+- 같은 결제에 부분 환불이 동시에 들어와도 결제 행 잠금으로 순서대로 처리 → 누적 환불액이 결제액을 넘는 요청만 400
 
 ---
 

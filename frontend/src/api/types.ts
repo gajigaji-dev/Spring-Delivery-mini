@@ -8,7 +8,7 @@ export type OrderStatus =
   | 'DELIVERY_COMPLETED'
   | 'ORDER_CANCELLED';
 
-export type PaymentStatus = 'COMPLETED' | 'CANCELLED' | 'REFUNDED';
+export type PaymentStatus = 'COMPLETED' | 'CANCELLED' | 'PARTIALLY_REFUNDED' | 'REFUNDED';
 export type SettlementStatus = 'PENDING' | 'CONFIRMED' | 'PAID';
 export type OutboxStatus = 'PENDING' | 'PUBLISHED' | 'FAILED';
 
@@ -80,6 +80,8 @@ export interface OrderPayment {
   paidAt: string;
   cancelledAt: string | null;
   refundedAt: string | null;
+  /** 누적 환불액 (부분 환불 포함, V21) */
+  refundedAmount: number;
 }
 
 export interface OrderDetail extends Order {
@@ -96,6 +98,8 @@ export interface Payment {
   status: PaymentStatus;
   cancelledAt: string | null;
   refundedAt: string | null;
+  /** 누적 환불액 (부분 환불 포함, V21) */
+  refundedAmount: number;
 }
 
 export interface Notification {
@@ -184,4 +188,21 @@ export interface OwnerOrderEvent {
   amount: number;
   message: string;
   occurredAt: string;
+}
+
+/** 토스 결제 사용 여부 (V20) — 키가 없으면 enabled=false, 화면은 모의 결제 버튼 */
+export interface TossConfig {
+  enabled: boolean;
+  clientKey: string | null;
+  /** REAL: 토스 테스트 결제창 / FAKE: 토스에 접속하지 않는 가짜 결제창 (V21) */
+  mode: 'REAL' | 'FAKE';
+}
+
+/** 결제창(requestPayment)에 그대로 넘길 값 — 금액·주문번호는 서버가 정함 */
+export interface TossCheckout {
+  clientKey: string;
+  customerKey: string;
+  tossOrderId: string;
+  amount: number;
+  orderName: string;
 }

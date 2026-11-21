@@ -34,7 +34,7 @@ import java.util.TreeSet;
 // 중복 정산·중복 차감 방지
 //   1. 매장 행 잠금 → 같은 매장의 집계(다른 날짜 포함)는 한 번에 하나씩, 미차감 환불·이월을 두 집계가 함께 읽지 않음
 //   2. 집계 전에 이미 정산이 있는 매장·날짜인지 확인 → 건너뜀 (상태와 관계없이, 기존 정산 행은 절대 수정하지 않음)
-//   3. DB UNIQUE — (store_id, settlement_date), settlement_refunds.payment_id, settlement_carryovers.from_settlement_id
+//   3. DB UNIQUE — (store_id, settlement_date), settlement_refunds.payment_refund_id(V21), settlement_carryovers.from_settlement_id
 //      1·2를 모두 우회해도 두 번째 저장은 거부됨
 //
 // 실패 기록·재집계 (#39, 10장)
@@ -52,6 +52,7 @@ public class SettlementAggregationService {
     private final SettlementRepository settlementRepository;
     private final StoreRepository storeRepository;
     private final SettlementRefundRepository settlementRefundRepository;
+    private final PaymentRefundRepository paymentRefundRepository; // 미차감 환불 1건 단위 (V21)
     private final SettlementCarryoverRepository settlementCarryoverRepository;
     private final SettlementStatusHistoryRepository settlementStatusHistoryRepository;
     private final SettlementAggregationFailureRepository settlementAggregationFailureRepository;
@@ -112,7 +113,7 @@ public class SettlementAggregationService {
         } else {
             // 판매가 있는 매장 ∪ 미차감 환불이 있는 매장
             TreeSet<Long> targets = new TreeSet<>(paymentRepository.findSettlementStoreIds(period.start(), period.end()));
-            targets.addAll(paymentRepository.findUnsettledRefundStoreIds(period.end()));
+            targets.addAll(paymentRefundRepository.findUnsettledRefundStoreIds(period.end()));
             storeIds = targets;
         }
 
@@ -146,7 +147,7 @@ public class SettlementAggregationService {
 
                 // 3. 판매·미차감 환불 — 둘 다 없으면 만들 정산이 없음 (이월분만 남은 매장은 다음 판매·환불 때 차감)
                 List<Payment> sales = paymentRepository.findSettlementTargets(storeId, period.start(), period.end());
-                List<Payment> refunds = paymentRepository.findUnsettledRefunds(storeId, period.end());
+                List<PaymentRefund> refunds = paymentRefundRepository.findUnsettledRefunds(storeId, period.end());
                 if (sales.isEmpty() && refunds.isEmpty()) {
                     // 앞서 실패한 기록이 있었다면 더 집계할 것이 없음을 확인했으므로 해결 처리
                     resolveFailure(storeId, period.from(), null, actor, now);
@@ -162,7 +163,7 @@ public class SettlementAggregationService {
 
                 // 5. 정산 저장 (트랜잭션 안에서 INSERT를 실행해 UNIQUE 위반을 여기서 받음)
                 Settlement settlement = Settlement.aggregate(store, period.from(),
-                        SettlementTotals.of(sales), SettlementTotals.of(refunds), carriedIn, now);
+                        SettlementTotals.of(sales), SettlementTotals.ofRefunds(refunds), carriedIn, now);
                 settlementRepository.saveAndFlush(settlement);
 
                 // 6. 차감 연결 기록 — 정산의 환불 합계·이월받은 금액과 정확히 같은 대상
