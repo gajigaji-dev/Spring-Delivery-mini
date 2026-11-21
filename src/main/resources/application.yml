@@ -60,6 +60,9 @@ spring:
 
   # JPA
   jpa:
+    # 기본 open-in-view 등록은 끄고 config.OpenEntityManagerInViewConfig에서 SSE 경로만 빼고 다시 등록 (#76)
+    # (다른 API의 동작은 그대로, 오래 열린 SSE 응답이 DB 커넥션을 잡고 있지 않도록)
+    open-in-view: false
     hibernate:
       # 스키마 변경은 Flyway(db/migration)만 담당, Hibernate는 엔티티와 테이블이 맞는지 검사만 함
       # 맞지 않으면 기동 실패 → 엔티티를 바꿨다면 마이그레이션 파일도 함께 추가
@@ -156,6 +159,14 @@ notification:
 #   outbox-published: 발행 완료(PUBLISHED) 이벤트 보관 기간 — PENDING·FAILED는 지우지 않음
 #   consumed-events: Consumer 처리 기록 보관 기간 — Kafka 토픽 보관 기간(기본 7일)보다 길어야 재전달된 메시지를 중복으로 걸러냄
 #   payment-idempotency-keys: DB 결제 멱등성 기록 보관 기간 — 지난 뒤 같은 키 재시도는 처음 응답 대신 409(이미 결제됨)
+# 사장님 실시간 주문 알림(SSE, #76) — config.OwnerStreamProperties, docs/architecture.md 실시간 알림 장
+# 연결은 이 서버 메모리에만 보관(단일 인스턴스 기준). timeout은 Access Token(15분)보다 짧게 → 재연결 때 권한 재확인
+owner-stream:
+  timeout: 10m
+  heartbeat: 25s
+  max-connections-per-user: 5
+  send-queue-capacity: 1000
+
 retention:
   enabled: true
   fixed-delay: 1h

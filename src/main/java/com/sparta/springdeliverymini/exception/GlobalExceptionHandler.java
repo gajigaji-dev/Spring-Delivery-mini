@@ -8,6 +8,8 @@ import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.ErrorResponse;
@@ -15,6 +17,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 // 모든 예외를 ApiErrorResponse 형식으로 변환 (message 문구·상태 코드는 기존과 동일, status·error·path·traceId 추가)
@@ -30,7 +33,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ApiErrorResponse> handleApiException(ApiException e, HttpServletRequest request) {
         log.warn("요청 실패 status={} code={} message={}", e.getStatus().value(), e.getCode(), e.getMessage());
-        return ResponseEntity.status(e.getStatus())
+        return jsonError(e.getStatus())
                 .body(ApiErrorResponse.of(e.getStatus(), e.getCode(), e.getMessage(), request.getRequestURI()));
     }
 
@@ -80,7 +83,7 @@ public class GlobalExceptionHandler {
         String constraint = (e.getCause() instanceof ConstraintViolationException cve)
                 ? cve.getConstraintName() : "unknown";
         log.error("DB 제약 조건 위반 constraint={}", constraint);
-        return ResponseEntity.status(HttpStatus.CONFLICT)
+        return jsonError(HttpStatus.CONFLICT)
                 .body(ApiErrorResponse.of(HttpStatus.CONFLICT, "데이터 저장 중 제약 조건을 위반했습니다.",
                         request.getRequestURI()));
     }
@@ -95,7 +98,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleDatabaseBusy(Exception e, HttpServletRequest request) {
         log.error("DB 응답 지연·사용 불가 {} {} cause={}", request.getMethod(), request.getRequestURI(),
                 e.getClass().getSimpleName());
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+        return jsonError(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiErrorResponse.of(HttpStatus.SERVICE_UNAVAILABLE,
                         "일시적으로 요청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.", request.getRequestURI()));
     }
@@ -135,6 +138,13 @@ public class GlobalExceptionHandler {
                 "요청 본문 형식이 올바르지 않습니다. 값의 형식과 허용된 값을 확인해주세요.", request);
     }
 
+    // 클라이언트가 이미 끊은 비동기 응답(SSE 등, #76)에 쓰려다 난 예외 — 응답을 쓸 곳이 없으므로 본문 없이 끝냄
+    // 아래 Exception 처리기로 가면 500 오류 로그가 쌓이고, 끊긴 응답에 JSON을 쓰려다 예외가 한 번 더 남
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleAsyncRequestNotUsable(AsyncRequestNotUsableException e) {
+        log.debug("이미 끊긴 비동기 응답 message={}", e.getMessage());
+    }
+
     // 위에서 처리하지 않은 나머지 예외
     // - Spring MVC 표준 예외(없는 경로 404, 지원하지 않는 메서드 405 등)는 ErrorResponse로 상태 코드를 알려줌
     //   → 그 상태 코드를 유지하고 형식만 통일 (이전에는 Spring Boot 기본 /error 형식으로 응답)
@@ -147,12 +157,12 @@ public class GlobalExceptionHandler {
                 String message = frameworkMessage(status);
                 log.warn("요청 실패 status={} message={}", status.value(), message);
                 // 405의 Allow 헤더처럼 표준 예외가 가진 헤더는 그대로 전달
-                return ResponseEntity.status(status).headers(errorResponse.getHeaders())
+                return jsonError(status).headers(errorResponse.getHeaders())
                         .body(ApiErrorResponse.of(status, message, request.getRequestURI()));
             }
         }
         log.error("처리되지 않은 예외 {} {}", request.getMethod(), request.getRequestURI(), e);
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+        return jsonError(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiErrorResponse.of(HttpStatus.INTERNAL_SERVER_ERROR,
                         "서버 내부 오류가 발생했습니다. 문제가 계속되면 traceId와 함께 문의해주세요.",
                         request.getRequestURI()));
@@ -161,7 +171,7 @@ public class GlobalExceptionHandler {
     private ResponseEntity<ApiErrorResponse> clientError(HttpStatus status, String message,
                                                          HttpServletRequest request) {
         log.warn("요청 실패 status={} message={}", status.value(), message);
-        return ResponseEntity.status(status)
+        return jsonError(status)
                 .body(ApiErrorResponse.of(status, message, request.getRequestURI()));
     }
 
@@ -172,5 +182,11 @@ public class GlobalExceptionHandler {
             case UNSUPPORTED_MEDIA_TYPE -> "지원하지 않는 Content-Type입니다.";
             default -> "요청을 처리할 수 없습니다.";
         };
+    }
+
+    // 오류 본문은 항상 JSON으로 — Content-Type을 미리 정해 두면 Accept와 협상하지 않음
+    // SSE 구독(#76)처럼 Accept가 text/event-stream뿐인 요청에서 403·404를 내면, 협상 실패로 원래 상태 코드 대신 500이 나가던 문제 방지
+    private static ResponseEntity.BodyBuilder jsonError(HttpStatusCode status) {
+        return ResponseEntity.status(status).contentType(MediaType.APPLICATION_JSON);
     }
 }

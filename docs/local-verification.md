@@ -611,3 +611,30 @@ MSYS_NO_PATHCONV=1 docker compose exec kafka /opt/kafka/bin/kafka-consumer-group
   --bootstrap-server localhost:9092 --describe --all-groups                 # LAG 0이면 다 처리
 ```
 - 토픽 메시지·DLT 내용은 2-3·2-4의 consumer 명령, Outbox 상태는 2-3의 SQL
+
+## 6. 사장님 실시간 주문 알림 (SSE, #76)
+
+자동 테스트: `OwnerOrderStreamRegistryTest`, `OwnerOrderStreamIntegrationTest`(백엔드), `frontend/src/owner/orderStreamController.test.ts`(재연결·폴링·끊김 감지)
+
+### 6-1. compose 실제 확인 (2026-11-21, 결과 통과)
+compose 앱(`APP_PORT=8091`)을 새 코드로 다시 빌드. `.env`가 `NOTIFICATION_SENDER=slack`이면 확인용 결제가 Slack으로 나가므로 이번 실행만 log로 덮어씀
+```bash
+APP_PORT=8091 NOTIFICATION_SENDER=log docker compose up -d --build app
+```
+1. 사장님 `fc110847` 로그인 → `curl -N -H "Accept: text/event-stream" -H "Authorization: Bearer <Access>" http://localhost:8091/api/owner/order-events`
+2. 고객 `demo70c1`로 매장 4 메뉴 주문 → 결제
+3. 결과
+
+| 확인 | 결과 |
+|---|---|
+| 토큰 없음 / 고객 토큰 / 없는 매장(`storeId=999999`) | 401 / 403 / 404, 본문은 공통 JSON (`Accept: text/event-stream`만 보냄) |
+| 구독 응답 | 200 `text/event-stream`, `X-Accel-Buffering: no`, 바로 `event:connected` |
+| 결제 → `event:order` | 주문 516 결제 후 **2.3초**에 수신 (`notificationId` 99, `type` PAYMENT_COMPLETED, `amount` 4500). Outbox 발행 주기(1s) + Kafka 소비 + 알림 저장 커밋 |
+| SSE 3개 연결 유지 중 DB 커넥션 | Prometheus `hikaricp_connections_active` 60초 동안 **0** (open-in-view 제외 효과) |
+| 연결 수·버림 | `owner_stream_connections` 연결 수만큼, `owner_stream_events_dropped_total` 0 |
+| 클라이언트 종료 후 정리 | 프로세스 종료 후 약 80초 안에 `owner_stream_connections` 0 — 하트비트(25초) 쓰기 실패로 정리. Docker Desktop 포트 프록시가 끊김을 늦게 전달해 하트비트 1~2번이 더 걸림 |
+
+### 6-2. 브라우저 확인 (아직 — 사용자 확인 항목)
+- 사장님 홈·주문 화면 제목 옆 `실시간 연결됨` 배지, 다른 창에서 고객 결제 → 토스트 + 주문 목록 갱신
+- '알림 소리 켜기' 클릭 → 확인음 → 다음 결제 때 소리
+- 폴링 전환: compose app 중지(`docker compose stop app`) → 재연결 3번 실패 후 `30초마다 확인 중` → 다시 시작하면 `실시간 연결됨`으로 돌아오고 목록 갱신

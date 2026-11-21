@@ -89,6 +89,9 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── NotificationProperties.java      # 알림 발송 설정(notification.dispatcher.*·sender·slack.*) 바인딩·검증 (V14, #69)
 │   ├── RetentionProperties.java         # 보관 기간 정리 설정(retention.*) 바인딩·검증 (V14)
 │   ├── BackgroundTaskConfig.java        # 알림 발송·보관 기간 정리 주기 작업 등록, 발송기 선택(log·slack) 빈 (V14, #69)
+│   ├── OwnerStreamConfig.java           # 실시간 주문 알림 하트비트 주기 작업 등록 (#76)
+│   ├── OwnerStreamProperties.java       # 사장님 실시간 주문 알림 설정(owner-stream.*) 바인딩·검증 (#76)
+│   ├── OpenEntityManagerInViewConfig.java # open-in-view를 직접 등록하고 SSE 경로만 제외 — 긴 응답이 DB 커넥션을 잡지 않도록 (#76)
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing, 생성·수정 시각을 Clock 기준으로 기록
 │   ├── OpenApiConfig.java               # springdoc 문서 정보, JWT(Bearer) 인증 방식
 │   └── ProdProfileGuard.java            # prod 프로필 기동 점검: 필수 환경변수 누락·Swagger 활성 시 기동 실패 (#54), EnvironmentPostProcessor로 빈 생성 전 실행 (#61)
@@ -107,6 +110,7 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── OwnerApplicationController.java  # 사장님 전환 신청·내 신청 조회 (/api/owner-applications) (V17)
 │   ├── AdminOwnerApplicationController.java # 관리자 사장님 전환 신청 목록·승인·거절 (/api/admin/owner-applications) (V17)
 │   ├── NotificationController.java      # 내 알림 목록 (/api/notifications) (V14), 안 읽은 개수·읽음 처리 (V15)
+│   ├── OwnerOrderStreamController.java  # 사장님 실시간 주문 알림 구독 (/api/owner/order-events, SSE) (#76)
 │   ├── MenuController.java              # 메뉴 등록·조회·수정·삭제
 │   ├── OrderController.java             # 주문 생성·조회·취소·상태 변경
 │   ├── PaymentController.java           # 결제 (선택 헤더 Idempotency-Key, 재전송 시 Idempotent-Replayed), 결제 단건 조회 (#53)
@@ -126,7 +130,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── AdminStoreService.java           # 관리자 매장 수수료율 설정·해제 (이후 결제부터 적용)
 │   ├── OwnerSettlementService.java      # 사장님 일 정산 기록 목록·상세 (지급액·이월·상태, 차감 내역)
 │   ├── AdminOutboxService.java          # 관리자 Outbox 조회·재발행 (FAILED → PENDING, 행 잠금) (V14)
-│   └── NotificationService.java         # 이벤트 → 알림 기록, eventId 기준 멱등성(consumed_events) (#42), 내 알림 목록 (V14), 읽음 처리·안 읽은 개수 (V15)
+│   ├── NotificationService.java         # 이벤트 → 알림 기록, eventId 기준 멱등성(consumed_events) (#42), 내 알림 목록 (V14), 읽음 처리·안 읽은 개수 (V15), 사장님 알림 저장 시 OwnerOrderNotified 발행 (#76)
+│   └── OwnerOrderStreamService.java     # 실시간 주문 알림 구독 전 DB 기준 역할·매장 소유권 확인 (#76)
 ├── event                                # Kafka Transactional Outbox (#42)
 │   ├── OutboxEventRecorder.java         # 업무 트랜잭션 안에서 이벤트 저장 (MANDATORY — 업무 데이터와 함께 커밋·롤백)
 │   ├── OutboxPublisher.java             # outbox_events → Kafka 발행 (SKIP LOCKED, 실패 시 백오프 재시도, 한도 초과 FAILED)
@@ -136,6 +141,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── NotificationSender.java / LoggingNotificationSender.java # 발송 채널 인터페이스 / 기본 구현(로그 출력) (V14)
 │   ├── SlackNotificationSender.java     # Slack Incoming Webhook 발송기 — 운영 채널 1곳, notification.sender=slack (#69)
 │   ├── NotificationEventListener.java   # Kafka Consumer — 메시지 해석·검증 후 NotificationService 호출
+│   ├── OwnerOrderNotified.java          # 사장님 주문 알림 저장 애플리케이션 이벤트 (#76)
+│   ├── OwnerOrderStreamRegistry.java    # SSE 연결 보관(메모리)·커밋 후 전송·하트비트·연결 상한·종료 시 정리 (#76)
 │   ├── DltReprocessor.java              # DLT → 원래 토픽 재발행 (kafka_dlt-* 헤더 제거, 그룹 오프셋으로 진행 위치 기록) (#52)
 │   ├── DltReprocessRunner.java          # DLT 재처리 CLI (dlt-reprocess 프로필, --all / --partition·--offset, 분산 락) (#52)
 │   ├── DeliveryEventMessage.java        # 이벤트 본문(payload) — 발생 시점 스냅샷
@@ -464,6 +471,49 @@ docker compose run --rm app --spring.profiles.active=dev,dlt-reprocess --all
 - **대용량 정리**: 행 수가 크게 늘면 주기 삭제 대신 테이블 파티셔닝(파티션 DROP)
 - **알림 전달**: Alertmanager 연동 (~~Outbox·알림 대시보드 패널~~ #67에서 추가)
 
+## 실시간 주문 알림 (SSE, #76)
+
+접속 중인 사장님 화면에 새 주문(결제 완료)·고객 취소(환불)를 바로 보냄. 기존 알림 기록 흐름(#42)의 끝에 붙임
+
+```
+결제 → outbox_events → Kafka → NotificationService.handle (알림 저장 + OwnerOrderNotified 발행)
+  → 커밋 후(@TransactionalEventListener) OwnerOrderStreamRegistry → 전용 스레드 → 그 사장님의 SSE 연결들
+```
+
+| 결정 | 이유 |
+|---|---|
+| SSE (WebSocket 아님) | 서버 → 화면 한 방향이면 충분. 일반 HTTP라 기존 인증 필터·CORS·프록시 설정을 그대로 씀 |
+| 알림 **저장 커밋 후** 전송 | 커밋 전에 보내면 롤백된 알림(Kafka 재시도 대상)이 화면에 먼저 뜰 수 있음. 저장된 알림만 보냄 |
+| 전용 전송 스레드 + 대기열(1,000) | 소켓 쓰기는 느린 클라이언트에서 막힐 수 있어 Kafka 소비 스레드에서 직접 쓰지 않음. 가득 차면 버리고 `owner.stream.events.dropped` 증가 — 화면은 재연결·주기 조회로 따라잡음 |
+| 이벤트는 "다시 받으라"는 신호 | 화면 목록은 항상 주문 API 결과. 이벤트가 빠지거나 순서가 바뀌어도 화면 데이터가 틀어지지 않음. `Last-Event-ID` 재전송은 하지 않음(재연결 후 목록 조회로 충분) |
+| 연결 최대 10분 | Access Token(15분)보다 짧게 → 재연결 때 새 토큰·DB 기준 역할·매장 소유권을 다시 확인. 오래 열린 연결이 권한 변경을 계속 무시하지 않음 |
+| 하트비트 25초(`:ping`) | 프록시·로드밸런서 유휴 끊김(보통 60초) 방지 + 말없이 사라진 클라이언트를 쓰기 실패로 찾아 정리 |
+| 사용자당 연결 5개 | 탭 여러 개 허용, 넘으면 가장 오래된 연결을 닫음 (새로고침 직후 이전 연결이 아직 남아 있는 경우가 흔해 새 연결을 거절하지 않음) |
+| 종료 시 먼저 연결 정리 | 등록부가 `SmartLifecycle`(기본 phase)이라 웹 서버 graceful shutdown보다 먼저 연결을 닫음 → 열린 SSE 때문에 종료가 30초 제한을 다 기다리지 않음 (테스트 종료 30초 → 0.1초) |
+
+### open-in-view와 DB 커넥션 (구현 중 발견)
+- Spring Boot 기본 open-in-view는 요청마다 EntityManager를 열고 **응답이 끝날 때** 닫음. Spring의 Hibernate 설정(`DELAYED_ACQUISITION_AND_HOLD`)이라 한 번 조회하면 그 커넥션을 EntityManager가 닫힐 때까지 잡음
+  → SSE 응답은 몇 분씩 열려 있으므로 **연결 수만큼 커넥션을 점유** (풀 20 → 사장님 20명이면 다른 API가 모두 대기)
+- `@Transactional(propagation = REQUIRES_NEW)`로는 못 피함: open-in-view EntityManager는 "진행 중 트랜잭션"이 아니어서 새 트랜잭션도 같은 EntityManager를 씀 — 통합 테스트에서 열린 SSE 4개 = 활성 커넥션 4개로 확인
+- 해결: `spring.jpa.open-in-view=false`로 기본 등록을 끄고 `config.OpenEntityManagerInViewConfig`에서 같은 인터셉터를 **SSE 경로만 빼고** 다시 등록. 다른 API 동작은 그대로. SSE 경로의 서비스는 엔티티가 아니라 id만 반환(지연 로딩 금지)
+- 검증: `OwnerOrderStreamIntegrationTest` — 연결이 열린 상태에서 Hikari 활성 커넥션 0
+
+### 보안
+- URL 규칙 `GET /api/owner/order-events` = OWNER + 서비스에서 DB 기준 역할·`storeId` 소유권 재확인 (토큰은 OWNER지만 DB가 아니면 403)
+- 비동기 디스패치(`DispatcherType.ASYNC`)는 `permitAll` — 원래 요청이 이미 인증을 통과했고 JWT 필터는 비동기 디스패치에서 다시 돌지 않아, 막으면 이미 응답이 나간 연결에 403을 쓰려다 오류 로그만 남음
+- 토큰을 URL에 넣지 않음 (`EventSource` 대신 fetch 스트림 + Bearer, `frontend/README.md`)
+- 오류 응답은 Content-Type을 JSON으로 고정 → `Accept: text/event-stream`뿐인 요청의 403·404가 협상 실패(500)로 바뀌지 않음
+
+### 메트릭
+- `owner_stream_connections`(게이지, 이 인스턴스의 열린 연결 수), `owner_stream_events_dropped_total`(대기열이 가득 차 버린 알림)
+
+### 한계 · 후속
+- **단일 인스턴스 기준**: 연결은 각 서버 메모리에만 있음. 서버가 여러 대면 알림을 저장한 인스턴스(Kafka 소비)와 사장님이 연결된 인스턴스가 다를 수 있어 일부 사장님에게 안 감
+  → 후속: 알림 저장 커밋 후 Redis Pub/Sub(채널 예: `owner-orders`)로 발행하고 **모든 인스턴스가 구독**해 자기 연결에 전달. Redis 장애 시에도 화면은 주기 조회로 대체되므로 데이터에는 영향 없음 (Redis는 보조 수단 원칙)
+  → 대안: 인스턴스마다 다른 groupId의 전달 전용 Consumer로 모두 받기(브로드캐스트) — 알림 저장(멱등)과 전달을 분리해야 함
+- Kafka가 멈추면 알림 저장도 멈춰 실시간 알림이 안 옴. 연결은 살아 있어 화면은 live로 보임 → 수동 새로고침. 필요하면 live 상태에서도 긴 주기(예: 5분) 조회 추가
+- 연결은 비동기라 스레드를 잡지 않지만 소켓·메모리 비용은 연결당 발생 — 수천 연결 이상이면 별도 게이트웨이(또는 WebFlux) 검토
+
 ## 인증 (Access · Refresh Token, V15)
 
 Access Token(JWT, V15까지 1시간 → V16부터 15분)이 만료됐을 때 다시 로그인하지 않도록 Refresh Token을 추가했다. 클라이언트 사용법은 [API 명세 · 인증 토큰](api.md#인증-토큰-access--refresh)
@@ -584,5 +634,6 @@ sequenceDiagram
   - test 프로필은 알림 발송·보관 기간 정리의 주기 실행을 끄고(`application-test.yml`) 테스트가 직접 호출
   - Kafka 컨테이너는 `KafkaTestcontainersConfiguration`을 함께 `@Import`한 클래스에서만 뜸. test 프로필은 토픽 생성·Consumer·주기 발행을 끄고(`application-test.yml`), Kafka 테스트 클래스가 속성으로 다시 켬. 발행은 `publishPending()`을 직접 호출해 시점을 고정
 - 알림 읽음·Refresh Token 테스트 (V15·V16): `RefreshTokenFamilyExpiryMigrationTest`(V15 토큰 위에 V16 적용 — 계열 절대 만료 백필·앞당기지 않음, NOT NULL·`expires_at <= family_expires_at`, 정리 인덱스), `NotificationReadRefreshTokenMigrationTest`(V14 데이터 위에 V15 적용 — 기존 알림 안 읽음·다른 값 유지, 부분 인덱스, `refresh_tokens` UNIQUE·CHECK·FK), `RefreshTokenTest`(발급·재발급 같은 계열·폐기 1회·만료 경계·절대 만료로 잘림), `NotificationReadIntegrationTest`(본인 알림 읽음 204, 다른 사람 403·없음 404·토큰 없음 401, 멱등 — 처음 읽은 시각 유지, 목록 `read`·`readAt`, 안 읽은 개수는 본인 것만, 발송 상태 변경과 서로 덮어쓰지 않음), `AuthTokenIntegrationTest`(로그인 쿠키 속성·본문에 Refresh 없음·DB 해시만, 재발급 rotation·DB 역할 반영, 재사용 시 계열 전체 폐기·다른 계열 유지, 만료·폐기·모르는 값 401 `code`, 동시 재발급 5건 중 1건만 성공, 계속 재발급해도 로그인 후 30일에 만료, 만료 후 7일 지난 행만 정리, 로그아웃 계열 폐기·멱등, 허용하지 않은 출처 403(CSRF), Access 만료 `TOKEN_EXPIRED`·위조 `TOKEN_INVALID`·없음 `code` 없음)
+- 실시간 주문 알림 테스트 (#76): `OwnerOrderStreamRegistryTest`(받는 사장님·매장 범위, 연결 상한 시 오래된 연결 종료, 전송·하트비트 실패 연결 정리), `OwnerOrderStreamIntegrationTest`(실제 서버 임의 포트 + HttpClient 스트림: 알림 저장 커밋 후 해당 사장님에게만 `order` 이벤트, 매장 지정 구독, 연결 유지 중 DB 커넥션 0, 401·403(토큰·DB 역할·다른 매장)·404 — `Accept: text/event-stream`에서도 원래 상태 코드)
 - 스키마는 Flyway가 생성하므로 마이그레이션 SQL과 `ddl-auto: validate`도 함께 검증됨
 - 같은 설정을 쓰는 테스트 클래스끼리는 컨테이너 1개를 공유하고, 테스트가 끝나면 컨테이너는 자동 삭제됨

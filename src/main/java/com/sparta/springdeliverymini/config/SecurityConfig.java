@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
+import jakarta.servlet.DispatcherType;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -60,6 +61,10 @@ public class SecurityConfig {
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // 비동기 디스패치(SSE 연결 종료·타임아웃 시 컨테이너가 다시 보내는 내부 디스패치, #76)는 허용
+                        // 원래 요청(REQUEST)이 이미 인증·권한 검사를 통과했고, JWT 필터는 비동기 디스패치에서 다시 돌지 않아
+                        // 막으면 이미 응답이 나간 연결에 403을 쓰려다 오류 로그만 남음
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                         .requestMatchers("/api/users/signup", "/api/users/login", "/error").permitAll()
 
                         // Refresh Token 재발급·로그아웃은 Access Token 없이 호출 (Access가 이미 만료된 상태에서 쓰는 API)
@@ -124,6 +129,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/owner-applications").hasRole("CUSTOMER")
 
                         // 관리자 API(정산 확정·지급, 환불, 매장 수수료율 변경, 사장님 전환 승인 등)는 ADMIN만 가능 (CUSTOMER·OWNER → 403)
+                        // 사장님 실시간 주문 알림(SSE, #76) — OWNER만, DB 기준 역할·매장 소유권은 OwnerOrderStreamService에서
+                        .requestMatchers(HttpMethod.GET, "/api/owner/order-events").hasRole("OWNER")
+
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
 
                         .anyRequest().authenticated()

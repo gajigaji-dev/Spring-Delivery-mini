@@ -24,7 +24,7 @@ import {
 } from '../../owner/derive';
 import { useOwner } from '../../owner/OwnerContext';
 import { useStoreSettlements } from '../../owner/useStoreSettlements';
-import { NoStore, TruncatedNotice } from './OwnerCommon';
+import { LiveStatus, NoStore, TruncatedNotice } from './OwnerCommon';
 
 const SETTLE_DAYS = 14;
 
@@ -61,11 +61,14 @@ export default function OwnerHomePage() {
           </span>
           <h1>{greeting(seoulHour(now))}, 사장님</h1>
         </div>
-        {waitList.length > 0 && (
-          <PrefetchLink to="/owner/orders" page="ownerOrders" className="btn btn--lg">
-            대기 주문 {waitList.length}건 처리하기 <IconArrowRight />
-          </PrefetchLink>
-        )}
+        <div className="ph__actions">
+          <LiveStatus />
+          {waitList.length > 0 && (
+            <PrefetchLink to="/owner/orders" page="ownerOrders" className="btn btn--lg">
+              대기 주문 {waitList.length}건 처리하기 <IconArrowRight />
+            </PrefetchLink>
+          )}
+        </div>
       </div>
 
       <ErrorMessage error={error} />
