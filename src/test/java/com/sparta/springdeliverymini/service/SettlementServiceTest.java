@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.dto.SettlementItemResponse;
 import com.sparta.springdeliverymini.dto.StoreSettlementResponse;
@@ -76,7 +78,7 @@ class SettlementServiceTest {
 
     // 배달완료된 주문의 결제 (수수료율 5%)
     private Payment deliveredPayment(Long id, long amount, LocalDateTime deliveredAt) {
-        Order order = new Order(customer, store, "서울시", OrderStatus.ORDER_ACCEPTED);
+        Order order = new Order(customer, store, TestAddresses.seoul(), OrderStatus.ORDER_ACCEPTED);
         order.addItem(new Menu("치킨", amount, null, store), 1);
         order.complete(deliveredAt);
         ReflectionTestUtils.setField(order, "id", id);

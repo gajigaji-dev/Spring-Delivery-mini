@@ -38,9 +38,9 @@ interface NavItem {
 
 // 역할별 주 메뉴 — 데스크톱은 알약형 메뉴, 960px 이하는 같은 항목이 하단 탭바로
 const NAV: Record<Role | 'ANONYMOUS', NavItem[]> = {
-  ANONYMOUS: [{ to: '/', label: '매장', page: 'stores', icon: <IconStore size={24} /> }],
+  ANONYMOUS: [{ to: '/stores', label: '매장', page: 'stores', icon: <IconStore size={24} /> }],
   CUSTOMER: [
-    { to: '/', label: '매장', page: 'stores', icon: <IconStore size={24} /> },
+    { to: '/stores', label: '매장', page: 'stores', icon: <IconStore size={24} /> },
     { to: '/cart', label: '장바구니', page: 'cart', icon: <IconCart size={24} />, badge: 'cart' },
     { to: '/orders', label: '주문', page: 'orders', icon: <IconBag size={24} /> },
     { to: '/payments', label: '결제 내역', page: 'payments', icon: <IconWallet size={24} /> },
@@ -58,7 +58,7 @@ const NAV: Record<Role | 'ANONYMOUS', NavItem[]> = {
 };
 
 export const ROLE_HOME: Record<Role, string> = {
-  CUSTOMER: '/',
+  CUSTOMER: '/stores',
   OWNER: '/owner',
   ADMIN: '/admin/settlements',
 };
@@ -73,8 +73,8 @@ const IDLE_PRELOAD: Record<Role, PageName[]> = {
   ADMIN: ['adminSettlements', 'adminOwnerApplications', 'adminOutbox'],
 };
 
-// 로그인·가입은 자체 화면(제품 소개 + 패널)이라 앱 헤더를 쓰지 않음
-const BARE_PATHS = ['/login', '/signup'];
+// 랜딩·로그인·가입은 자체 화면(제품 소개 + 패널)이라 앱 헤더를 쓰지 않음
+const BARE_PATHS = ['/', '/login', '/signup'];
 
 /** 바깥 클릭·Esc로 닫히는 팝오버 상태 */
 function usePopover() {
@@ -160,7 +160,7 @@ function Header({ nav }: { nav: NavItem[] }) {
           {nav.length > 1 && (
             <nav className="pnav" aria-label="주 메뉴">
               {nav.map((n) => (
-                <PrefetchLink key={n.to} to={n.to} page={n.page} end={n.to === '/' || n.to === '/owner'}>
+                <PrefetchLink key={n.to} to={n.to} page={n.page} end={n.to === '/owner'}>
                   {n.label}
                   {n.badge && badges[n.badge] > 0 && <span className="badge-count num">{badges[n.badge]}</span>}
                 </PrefetchLink>
@@ -309,7 +309,7 @@ function TabBar({ nav }: { nav: NavItem[] }) {
   return (
     <nav className="tabbar" aria-label="하단 메뉴">
       {nav.map((n) => (
-        <PrefetchLink key={n.to} to={n.to} page={n.page} end={n.to === '/' || n.to === '/owner'}>
+        <PrefetchLink key={n.to} to={n.to} page={n.page} end={n.to === '/owner'}>
           {n.icon}
           {n.label}
           {n.badge && badges[n.badge] > 0 && <span className="badge-count num">{badges[n.badge]}</span>}

@@ -139,3 +139,16 @@ export const IconUser = (p: P) => (
     <path d="M5 20a7 7 0 0 1 14 0" />
   </Stroke>
 );
+
+export const IconSearch = (p: P) => (
+  <Stroke {...p}>
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="m20 20-4.2-4.2" />
+  </Stroke>
+);
+
+export const IconX = (p: P) => (
+  <Stroke {...p}>
+    <path d="M6 6l12 12M18 6 6 18" />
+  </Stroke>
+);

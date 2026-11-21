@@ -12,7 +12,7 @@
 | 관측성 · 문서 | Spring Boot Actuator · Micrometer Prometheus · Grafana · springdoc-openapi (Swagger UI) |
 | 테스트 | JUnit 5 · Mockito · Awaitility · Testcontainers (PostgreSQL 18 · Redis · Kafka) |
 | 빌드 · 도구 | Gradle · Postman |
-| 프론트엔드 (#70, 골격) | React 19 · TypeScript · Vite 7 · React Router 7 · Vitest — 디자인 미확정 ([frontend/README.md](frontend/README.md)) |
+| 프론트엔드 (#70, #76) | React 19 · TypeScript · Vite 7 · React Router 7 · Vitest — 고객·점주·관리자 화면, 점주 실시간 주문 알림(SSE) ([frontend/README.md](frontend/README.md)) |
 
 ## 아키텍처
 
@@ -27,6 +27,7 @@ flowchart LR
     sch -.분산 락.-> redis
     svc -.이벤트 같은 트랜잭션 저장.-> db
     pub[OutboxPublisher] -->|발행| kafka[(Kafka)] -->|수신| lsn[알림 Consumer] --> db
+    lsn -.커밋 후 SSE.-> client
 ```
 
 자세한 구성·요청 흐름·패키지 구조는 [프로젝트 구조](docs/architecture.md)를 참고하세요.
@@ -40,6 +41,7 @@ flowchart LR
 | 결제 | 서버가 정한 금액으로 결제, 중복 결제 방지(DB UNIQUE), `Idempotency-Key`로 재시도 시 처음 응답 재전송(Redis + 결제와 같은 트랜잭션의 DB 기록 — Redis 기록이 사라지거나 장애여도 재전송, 같은 키 다른 요청 422·새 결제는 Redis 장애 시 503), 수수료(기본 5%, 매장별 설정 가능) 스냅샷 저장, 수락 전 취소·배달 후 관리자 환불, 본인 결제 단건 조회(현재 상태)·내 결제 목록(페이지 단위) |
 | 정산 | 배달완료 시각 기준 일 정산, 스케줄러 집계(PENDING) → 관리자 확정 → 지급, 환불은 다음 정산에서 차감하고 부족하면 이월, 사장님 정산 기록 조회 |
 | 이벤트 · 알림 | 결제 완료·환불·배달 완료 이벤트를 업무 데이터와 같은 트랜잭션에 저장(Transactional Outbox) → Kafka 발행(실패 시 지수 백오프 재시도, 한도 초과 FAILED), Consumer가 알림 기록 저장(`eventId` 기준 멱등성, 처리 실패는 재시도 후 DLT) → 발송기가 발송(재시도·FAILED), 내 알림 조회·읽음 처리·안 읽은 개수. FAILED 이벤트 관리자 재발행, 같은 주문 발행 순서 유지, 보관 기간 정리, 메트릭·알림 규칙. Kafka 장애여도 결제 등은 그대로 성공 |
+| 실시간 주문 알림 | 결제 완료·고객 취소를 접속 중인 사장님 화면에 SSE로 전달(알림 저장 커밋 후, 사장님·매장 권한 DB 기준 재확인), 화면은 토스트·목록 자동 갱신·알림 소리, 끊기면 재연결하고 계속 실패하면 30초 주기 조회로 대체 (#76) |
 | 정산 운영 | 확정·지급 처리자와 시각을 감사 이력으로 기록(처리자는 인증 정보 기준), 집계 실패를 DB에 기록하고 관리자가 누락·실패분만 재집계(기존 정산은 재계산하지 않음, 스케줄러와 동시 실행에도 매장·날짜당 1건), 여러 인스턴스 중 한 대만 스케줄러 실행(Redis 분산 락, 장애 시 건너뛰고 다음 실행에서 보충) |
 
 ## 문제 해결 사례
@@ -101,9 +103,9 @@ flowchart LR
 ## 문서
 | 문서 | 내용 |
 |---|---|
-| [프로젝트 구조](docs/architecture.md) | 아키텍처·주문~정산 흐름 다이어그램, 패키지 구조, Redis 키·TTL·장애 시 동작, Kafka·Outbox 보장 범위·장애 시 동작, 요청 처리 흐름, 테스트 |
+| [프로젝트 구조](docs/architecture.md) | 아키텍처·주문~정산 흐름 다이어그램, 패키지 구조, Redis 키·TTL·장애 시 동작, Kafka·Outbox 보장 범위·장애 시 동작, 실시간 주문 알림(SSE)·open-in-view 제외, 요청 처리 흐름, 테스트 |
 | [Kafka Outbox · 알림 이벤트](docs/kafka-outbox.md) | Transactional Outbox 도입 배경·설계 결정, 구현 중 발견한 문제, 검증 결과, 후속 과제 (#42) |
-| [로컬 확인 가이드](docs/local-verification.md) | Redis·Kafka 동작을 자동 테스트와 로컬 실행으로 확인하는 절차 (멱등성 재전송·장애, Outbox 발행·재발행·DLT, DLT 재처리 CLI, 메트릭), 주문 목록 keyset·prod 프로필·DB 타임아웃 확인 (#54), CORS 확인 (#61), Slack 알림 발송 확인 (#69) |
+| [로컬 확인 가이드](docs/local-verification.md) | Redis·Kafka 동작을 자동 테스트와 로컬 실행으로 확인하는 절차 (멱등성 재전송·장애, Outbox 발행·재발행·DLT, DLT 재처리 CLI, 메트릭), 주문 목록 keyset·prod 프로필·DB 타임아웃 확인 (#54), CORS 확인 (#61), Slack 알림 발송 확인 (#69), 실시간 주문 알림 compose 확인 (#76) |
 | [API 명세](docs/api.md) | API 목록, 주문 상태 흐름, API별 요청·응답·에러 코드 |
 | [ERD](docs/erd.md) | ERD 다이어그램, 테이블 간 관계 |
 | [데이터베이스](docs/database.md) | Flyway 마이그레이션, 테이블 상세·제약조건, 시간대, 결제 연관관계 |
@@ -175,6 +177,19 @@ cd frontend && npm install && npm run dev
 - 모든 응답에 `X-Trace-Id` 헤더가 붙고, 같은 값이 서버 로그 각 줄(`[traceId]`)과 에러 응답 `traceId`에 들어감
 - CI: GitHub Actions가 main 대상 PR·push에서 경로별로 실행 — 백엔드(`src/**`·gradle 파일)는 `ci.yml`의 `./gradlew build`(전체 테스트 포함), 프론트엔드(`frontend/**`)는 `frontend.yml`의 `npm ci`·`npm test`·`npm run build`
 
+### 5. 실시간 주문 알림: SSE 연결이 DB 커넥션을 쥐고 있던 문제 (#76)
+- **문제**: 결제 완료를 접속 중인 사장님 화면에 바로 알리려고 SSE를 붙였더니, 연결이 열려 있는 동안 **연결 수만큼 DB 커넥션이 점유**됨 (풀 20 → 사장님 20명이면 다른 API가 모두 대기)
+- **원인**: Spring Boot 기본 open-in-view는 요청 단위 EntityManager를 응답이 끝날 때 닫고, Spring의 Hibernate 설정(`DELAYED_ACQUISITION_AND_HOLD`)은 한 번 얻은 커넥션을 그때까지 유지함. SSE 응답은 최대 10분 동안 끝나지 않음
+- **시도 → 실패**: 권한 확인을 `REQUIRES_NEW`로 분리 — open-in-view EntityManager는 "진행 중 트랜잭션"이 아니어서 새 트랜잭션도 같은 EntityManager를 씀. 통합 테스트에서 열린 SSE 4개 = 활성 커넥션 4개로 확인
+- **결정**: `spring.jpa.open-in-view=false`로 기본 등록을 끄고 같은 인터셉터를 **SSE 경로만 빼고** 다시 등록 → 다른 API 동작은 그대로
+- **같이 정한 것**
+  - 알림 저장 **커밋 후** 전송, 전용 스레드·대기열(Kafka 소비 스레드를 막지 않음), 이벤트는 "목록을 다시 받으라"는 신호로만 사용
+  - 토큰을 URL에 넣지 않도록 `EventSource` 대신 fetch 스트림, 연결 10분 만료(Access 15분보다 짧게 → 재연결 때 권한 재확인)
+  - 끊기면 백오프 재연결, 연속 3번 실패하면 30초 주기 조회로 대체
+- **구현 중 발견한 문제**: `Accept: text/event-stream` 요청의 403·404가 오류 JSON 협상 실패로 500이 됨 → 오류 응답 Content-Type 고정. 열린 SSE 때문에 graceful shutdown이 30초 제한을 다 기다림 → 웹 서버 종료 전에 연결 정리(0.1초)
+- **검증**: 실제 서버(임의 포트) 통합 테스트로 연결 유지 중 활성 커넥션 0. 로컬 compose(Kafka 경유)에서 결제 → 사장님 화면 이벤트 2.3초, SSE 3개 유지 중 Prometheus `hikaricp_connections_active` 0
+- 문서: [프로젝트 구조](docs/architecture.md) 실시간 주문 알림 장, [로컬 확인 가이드](docs/local-verification.md) 6장
+
 ## 후속 개선 사항
 배경과 상세는 [프로젝트 구조](docs/architecture.md)의 Redis·Kafka 장 "후속 개선" 참고
 
@@ -193,6 +208,10 @@ cd frontend && npm install && npm run dev
 - ~~발행 대기 건수, 실패 건수, DLT, Consumer lag 모니터링~~ → 메트릭 + 알림 규칙 (Alertmanager 연동은 남음)
 - ~~이벤트 순서 보장~~ → 같은 주문의 앞 이벤트가 대기 중이면 뒤 이벤트를 발행하지 않음
 - ~~알림 조회 API·발송~~ → `GET /api/notifications`, 발송기(로그) / 실제 이메일·SMS·푸시 채널 연동은 남음
+
+### 실시간 알림 (#76)
+- 서버 여러 대: 연결이 각 서버 메모리에만 있어 알림을 저장한 인스턴스와 연결된 인스턴스가 다르면 전달 안 됨 → Redis Pub/Sub로 모든 인스턴스에 브로드캐스트 ([프로젝트 구조](docs/architecture.md) 실시간 주문 알림 장)
+- Kafka 정지 시 연결은 살아 있어 화면이 '실시간 연결됨'으로 보임 → 필요하면 live 상태에서도 긴 주기 조회
 
 ### 성능 · 운영 (#54)
 - ~~점주 전체 주문 뒤쪽 페이지 병목~~ → 주문 목록 keyset 페이징(`?afterId=`), 마지막 페이지 평균 426ms → 17.6ms ([성능 개선](docs/performance.md) 9장)

@@ -5,6 +5,7 @@ type PageModule = Promise<{ default: ComponentType }>;
 // 화면별 코드 분할: 각 화면은 처음 들어갈 때 청크를 받는다.
 // 같은 import()를 미리 호출하면(preloadPage) 모듈 캐시에 올라가 실제 이동 시 대기가 없음
 const loaders = {
+  landing: () => import('../pages/LandingPage'),
   stores: () => import('../pages/StoresPage'),
   storeDetail: () => import('../pages/StoreDetailPage'),
   login: () => import('../pages/LoginPage'),

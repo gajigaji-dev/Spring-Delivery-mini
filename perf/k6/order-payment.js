@@ -106,7 +106,9 @@ function createOrder(token, stores, seq) {
   const menus = stores[seq % stores.length];
   return post('/api/orders', {
     items: [{ menuId: menus[0], quantity: 1 + (seq % 3) }, { menuId: menus[1], quantity: 1 }],
-    deliveryAddress: `서울시 부하구 쓰기로 ${seq}`,
+    zipCode: '06236',
+    roadAddress: `서울 강남구 테헤란로 ${1 + (seq % 500)}`,
+    detailAddress: `${seq}호`,
   }, token, null, 'POST /api/orders');
 }
 

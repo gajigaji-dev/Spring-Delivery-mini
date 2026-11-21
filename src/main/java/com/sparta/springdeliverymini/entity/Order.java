@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.entity;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import jakarta.persistence.*;
 import org.hibernate.annotations.BatchSize;
@@ -50,9 +51,15 @@ public class Order extends BaseEntity {
     @Column(nullable = false)
     private long totalPrice;
 
-    // 배송 주소
+    // 배송 주소 한 줄 (도로명 + 상세) — V18 이전 주문은 이 값만 있음
+    // 기존 주문 조회·화면이 이 값을 그대로 쓰므로 새 주문도 계속 채움 (address.fullAddress())
     @Column(nullable = false)
     private String deliveryAddress;
+
+    // 우편번호·도로명·상세로 나눈 배송 주소 (#77, V18)
+    // V18 이전 주문은 세 컬럼이 모두 NULL → null (한 줄 주소를 안전하게 나눌 수 없어 백필하지 않음)
+    @Embedded
+    private DeliveryAddress address;
 
     // 주문 상태
     @Enumerated(EnumType.STRING)
@@ -69,12 +76,16 @@ public class Order extends BaseEntity {
     public Order(
             User user,
             Store store,
-            String deliveryAddress,
+            DeliveryAddress address,
             OrderStatus status
     ) {
+        if (address == null) {
+            throw new IllegalArgumentException("배송 주소가 필요합니다.");
+        }
         this.user = user;
         this.store = store;
-        this.deliveryAddress = deliveryAddress;
+        this.address = address;
+        this.deliveryAddress = address.fullAddress();
         this.status = status;
     }
 
@@ -129,17 +140,25 @@ public class Order extends BaseEntity {
     // 주문수락(ORDER_ACCEPTED) 이후는 매장이 조리를 시작했으므로 취소 불가
     // 결제완료 주문의 결제 취소(Payment.cancel)는 OrderService가 같은 트랜잭션에서 함께 처리
     public void cancel() {
+        if (this.status == OrderStatus.ORDER_CANCELLED) {
+            throw new InvalidOrderStatusException(ErrorCode.ORDER_ALREADY_CANCELLED, "이미 취소된 주문입니다.");
+        }
         if (this.status != OrderStatus.ORDER_REQUEST && this.status != OrderStatus.PAYMENT_COMPLETED) {
-            throw new InvalidOrderStatusException("주문수락 전(주문요청·결제완료) 상태에서만 주문을 취소할 수 있습니다.");
+            throw new InvalidOrderStatusException(ErrorCode.ORDER_NOT_CANCELLABLE,
+                    "주문수락 전(주문요청·결제완료) 상태에서만 주문을 취소할 수 있습니다.");
         }
         this.status = OrderStatus.ORDER_CANCELLED;
     }
 
     // 결제 완료: ORDER_REQUEST → PAYMENT_COMPLETED
-    // 이미 결제됐거나(중복 결제) 취소된 주문은 불가
+    // 이미 결제됐거나(중복 결제) 취소된 주문은 불가 — 화면 안내가 달라서 code를 나눔
     public void pay() {
+        if (this.status == OrderStatus.ORDER_CANCELLED) {
+            throw new InvalidOrderStatusException(ErrorCode.ORDER_ALREADY_CANCELLED, "취소된 주문은 결제할 수 없습니다.");
+        }
         if (this.status != OrderStatus.ORDER_REQUEST) {
-            throw new InvalidOrderStatusException("주문요청 상태의 주문만 결제할 수 있습니다.");
+            // 결제완료·수락·배달완료 = 이미 결제된 주문
+            throw new InvalidOrderStatusException(ErrorCode.ORDER_ALREADY_PAID, "이미 결제된 주문입니다.");
         }
         this.status = OrderStatus.PAYMENT_COMPLETED;
     }

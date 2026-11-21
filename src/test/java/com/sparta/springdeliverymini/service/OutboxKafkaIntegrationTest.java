@@ -118,7 +118,7 @@ class OutboxKafkaIntegrationTest {
 
     private PaymentResponse pay() {
         OrderResponse order = orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1");
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
         return paymentService.pay(new PaymentRequest(order.id(), "CARD"), "customer1");
     }
 

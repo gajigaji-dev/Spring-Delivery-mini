@@ -20,7 +20,7 @@
   }
   ```
   - `message`는 기존과 같은 필드·문구 (기존 클라이언트는 그대로 동작), 나머지 필드는 #38에서 추가
-  - `code`(V15에서 추가): 같은 상태 코드 안에서 클라이언트가 대응을 나눠야 하는 오류에만 값이 있고 그 밖에는 `null`. 분기는 `message` 문구가 아니라 `code`로 ([인증](#인증-토큰-access--refresh))
+  - `code`(V15에서 추가): 같은 상태 코드 안에서 클라이언트가 대응을 나눠야 하는 오류에만 값이 있고 그 밖에는 `null`. 분기는 `message` 문구가 아니라 `code`로 ([인증](#인증-토큰-access--refresh), 주문·결제 오류 코드(아래 표))
   - 500은 내부 예외 메시지를 숨기고 공통 문구로 응답 → `traceId`로 서버 로그 확인
   - 503(모든 API 공통): DB가 제때 응답하지 못함 — 행 잠금 대기 초과(5초)·문장 실행 초과(30초)·커넥션 부족. 요청은 반영되지 않았으므로 잠시 후 다시 시도 ([운영 프로필 6장](operations.md))
 - 추적 헤더 `X-Trace-Id`
@@ -58,6 +58,31 @@
   | 409 | 중복(아이디, 결제) 또는 현재 상태에서 할 수 없는 요청 (주문·정산 상태 전이) |
   | 405 | 지원하지 않는 HTTP 메서드 (`Allow` 헤더 포함) |
   | 500 | 예상하지 못한 서버 오류 (`traceId`로 로그 확인) |
+
+- 주문·결제 오류 코드 (#77)
+  - 원칙: 상태 코드는 원인별로 고정(입력 400 / 없음 404 / 현재 상태와 충돌·중복 요청 409 / 같은 키 다른 요청 422 / 일시 장애 503), 같은 상태 코드 안의 구분은 `code`
+  - 화면 문구는 `code`로 정함(`frontend/src/api/errorMessages.ts`), 매핑 없는 `code`·`code` 없는 오류는 서버 `message`
+  - 401·403(권한)은 화면 대응이 같아 `code`를 붙이지 않음(인증 `TOKEN_*`·`REFRESH_TOKEN_*` 제외)
+
+  | 상태 | code | 상황 | 클라이언트 대응 |
+  |---|---|---|---|
+  | 400 | `INVALID_ADDRESS` | 우편번호 5자리 아님, 도로명 없음·150자 초과, 상세 100자 초과, 제어 문자 | 주소 칸 안내 |
+  | 400 | `DUPLICATE_ORDER_ITEM` | 같은 메뉴가 여러 항목 | 장바구니 확인 |
+  | 400 | `MIXED_STORE_ORDER` | 여러 매장 메뉴가 섞임 | 장바구니 확인 |
+  | 400 | `ORDER_AMOUNT_TOO_LARGE` | 총액이 long 범위 초과 | 수량 줄이기 |
+  | 400 | `UNSUPPORTED_PAYMENT_METHOD` | CARD 외 결제 수단 | 카드 결제 |
+  | 400 | `INVALID_IDEMPOTENCY_KEY` | `Idempotency-Key` 형식 오류 | 새로고침 |
+  | 404 | `ORDER_NOT_FOUND` / `MENU_NOT_FOUND` / `PAYMENT_NOT_FOUND` | 대상 없음 (메뉴는 삭제 포함) | 목록으로 |
+  | 409 | `ORDER_ALREADY_PAID` | 결제완료 이후 주문에 결제 (중복 결제 요청, 다른 키로 이미 결제됨 포함) | 주문 다시 불러오기, 저장한 결제 키 버림 |
+  | 409 | `ORDER_ALREADY_CANCELLED` | 취소된 주문에 결제·취소 | 주문 다시 불러오기 |
+  | 409 | `ORDER_NOT_CANCELLABLE` | 주문수락 이후 취소 | 주문 다시 불러오기, 매장 문의 |
+  | 409 | `INVALID_ORDER_STATUS` | 그 밖의 허용되지 않는 주문 상태 변경 (사장님 수락·배달완료) | 주문 다시 불러오기 |
+  | 409 | `PAYMENT_ALREADY_CANCELLED` / `PAYMENT_ALREADY_REFUNDED` | 끝난 결제에 취소·환불 | 다시 불러오기 |
+  | 409 | `PAYMENT_NOT_REFUNDABLE` | 배달 전 결제 환불 | 주문 취소 이용 |
+  | 409 | `INVALID_PAYMENT_STATUS` | 그 밖의 결제 상태 규칙 위반 | 다시 불러오기 |
+  | 409 | `PAYMENT_IN_PROGRESS` | 같은 `Idempotency-Key` 결제가 처리 중 | 잠시 후 **같은 키로** 재시도 (키를 버리지 않음) |
+  | 422 | `IDEMPOTENCY_KEY_REUSED` | 같은 `Idempotency-Key`로 다른 결제 요청 | 새 키 |
+  | 503 | `PAYMENT_UNAVAILABLE` | 멱등성 저장소(Redis) 장애 — 결제하지 않음 | 잠시 후 같은 키로 재시도 |
 
 - 운영 엔드포인트 (Actuator)
 
@@ -556,13 +581,20 @@ Request
     { "menuId": 1, "quantity": 2 },
     { "menuId": 2, "quantity": 1 }
   ],
-  "deliveryAddress": "서울시 강남구 ..."
+  "zipCode": "06236",
+  "roadAddress": "서울 강남구 테헤란로 152 (역삼동)",
+  "detailAddress": "101동 1203호"
 }
 ```
 - `items`: 필수, 1~50개. 모두 같은 매장의 메뉴여야 함
   - `menuId`: 필수, 같은 메뉴는 한 항목으로 합쳐서 요청 (중복 시 400)
   - `quantity`: 1 이상
-- `deliveryAddress`: 필수, 255자 이하
+- 배송 주소 (#77, V18) — 다음 우편번호 서비스 검색 결과 + 사용자가 입력한 상세 주소. 앞뒤 공백은 서버가 지움
+  - `zipCode`: 필수, 숫자 5자리
+  - `roadAddress`: 필수, 150자 이하
+  - `detailAddress`: 선택, 100자 이하 (빈 값이면 `null`로 저장)
+  - 줄바꿈·탭 등 제어 문자 거부. 위반은 400 + `code: INVALID_ADDRESS`
+  - 예전 한 줄 `deliveryAddress`는 더 이상 받지 않음 (보내도 무시 → 우편번호 누락 400)
 - 총액은 요청으로 받지 않고 서버에서 `항목별 메뉴 가격 × 수량의 합`으로 계산
 - 매장은 요청으로 받지 않고 메뉴의 매장으로 연결
 
@@ -575,20 +607,24 @@ Response `201 Created`
     { "menuId": 2, "menuName": "콜라", "unitPrice": 2000, "quantity": 1, "linePrice": 2000 }
   ],
   "totalPrice": 38000,
-  "deliveryAddress": "서울시 강남구 ...", "status": "ORDER_REQUEST",
+  "deliveryAddress": "서울 강남구 테헤란로 152 (역삼동) 101동 1203호",
+  "zipCode": "06236", "roadAddress": "서울 강남구 테헤란로 152 (역삼동)", "detailAddress": "101동 1203호",
+  "status": "ORDER_REQUEST",
   "createdAt": "2026-10-08T14:03:00", "updatedAt": "2026-10-08T14:03:00",
   "deliveredAt": null
 }
 ```
 - `menuName`, `unitPrice`는 현재 메뉴가 아닌 주문 당시 값
 - `deliveredAt`: 배달완료 시각, 배달완료 전에는 `null`
+- `deliveryAddress`: 한 줄 주소(도로명 + 공백 + 상세) — 기존 화면 호환용으로 계속 채움
+- `zipCode`·`roadAddress`·`detailAddress`: V18 이전 주문은 모두 `null` (한 줄 주소를 안전하게 나눌 수 없어 백필하지 않음) → 표시는 `deliveryAddress` 기준
 
 | 코드 | 상황 |
 |---|---|
-| 400 | 입력 값 검증 실패, 같은 메뉴 중복, 다른 매장의 메뉴가 섞임, 총액이 너무 큼(long 범위 초과) |
+| 400 | 입력 값 검증 실패, 주소 형식(`INVALID_ADDRESS`), 같은 메뉴 중복(`DUPLICATE_ORDER_ITEM`), 다른 매장의 메뉴가 섞임(`MIXED_STORE_ORDER`), 총액이 너무 큼(`ORDER_AMOUNT_TOO_LARGE`) |
 | 401 | 토큰 없음 |
 | 403 | OWNER가 요청 |
-| 404 | 항목 중 하나라도 메뉴가 없거나 삭제됨 |
+| 404 | 항목 중 하나라도 메뉴가 없거나 삭제됨 (`MENU_NOT_FOUND`) |
 
 ### 주문 목록 조회 `GET /api/orders`
 Response `200 OK` — 주문 생성 응답 형식의 배열 ([페이지네이션](#공통-사항) `?page=&size=` 또는 keyset `?afterId=&size=`)
@@ -606,7 +642,8 @@ Response `200 OK` (`OrderDetailResponse`, #62) — 주문 생성 응답 필드 +
 {
   "id": 12, "storeId": 2, "storeName": "치킨집",
   "items": [{ "menuId": 1, "menuName": "치킨", "unitPrice": 18000, "quantity": 2, "linePrice": 36000 }],
-  "totalPrice": 36000, "deliveryAddress": "서울시", "status": "PAYMENT_COMPLETED",
+  "totalPrice": 36000, "deliveryAddress": "서울 강남구 테헤란로 152 101호",
+  "zipCode": "06236", "roadAddress": "서울 강남구 테헤란로 152", "detailAddress": "101호", "status": "PAYMENT_COMPLETED",
   "createdAt": "2026-11-19T12:00:00", "updatedAt": "2026-11-19T12:01:00", "deliveredAt": null,
   "payment": {
     "id": 7, "amount": 36000, "paymentMethod": "CARD", "status": "COMPLETED",
@@ -635,7 +672,7 @@ Response `204 No Content` — 주문 상태를 `ORDER_CANCELLED`로 변경
 | 401 | 토큰 없음 |
 | 403 | OWNER가 요청, 본인 주문이 아님 |
 | 404 | 주문 없음 |
-| 409 | 주문수락 이후(`ORDER_ACCEPTED`, `DELIVERY_COMPLETED`)이거나 이미 취소됨 — 배달완료 후에는 관리자 환불 |
+| 409 | 주문수락 이후(`ORDER_NOT_CANCELLABLE`, 배달완료 후에는 관리자 환불), 이미 취소됨(`ORDER_ALREADY_CANCELLED`) |
 
 ### 주문 상태 변경 `PATCH /api/orders/{id}/status`
 Request
@@ -653,7 +690,7 @@ Response `204 No Content`
 | 401 | 토큰 없음 |
 | 403 | CUSTOMER가 요청, 본인 매장에 들어온 주문이 아님 |
 | 404 | 주문 없음 |
-| 409 | 허용되지 않는 변경 (결제 전 주문 수락, 단계 건너뛰기, 배달완료 이후 변경 등) |
+| 409 | 허용되지 않는 변경 (결제 전 주문 수락, 단계 건너뛰기, 배달완료 이후 변경 등) — `INVALID_ORDER_STATUS` |
 
 ---
 
@@ -696,13 +733,13 @@ Idempotency-Key: 3f6c1e0a-8d2b-4c7e-9a51-2b7d0c9e4f13
 
 | 코드 | 상황 |
 |---|---|
-| 400 | 입력 값 누락, 결제 수단이 CARD가 아님, `Idempotency-Key` 형식 오류 |
+| 400 | 입력 값 누락, 결제 수단이 CARD가 아님(`UNSUPPORTED_PAYMENT_METHOD`), `Idempotency-Key` 형식 오류(`INVALID_IDEMPOTENCY_KEY`) |
 | 401 | 토큰 없음 |
 | 403 | OWNER가 요청, 본인 주문이 아님 |
-| 404 | 주문 없음 |
-| 409 | 주문요청 상태가 아님 (이미 결제됨·취소됨), 중복 결제, 같은 `Idempotency-Key`의 결제가 처리 중이거나 같은 키로 다른 주문이 동시에 결제됨 |
-| 422 | 같은 `Idempotency-Key`로 다른 결제 요청 (`orderId`·`paymentMethod`가 처음과 다름) |
-| 503 | `Idempotency-Key`가 있는데 Redis 장애·타임아웃이고, 그 키로 완료된 결제가 없음 (결제하지 않음) |
+| 404 | 주문 없음 (`ORDER_NOT_FOUND`) |
+| 409 | 이미 결제됨·중복 결제(`ORDER_ALREADY_PAID`), 취소된 주문(`ORDER_ALREADY_CANCELLED`), 같은 `Idempotency-Key`의 결제가 처리 중이거나 같은 키로 다른 주문이 동시에 결제됨(`PAYMENT_IN_PROGRESS`) |
+| 422 | 같은 `Idempotency-Key`로 다른 결제 요청 (`orderId`·`paymentMethod`가 처음과 다름) — `IDEMPOTENCY_KEY_REUSED` |
+| 503 | `Idempotency-Key`가 있는데 Redis 장애·타임아웃이고, 그 키로 완료된 결제가 없음 (결제하지 않음) — `PAYMENT_UNAVAILABLE` |
 
 ### 내 결제 목록 조회 `GET /api/payments`
 Response `200 OK` — 결제 단건 조회와 같은 형식(`PaymentResponse`)의 배열 ([페이지네이션](#공통-사항) `?page=&size=`, id 오름차순, #62)

@@ -81,7 +81,7 @@ class OrderQueryIntegrationTest {
     private OrderResponse order(String username) {
         return orderService.createOrder(new OrderCreateRequest(List.of(
                 new OrderItemRequest(chicken.id(), 2),
-                new OrderItemRequest(cola.id(), 3)), "서울시"), username);
+                new OrderItemRequest(cola.id(), 3)), "06236", "서울 강남구 테헤란로 152", "101호"), username);
     }
 
     private String bearer(String username, Role role) {
@@ -182,7 +182,7 @@ class OrderQueryIntegrationTest {
     void 항목_수와_관계없이_쿼리_수가_일정하다() {
         OrderResponse twoItems = order("customer1");
         OrderResponse oneItem = orderService.createOrder(new OrderCreateRequest(
-                List.of(new OrderItemRequest(chicken.id(), 1)), "서울시"), "customer1");
+                List.of(new OrderItemRequest(chicken.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
         paymentService.pay(new PaymentRequest(twoItems.id(), "CARD"), "customer1");
 
         Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();

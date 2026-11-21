@@ -9,6 +9,7 @@ import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.PaymentIdempotencyKeyRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
@@ -65,7 +66,7 @@ public class PaymentService {
         }
 
         Payment payment = paymentRepository.findWithOrderById(paymentId)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "결제 내역이 없습니다."));
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.PAYMENT_NOT_FOUND, "결제 내역이 없습니다."));
 
         // 결제자 = 주문자 (결제는 본인 주문만 가능) → 주문자 기준으로 본인 결제인지 확인
         // 다른 CUSTOMER의 결제면 → 403 (주문 취소·결제와 같은 기준)
@@ -126,6 +127,7 @@ public class PaymentService {
         if (!PaymentMethod.CARD.name().equals(request.paymentMethod())) {
             throw new ApiException(
                     HttpStatus.BAD_REQUEST,
+                    ErrorCode.UNSUPPORTED_PAYMENT_METHOD,
                     "결제 수단은 CARD만 가능합니다."
             );
         }
@@ -137,6 +139,7 @@ public class PaymentService {
                 .orElseThrow(() ->
                         new ApiException(
                                 HttpStatus.NOT_FOUND,
+                                ErrorCode.ORDER_NOT_FOUND,
                                 "주문이 없습니다."
                         )
                 );
@@ -160,6 +163,7 @@ public class PaymentService {
         if (paymentRepository.existsByOrderId(order.getId())) {
             throw new ApiException(
                     HttpStatus.CONFLICT,
+                    ErrorCode.ORDER_ALREADY_PAID,
                     "이미 결제된 주문입니다."
             );
         }
@@ -185,6 +189,7 @@ public class PaymentService {
         } catch (DataIntegrityViolationException e) {
             throw new ApiException(
                     HttpStatus.CONFLICT,
+                    ErrorCode.ORDER_ALREADY_PAID,
                     "이미 결제된 주문입니다."
             );
         }
@@ -200,6 +205,7 @@ public class PaymentService {
                 // 예외로 트랜잭션이 롤백되므로 이 결제는 저장되지 않음
                 throw new ApiException(
                         HttpStatus.CONFLICT,
+                        ErrorCode.PAYMENT_IN_PROGRESS,
                         "같은 Idempotency-Key의 결제가 이미 처리되었습니다. 잠시 후 다시 시도해 주세요."
                 );
             }

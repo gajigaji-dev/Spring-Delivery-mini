@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.TestcontainersConfiguration;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.entity.*;
@@ -197,7 +199,7 @@ class PaymentIdempotencyIntegrationTest {
         for (int i = 0; i < 2; i++) {
             pay(customer, order.getId(), "key-1")
                     .andExpect(status().isConflict())
-                    .andExpect(jsonPath("$.message").value("주문요청 상태의 주문만 결제할 수 있습니다."));
+                    .andExpect(jsonPath("$.code").value("ORDER_ALREADY_CANCELLED"));
         }
         assertThat(redisTemplate.keys(PaymentIdempotencyService.KEY_PREFIX + "*")).isEmpty();
         assertThat(paymentRepository.count()).isZero();
@@ -309,7 +311,7 @@ class PaymentIdempotencyIntegrationTest {
             store = storeRepository.save(new Store("치킨집", owner));
             menu = menuRepository.save(new Menu("후라이드 치킨", 18000, "바삭한 치킨", store));
         }
-        Order newOrder = new Order(customer, store, "서울시", OrderStatus.ORDER_REQUEST);
+        Order newOrder = new Order(customer, store, TestAddresses.seoul(), OrderStatus.ORDER_REQUEST);
         newOrder.addItem(menu, 2);
         return orderRepository.save(newOrder);
     }

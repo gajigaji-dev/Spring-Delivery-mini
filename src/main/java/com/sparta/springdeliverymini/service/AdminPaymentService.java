@@ -9,6 +9,7 @@ import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.springframework.http.HttpStatus;
@@ -40,7 +41,7 @@ public class AdminPaymentService {
 
         // 행 잠금으로 조회 → 같은 결제를 동시에 환불해도 한 번만 성공
         Payment payment = paymentRepository.findByIdForUpdate(paymentId)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "결제가 없습니다."));
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.PAYMENT_NOT_FOUND, "결제가 없습니다."));
 
         PaymentStatus before = payment.getStatus();
         payment.refund(LocalDateTime.now(clock));

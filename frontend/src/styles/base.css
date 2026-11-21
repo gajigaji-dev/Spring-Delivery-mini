@@ -709,6 +709,60 @@ textarea:focus {
   gap: var(--s-2);
 }
 
+/* ---- 배송 주소 (#77) ---- */
+.address {
+  display: grid;
+  gap: var(--s-3);
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.address legend {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  padding: 0;
+  margin-bottom: var(--s-2);
+}
+
+.address__row {
+  display: flex;
+  gap: var(--s-2);
+  align-items: flex-end;
+}
+
+.address__zip {
+  flex: 0 0 120px;
+}
+
+.address__zip input {
+  width: 100%;
+}
+
+/* 다음 우편번호 검색 창 (embed) — 모바일에서도 목록이 보이는 높이 */
+.address__layer {
+  height: 420px;
+  border: 1px solid var(--oat-3);
+  border-radius: var(--r-ctl);
+  overflow: hidden;
+}
+
+.address input[readonly] {
+  cursor: pointer;
+}
+
+.address input[aria-invalid='true'] {
+  border-color: var(--fail-text);
+}
+
+.address__errors {
+  margin: 0;
+  padding-left: var(--s-4);
+  color: var(--fail-text);
+  font-size: var(--fs-xs);
+}
+
 /* ---- 오류·안내 ---- */
 .error {
   display: flex;

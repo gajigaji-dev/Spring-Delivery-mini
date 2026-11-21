@@ -74,7 +74,7 @@ class PaymentQueryIntegrationTest {
 
     private PaymentResponse pay(String username) {
         OrderResponse order = orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), username);
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), username);
         return paymentService.pay(new PaymentRequest(order.id(), "CARD"), username);
     }
 

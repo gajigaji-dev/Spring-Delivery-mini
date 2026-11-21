@@ -7,8 +7,8 @@
 |---|---|---|---|---|
 | 1 | ~~#67~~ 완료 | Prometheus·Grafana 모니터링 확인 | 1 ~ 1.5일 (실제 1일 이내) | 대시보드 보강, 알림 규칙 발생 확인, `docs/local-verification.md` 5장 |
 | 2 | ~~#68~~ 완료 | k6 쓰기 경로 부하 테스트 수치 | 2 ~ 3일 (실제 1일 이내) | `perf/k6/order-payment.js`, `docs/performance.md` 11장 |
-| 3 | #69 | Kafka 알림 → Slack 발송 | 1.5 ~ 2일 | `event.SlackNotificationSender`, `docs/architecture.md` Kafka 장 |
-| 4 | #70 | 프론트엔드 | 10 ~ 14일 | `frontend/` (고객·점주 화면) |
+| 3 | ~~#69~~ 완료 | Kafka 알림 → Slack 발송 | 1.5 ~ 2일 | `event.SlackNotificationSender`, `docs/architecture.md` Kafka 장 |
+| 4 | ~~#70~~ 완료 (PR #75) | 프론트엔드 | 10 ~ 14일 | `frontend/` (고객·점주 화면) |
 | | | **합계** | **약 15 ~ 20일** | |
 
 ## 순서를 이렇게 정한 이유
@@ -82,3 +82,25 @@
 
 - 제외(필요 시 별도 이슈): 관리자 화면(정산 확정·지급·Outbox 재발행), 배포(다른 도메인이면 `SameSite=None` + HTTPS 필요 — CLAUDE.md 남은 항목)
 - 위험: 화면 범위가 늘어나는 것. 고객 흐름 → 알림 → 점주 순으로 끝낼 때마다 동작하는 상태 유지
+
+## 다음 작업 4건 (2026-11-21 사용자 결정)
+
+#70 이후 순서대로, 각각 별도 이슈·브랜치.
+
+| 순서 | 이슈 | 작업 | 견적 | 상태 |
+|---|---|---|---|---|
+| 1 | ~~#76~~ 완료 (PR #80) | 사장님 실시간 주문 알림 (SSE) | 1.5 ~ 2일 | 실제 1일 이내 |
+| 2 | #77 | 주소·결제 예외 처리 (우편번호·도로명·상세 분리 V18, 결제 오류 코드·화면 문구) | 1 ~ 1.5일 | 구현·자동 테스트 완료 (2026-11-21), 브라우저 확인·PR 대기 |
+| 3 | 미정 | 토스페이먼츠 테스트 모드 (공식 공개 테스트 키, 승인 금액 대조, 결제 키 저장 V19, 취소 연동) | 2 ~ 3일 | |
+| 4 | 미정 | 소셜 로그인 (카카오 + 구글, 소셜 계정 연결 V20, 성공 시 기존 Refresh 쿠키) | 2.5 ~ 4일 | |
+
+### #76 결과
+- 산출물: `GET /api/owner/order-events`, `event.OwnerOrderStreamRegistry`, `config.OpenEntityManagerInViewConfig`, 프론트 `api/orderStream.ts`·`owner/orderStreamController.ts`
+- 견적에 없던 일: open-in-view 커넥션 점유 발견·수정, SSE 요청의 오류 응답 500 수정, graceful shutdown 지연 수정 (`docs/architecture.md` 실시간 주문 알림 장)
+- 남은 것: 다중 인스턴스 브로드캐스트(Redis Pub/Sub) — 후속 과제로 문서화만
+
+### #77 결과
+- 주소: V18(`zip_code`·`road_address`·`detail_address`, 기존 주문은 NULL — 백필 안 함), `entity.DeliveryAddress`(@Embeddable, 생성 시 검증 → 400 `INVALID_ADDRESS`), `delivery_address`는 한 줄 주소로 계속 채움 → 기존 조회·화면 영향 없음
+- 오류 코드: `exception.ErrorCode`에 주문·결제 코드 추가, `Invalid*StatusException`에 code (`docs/api.md` 공통 사항 표)
+- 프론트: `components/AddressFields`(다음 우편번호 embed, 실패 시 직접 입력), `address/validateAddress`, `api/errorMessages`(code별 문구), 이미 결제·취소된 주문 409 시 다시 불러오기
+- 남은 것: 브라우저에서 실제 우편번호 검색 확인

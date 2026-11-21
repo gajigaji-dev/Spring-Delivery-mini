@@ -1,3 +1,4 @@
+import type { AddressInput } from '../address/validateAddress';
 import { ApiError, get, getPage, request } from './client';
 import type {
   AdminSettlement,
@@ -57,8 +58,19 @@ export const orderApi = {
   // keyset: 첫 페이지는 afterId 없이, 다음은 X-Next-After-Id 값 (뒤 페이지도 응답 시간 일정)
   list: (afterId: number | null, size = 20) => getPage<Order>('/api/orders', { afterId: afterId ?? undefined, size }),
   get: (id: number) => get<OrderDetail>(`/api/orders/${id}`),
-  create: async (items: { menuId: number; quantity: number }[], deliveryAddress: string) =>
-    (await request<Order>('/api/orders', { method: 'POST', body: { items, deliveryAddress } })).data,
+  // 주소는 우편번호·도로명·상세로 나눠 보냄 (#77) — 상세 주소가 비면 보내지 않음(서버는 null로 저장)
+  create: async (items: { menuId: number; quantity: number }[], address: AddressInput) =>
+    (
+      await request<Order>('/api/orders', {
+        method: 'POST',
+        body: {
+          items,
+          zipCode: address.zipCode,
+          roadAddress: address.roadAddress,
+          detailAddress: address.detailAddress || undefined,
+        },
+      })
+    ).data,
   cancel: (id: number) => request(`/api/orders/${id}/cancel`, { method: 'PATCH' }),
   changeStatus: (id: number, status: Extract<OrderStatus, 'ORDER_ACCEPTED' | 'DELIVERY_COMPLETED'>) =>
     request(`/api/orders/${id}/status`, { method: 'PATCH', body: { status } }),

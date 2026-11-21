@@ -26,6 +26,7 @@
 | `V15__add_notification_read_at_and_refresh_tokens.sql` | 알림 읽음·Refresh Token: `notifications.read_at`(NULL 허용, 기존 알림은 안 읽음) + 안 읽은 알림 부분 인덱스, `refresh_tokens`(해시 `token_hash` UNIQUE, FK → users, 폐기 시각 ⇔ 사유 CHECK, 유효 행 계열 부분 인덱스) 추가. 기존 행 변경 없음 |
 | `V16__add_refresh_token_family_expiry.sql` | Refresh Token 후속: `refresh_tokens.family_expires_at`(계열 절대 만료, NOT NULL, `expires_at <= family_expires_at` CHECK) 추가 — 기존 계열은 첫 발급 + 30일로 백필하되 이미 더 늦게 만료되는 토큰이 있으면 그 시각까지. 정리용 `idx_refresh_tokens_expires_at (expires_at)` 추가 |
 | `V17__add_owner_applications.sql` | 사장님 승인제(#70): `owner_applications`(신청자·처리자 FK → users, 상태 CHECK, 처리 시각·처리자 ⇔ 상태 CHECK, 거절 사유 ⇔ REJECTED CHECK) + 대기 중 신청 부분 유니크 `(user_id) WHERE status='REQUESTED'`, 목록용 `(status, id)`, 내 신청용 `(user_id, id)` 인덱스. 기존 OWNER 계정·행 변경 없음 |
+| `V18__split_order_delivery_address.sql` | 배송 주소 분리(#77): `orders.zip_code varchar(5)`·`road_address varchar(150)`·`detail_address varchar(100)` 추가(NULL 허용, 기본값 없음 → 기존 행 재작성 없음) + `orders_address_parts_check`(셋 다 NULL이거나, 우편번호 숫자 5자리 + 도로명 있음). 기존 주문은 `delivery_address`만 유지하고 세 컬럼은 NULL(백필 안 함 — 한 줄 주소를 안전하게 나눌 수 없음) |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
@@ -90,7 +91,10 @@
 | user_id | bigint | FK → users.id, NOT NULL | 주문한 CUSTOMER |
 | store_id | bigint | FK → stores.id, NOT NULL | 주문이 들어간 매장 (항목 메뉴들의 매장) |
 | total_price | bigint | NOT NULL | 주문 당시 총액 (항목 금액의 합, 서버 계산) |
-| delivery_address | varchar(255) | NOT NULL | 배송 주소 |
+| delivery_address | varchar(255) | NOT NULL | 한 줄 배송 주소 — 새 주문은 `도로명 + 공백 + 상세`(최대 251자), V18 이전 주문은 이 값만 있음 |
+| zip_code | varchar(5) | CHECK 숫자 5자리 | 우편번호 (V18, 이전 주문은 NULL) |
+| road_address | varchar(150) | 우편번호가 있으면 NOT NULL (CHECK) | 도로명 주소 + 참고 항목(동·아파트명) (V18) |
+| detail_address | varchar(100) | | 상세 주소, 선택 (V18) |
 | status | varchar(255) | NOT NULL | `ORDER_REQUEST` / `ORDER_CANCELLED` / `PAYMENT_COMPLETED` / `ORDER_ACCEPTED` / `DELIVERY_COMPLETED` |
 | created_at | timestamp | | 주문 시각 (BaseEntity, 이후 변경 불가) |
 | updated_at | timestamp | | 마지막 상태 변경 시각 (BaseEntity) |

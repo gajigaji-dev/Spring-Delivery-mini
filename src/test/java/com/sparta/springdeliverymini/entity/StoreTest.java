@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.entity;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -44,7 +46,7 @@ class StoreTest {
     @Test
     void 주문의_매장은_메뉴의_매장으로_정해진다() {
         Menu menu = new Menu("후라이드 치킨", 18000, "바삭한 치킨", store);
-        Order order = new Order(user(3L, "customer1", Role.CUSTOMER), store, "서울시", OrderStatus.ORDER_REQUEST);
+        Order order = new Order(user(3L, "customer1", Role.CUSTOMER), store, TestAddresses.seoul(), OrderStatus.ORDER_REQUEST);
         order.addItem(menu, 1);
 
         assertThat(order.getStore()).isSameAs(store);

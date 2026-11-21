@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.entity;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -35,7 +37,7 @@ class SettlementRefundCarryoverTest {
     }
 
     private Payment refundedPayment(Store store, LocalDateTime refundedAt) {
-        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, "서울시", OrderStatus.DELIVERY_COMPLETED);
+        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, TestAddresses.seoul(), OrderStatus.DELIVERY_COMPLETED);
         ReflectionTestUtils.setField(order, "deliveredAt", LocalDateTime.of(2026, 11, 1, 12, 0));
         Payment payment = new Payment(order, 10000, new BigDecimal("0.05"), PaymentMethod.CARD, LocalDateTime.of(2026, 11, 1, 11, 0));
         payment.refund(refundedAt);
@@ -147,7 +149,7 @@ class SettlementRefundCarryoverTest {
     @Test
     void 환불되지_않은_결제나_다른_매장_결제는_차감할_수_없다() {
         Settlement s = settlement(store, NOV_5, sales(1), SettlementTotals.EMPTY, 0);
-        Payment completed = new Payment(new Order(new User("c", "pw", Role.CUSTOMER), store, "서울시",
+        Payment completed = new Payment(new Order(new User("c", "pw", Role.CUSTOMER), store, TestAddresses.seoul(),
                 OrderStatus.DELIVERY_COMPLETED), 10000, new BigDecimal("0.05"), PaymentMethod.CARD, LocalDateTime.of(2026, 11, 1, 11, 0));
         Payment otherStoreRefund = refundedPayment(otherStore, LocalDateTime.of(2026, 11, 5, 9, 0));
 

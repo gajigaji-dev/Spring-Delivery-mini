@@ -1,11 +1,14 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.repository.PaymentIdempotencyKeyRepository;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
@@ -85,7 +88,7 @@ class PaymentServiceTest {
     // customer가 owner의 메뉴를 2개 주문한 상태 (총액 36000원)
     private Order order(OrderStatus status) {
         Menu menu = new Menu("후라이드 치킨", 18000, "바삭한 치킨", store);
-        Order order = new Order(customer, store, "서울시", status);
+        Order order = new Order(customer, store, TestAddresses.seoul(), status);
         order.addItem(menu, 2);
         ReflectionTestUtils.setField(order, "id", 10L);
         return order;
@@ -166,7 +169,7 @@ class PaymentServiceTest {
     void int_범위를_넘는_주문_총액도_그대로_결제된다() {
         // 3,000,000,000원 — int 최대값(2,147,483,647)을 넘는 금액
         Menu menu = new Menu("단체 주문", 1_500_000_000L, "대량 주문", store);
-        Order order = new Order(customer, store, "서울시", OrderStatus.ORDER_REQUEST);
+        Order order = new Order(customer, store, TestAddresses.seoul(), OrderStatus.ORDER_REQUEST);
         order.addItem(menu, 2);
         ReflectionTestUtils.setField(order, "id", 10L);
         givenCustomerAndOrder(order);
@@ -188,7 +191,8 @@ class PaymentServiceTest {
 
         assertThatThrownBy(() -> paymentService.pay(new PaymentRequest(10L, "CARD"), "customer1"))
                 .isInstanceOf(InvalidOrderStatusException.class)
-                .hasMessage("주문요청 상태의 주문만 결제할 수 있습니다.");
+                .hasMessage("이미 결제된 주문입니다.")
+                .extracting("code").isEqualTo(ErrorCode.ORDER_ALREADY_PAID);
         verify(paymentRepository, never()).saveAndFlush(any());
         verify(outboxEventRecorder, never()).paymentCompleted(any()); // 결제가 안 되면 이벤트도 없음
     }
