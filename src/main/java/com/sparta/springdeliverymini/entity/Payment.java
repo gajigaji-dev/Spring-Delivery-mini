@@ -3,6 +3,7 @@ package com.sparta.springdeliverymini.entity;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.exception.InvalidPaymentStatusException;
 import jakarta.persistence.*;
 
@@ -70,9 +71,33 @@ public class Payment extends BaseEntity {
     // 취소 시각 — CANCELLED일 때만 있음 (DB CHECK 제약, V9)
     private LocalDateTime cancelledAt;
 
-    // 환불 시각 — REFUNDED일 때만 있음 (DB CHECK 제약, V9)
-    // 정산에서 차감되는 시점의 기준: 이 시각 이후에 집계되는 정산 중 처음 것에서 차감 (docs/settlement-policy.md 9장)
+    // 전액 환불이 끝난 시각 — REFUNDED일 때만 있음 (DB CHECK 제약, V9)
+    // 정산 차감 기준 시각은 환불 1건마다의 PaymentRefund.refundedAt (V21부터, 부분 환불 포함)
     private LocalDateTime refundedAt;
+
+    // 누적 환불액 (V21) — 원 결제 금액(amount)은 그대로 두고 환불 진행 상태만 기록
+    // 0 = 환불 없음, 0 < x < amount = PARTIALLY_REFUNDED, amount = REFUNDED (DB CHECK 제약)
+    // 환불 1건의 금액·수수료는 payment_refunds에 따로 남음 (정산 차감 단위)
+    @Column(nullable = false)
+    private long refundedAmount;
+
+    // PG 승인 정보 (V20) — 토스페이먼츠를 거친 결제만 있음, 모의 결제(POST /api/payments)는 모두 null
+    // 네 값은 함께 있거나 함께 없음 (DB CHECK 제약). 승인 후 바뀌지 않음 → updatable = false
+    // pgPaymentKey: 토스 결제 키 — UNIQUE라 같은 키의 승인 요청이 다시 와도 결제가 두 번 저장되지 않음
+    // pgApprovedAt: 토스 승인 시각. paidAt(서버 기록 시각, 정산 기준)과 따로 둠
+    //   → 승인 결과를 늦게 확인해 기록한 경우(타임아웃 후 재시도) 정산 기준 시각이 이미 집계된 날로 들어가지 않음
+    @Enumerated(EnumType.STRING)
+    @Column(length = 20, updatable = false)
+    private PgProvider pgProvider;
+
+    @Column(length = 200, updatable = false)
+    private String pgPaymentKey;
+
+    @Column(length = 64, updatable = false)
+    private String pgOrderId;
+
+    @Column(updatable = false)
+    private LocalDateTime pgApprovedAt;
 
     // paidAt은 호출하는 쪽(PaymentService)이 Clock 기준 현재 시각을 넘김
     // 엔티티 안에서 LocalDateTime.now()를 부르면 JVM 시간대에 의존하고 테스트에서 시각을 고정할 수 없음
@@ -89,6 +114,28 @@ public class Payment extends BaseEntity {
         this.status = PaymentStatus.COMPLETED;
     }
 
+    // PG(토스페이먼츠) 승인 결과로 만드는 결제 — 금액·수수료 계산은 모의 결제와 같음
+    // amount는 호출하는 쪽(PaymentService)이 주문 총액과 토스 승인 금액이 같은지 확인한 뒤 넘김
+    public static Payment approvedByGateway(Order order, long amount, BigDecimal feeRate, PaymentMethod paymentMethod,
+                                            LocalDateTime paidAt, PgProvider provider, String paymentKey,
+                                            String pgOrderId, LocalDateTime approvedAt) {
+        if (provider == null || paymentKey == null || paymentKey.isBlank()
+                || pgOrderId == null || pgOrderId.isBlank() || approvedAt == null) {
+            throw new IllegalArgumentException("PG 결제에는 공급자·결제 키·주문번호·승인 시각이 모두 필요합니다.");
+        }
+        Payment payment = new Payment(order, amount, feeRate, paymentMethod, paidAt);
+        payment.pgProvider = provider;
+        payment.pgPaymentKey = paymentKey;
+        payment.pgOrderId = pgOrderId;
+        payment.pgApprovedAt = approvedAt;
+        return payment;
+    }
+
+    // PG를 거친 결제인지 — 취소·환불 때 PG 결제 취소 API도 호출해야 하는지 판단
+    public boolean isGatewayPayment() {
+        return pgProvider != null;
+    }
+
     // 결제 취소 (배달 전) — COMPLETED에서만 가능
     // 주문 상태(주문수락 전인지)는 Order.cancel()이 판단, 이 메서드는 결제 상태만 확인
     // cancelledAt은 호출하는 쪽(OrderService)이 Clock 기준 현재 시각을 넘김
@@ -97,29 +144,58 @@ public class Payment extends BaseEntity {
             throw new IllegalArgumentException("취소 시각이 필요합니다.");
         }
         if (status != PaymentStatus.COMPLETED) {
-            throw new InvalidPaymentStatusException("완료된 결제만 취소할 수 있습니다. 현재 상태: " + status);
+            throw new InvalidPaymentStatusException(alreadyClosedCode(),
+                    "완료된 결제만 취소할 수 있습니다. 현재 상태: " + status);
         }
         this.status = PaymentStatus.CANCELLED;
         this.cancelledAt = cancelledAt;
     }
 
-    // 전액 환불 (배달완료 후) — COMPLETED이고 주문이 배달완료일 때만 가능
-    // 이미 환불된 결제는 다시 환불하지 않음 (환불 시각도 처음 값 유지)
-    // refundedAt은 호출하는 쪽(AdminPaymentService)이 Clock 기준 현재 시각을 넘김
-    public void refund(LocalDateTime refundedAt) {
+    // 남은 금액 전부 환불 (배달완료 후) — 기존 전액 환불 API(PATCH .../refund)
+    // 부분 환불이 없던 결제면 결제 금액 전부 = 기존 전액 환불과 같은 금액·수수료
+    public PaymentRefund refund(LocalDateTime refundedAt) {
+        return refund(refundableAmount(), "전액 환불", refundedAt);
+    }
+
+    // 환불 1건 (배달완료 후, V21 부분 환불) — COMPLETED·PARTIALLY_REFUNDED이고 주문이 배달완료일 때만
+    // 누적 환불액이 결제 금액에 닿으면 REFUNDED(최종, refundedAt 기록), 아니면 PARTIALLY_REFUNDED
+    // 결제 금액·수수료·정산액(원 결제 기록)은 바꾸지 않음 → 환불분은 반환하는 PaymentRefund에 따로 남음
+    // 호출하는 쪽(AdminPaymentService)이 결제 행을 잠근 뒤 부름 → 동시 환불이 남은 금액을 넘지 않음
+    public PaymentRefund refund(long refundAmount, String reason, LocalDateTime refundedAt) {
         if (refundedAt == null) {
             throw new IllegalArgumentException("환불 시각이 필요합니다.");
         }
-        if (status != PaymentStatus.COMPLETED) {
-            throw new InvalidPaymentStatusException("완료된 결제만 환불할 수 있습니다. 현재 상태: " + status);
+        if (status != PaymentStatus.COMPLETED && status != PaymentStatus.PARTIALLY_REFUNDED) {
+            throw new InvalidPaymentStatusException(alreadyClosedCode(),
+                    "완료된 결제만 환불할 수 있습니다. 현재 상태: " + status);
         }
         if (order.getStatus() != OrderStatus.DELIVERY_COMPLETED) {
-            throw new InvalidPaymentStatusException("배달완료된 주문의 결제만 환불할 수 있습니다. 배달 전 주문은 주문 취소를 이용하세요.");
+            throw new InvalidPaymentStatusException(ErrorCode.PAYMENT_NOT_REFUNDABLE,
+                    "배달완료된 주문의 결제만 환불할 수 있습니다. 배달 전 주문은 주문 취소를 이용하세요.");
         }
         if (refundedAt.isBefore(order.getDeliveredAt())) {
             throw new IllegalArgumentException("환불 시각은 배달완료 시각보다 앞설 수 없습니다.");
         }
-        this.status = PaymentStatus.REFUNDED;
-        this.refundedAt = refundedAt;
+        // 금액 범위(0 < 환불액 ≤ 남은 금액)는 PaymentFee.refundPortion이 확인 — 서비스가 먼저 400으로 거르고 여기는 최종 방어
+        PaymentFee portion = PaymentFee.refundPortion(amount, feeRate, refundedAmount, refundAmount);
+        this.refundedAmount += refundAmount;
+        if (this.refundedAmount == amount) {
+            this.status = PaymentStatus.REFUNDED;
+            this.refundedAt = refundedAt;
+        } else {
+            this.status = PaymentStatus.PARTIALLY_REFUNDED;
+        }
+        return new PaymentRefund(this, refundAmount, portion.feeAmount(), portion.settlementAmount(), reason,
+                refundedAt);
+    }
+
+    // 아직 환불하지 않은 금액
+    public long refundableAmount() {
+        return amount - refundedAmount;
+    }
+
+    // 이미 끝난 결제(취소·환불)에 다시 취소·환불을 요청한 경우의 구분 값 — 중복 요청으로 안내하기 위함
+    private ErrorCode alreadyClosedCode() {
+        return status == PaymentStatus.REFUNDED ? ErrorCode.PAYMENT_ALREADY_REFUNDED : ErrorCode.PAYMENT_ALREADY_CANCELLED;
     }
 }

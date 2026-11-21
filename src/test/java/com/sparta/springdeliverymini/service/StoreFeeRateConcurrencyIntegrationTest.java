@@ -50,6 +50,7 @@ class StoreFeeRateConcurrencyIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
 
     private StoreResponse store;
     private MenuResponse menu;
@@ -65,6 +66,7 @@ class StoreFeeRateConcurrencyIntegrationTest {
 
     @AfterEach
     void tearDown() {
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -74,7 +76,7 @@ class StoreFeeRateConcurrencyIntegrationTest {
 
     private Long newOrder() {
         return orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1").id();
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1").id();
     }
 
     private PaymentResponse pay(Long orderId) {

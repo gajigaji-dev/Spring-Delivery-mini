@@ -48,7 +48,7 @@ class OrderListPagingTest {
     }
 
     private static OrderResponse order(long id) {
-        return new OrderResponse(id, 1L, "치킨집", List.of(), 10000L, "서울시",
+        return new OrderResponse(id, 1L, "치킨집", List.of(), 10000L, "서울시", null, null, null, null,
                 OrderStatus.ORDER_REQUEST, null, null, null);
     }
 

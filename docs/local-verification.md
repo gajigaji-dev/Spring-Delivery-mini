@@ -1,11 +1,11 @@
-# 로컬 확인 가이드 — Redis · Kafka · 주문 목록 · 운영 프로필 · DB 타임아웃
+# 로컬 확인 가이드 — Redis · Kafka · 주문 목록 · 운영 프로필 · DB 타임아웃 · CORS · 모니터링
 
 [← README](../README.md) · [프로젝트 구조](architecture.md)
 
-Redis(결제 멱등성·분산 락)와 Kafka(Transactional Outbox·알림·DLT 재처리), 주문 목록 keyset 페이징·prod 프로필·DB 타임아웃(#54, 3장)이 로컬에서 실제로 동작하는지 확인하는 방법.
+Redis(결제 멱등성·분산 락)와 Kafka(Transactional Outbox·알림·DLT 재처리), 주문 목록 keyset 페이징·prod 프로필·DB 타임아웃(#54, 3장), CORS(#61, 4장), 모니터링 대시보드·알림 규칙 발생(#67, 5장)이 로컬에서 실제로 동작하는지 확인하는 방법.
 동작 원리·장애 시 동작 표는 [프로젝트 구조](architecture.md)의 Redis 장·Kafka 장, API 형식은 [API 명세](api.md) 참고
 
-> 2장의 수동 절차는 프로젝트 설정(compose·application.yml) 기준으로 정리한 것 — 자동 테스트(1장)는 전체 통과를 확인했고, **2-4(DLT 재처리)는 직접 실행해 결과를 2-4 "검증 결과"에 남김**(11단계 중 10단계 통과, 1단계 미검증). 2-2·2-3·2-5는 아직 직접 실행하지 않음 — 처음 따라 할 때 명령·경로가 맞는지 함께 확인
+> **자동 테스트**(1장)와 **수동 확인**(2~4장 "검증 결과")을 구분해 기록함. 수동 확인은 2-2·2-3·2-5·3장을 2026-11-18에 두 번(#54 마무리, #61 CORS 반영 후) 실행했고 결과는 각 절 끝에 있음. 3-2의 `ProdProfileGuard` 실행 순서는 2026-11-19 수정 후 다시 확인함. 2-4(DLT 재처리)는 2026-11-15에 한 번(11단계 중 10단계 통과, 1단계 미검증)
 
 ## 1. 자동 테스트 (Docker만 실행 중이면 됨)
 
@@ -21,6 +21,7 @@ Testcontainers가 PostgreSQL·Redis·Kafka 컨테이너를 테스트 중에 띄�
 ./gradlew test --tests '*OrderListPagingTest' --tests '*StoreOrderIntegrationTest'   # 주문 목록 keyset: 헤더·400, 중복·누락 없음·경계 (#54)
 ./gradlew test --tests '*ProdProfile*'                 # prod 프로필: 실제 기동 후 노출 정책, 필수 환경변수 점검 (#54)
 ./gradlew test --tests '*DatabaseTimeoutIntegrationTest' --tests '*ErrorResponseFormatTest'   # 커넥션 풀·잠금/문장 타임아웃 → 503 (#54)
+./gradlew test --tests '*Cors*' --tests '*ProdProfile*'   # CORS: 허용·차단·헤더, 설정값 검사, prod 허용 출처 누락 시 기동 실패 (#61)
 ./gradlew test                                         # 전체
 ```
 
@@ -42,6 +43,7 @@ docker compose up -d redis kafka
 
 - 요청은 local·dev 프로필에서 켜지는 Swagger UI(`/swagger-ui.html`)로 보내는 것이 편함
 - 관리자 API 확인에는 ADMIN 계정이 필요 — 없으면 DB에서 `users.role`을 `ADMIN`으로 바꿈
+- 사장님 계정(V17 이후): 가입은 고객만 → `POST /api/owner-applications` 신청 → 관리자 `PATCH /api/admin/owner-applications/{id}/approve` → `POST /api/users/refresh`로 새 토큰 (가입 시 `role: OWNER`는 400). V17 이전에 만든 OWNER 계정은 그대로 사용 가능
 - 호스트의 6379(Redis)·9092(Kafka)는 다른 프로젝트 것일 수 있으므로 건드리지 않음
 
 ### 2-2. Redis — 결제 멱등성
@@ -69,6 +71,32 @@ SELECT user_id, idempotency_key, payment_id, created_at FROM payment_idempotency
 
 분산 락(`lock:settlement-daily-aggregation`)은 스케줄러가 매일 01:10에만 잡으므로 수동 확인보다 자동 테스트로 확인
 
+#### 검증 결과 (2026-11-18, compose DB·Redis·Kafka + jar local 프로필, 포트 8090)
+
+| 단계 | 결과 | 실제 값 |
+|---|---|---|
+| 1 | 통과 | 둘 다 201·같은 본문(payment id 1), 두 번째에 `Idempotent-Replayed: true` |
+| 2 | 통과 | 키 1개, TTL 86399초 |
+| 3 | 통과 | `DEL` 후 재전송 201 + `Idempotent-Replayed: true`, 키 다시 생성 |
+| 4 | 통과 | 422 `같은 Idempotency-Key로 다른 결제 요청을 보낼 수 없습니다.` |
+| 5 | 통과 | Redis 중단 상태에서 201 재전송(약 1.1초) |
+| 6 | 통과 | 503, 주문 상태 `ORDER_REQUEST` 그대로 |
+| 7 | 통과 | 201, 주문 `PAYMENT_COMPLETED` |
+
+- Git Bash의 curl로 한글 본문을 보내면 400(본문 형식 오류)이 남 — 터미널 인코딩 문제이므로 확인용 값은 ASCII로 보냄
+
+#### 재검증 결과 (2026-11-18 #61 — CORS 반영 jar, local 프로필, 포트 8090, 새 회원·매장·주문으로)
+
+| 단계 | 결과 | 실제 값 |
+|---|---|---|
+| 1 | 통과 | 둘 다 201·같은 본문(payment id 9), 두 번째 `Idempotent-Replayed: true` (첫 요청 1.47초, 재전송 0.03초) |
+| 2 | 통과 | 새 키 1개, TTL 86371초 (이전 검증 키 1개는 남은 TTL로 공존) |
+| 3 | 통과 | `DEL` 후 재전송 201 + `Idempotent-Replayed: true`, 키 다시 생성(`EXISTS` 1) |
+| 4 | 통과 | 422 `같은 Idempotency-Key로 다른 결제 요청을 보낼 수 없습니다.` |
+| 5 | 통과 | Redis 중단 상태에서 201 재전송(1.06초) |
+| 6 | 통과 | 503(1.04초), 주문 `ORDER_REQUEST` 그대로 |
+| 7 | 통과 | 201, 주문 `PAYMENT_COMPLETED` |
+
 ### 2-3. Kafka — Outbox · 알림
 
 | 단계 | 하는 일 | 기대 결과 |
@@ -90,6 +118,32 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
 SELECT id, event_type, status, attempt_count, last_error FROM outbox_events ORDER BY id;
 SELECT id, recipient_user_id, message, send_status, sent_at FROM notifications ORDER BY id;
 ```
+
+- Git Bash에서 `docker compose exec`로 컨테이너 안 절대 경로를 실행할 때는 `MSYS_NO_PATHCONV=1`을 앞에 붙임 (붙이지 않으면 경로가 `C:/Program Files/Git/opt/...`로 바뀌어 실패)
+
+#### 검증 결과 (2026-11-18, 2-2와 같은 환경)
+
+| 단계 | 결과 | 실제 값 |
+|---|---|---|
+| 1 | 통과 | 토픽에 `PAYMENT_COMPLETED` JSON(`eventId`·`orderId`·`paymentId`·`storeId`·`customerId`·`ownerId`·`amount`·`occurredAt`) |
+| 2 | 통과 | 고객·사장님 각각 알림 생성, `SENT`, 앱 로그 `알림 발송 notificationId=...` |
+| 3 | 통과 | 결제 201, `PENDING` 유지·`attempt_count` 1 → 3(20초), `last_error` `KafkaException: Send failed` |
+| 4 | 통과 | 재시작 후 `attempt_count` 4에서 `PUBLISHED`, 알림 2건 생성 |
+| 5 | 통과 | `OUTBOX_PUBLISHER_MAX_ATTEMPTS=2`로 재기동 → 결제 약 13초 뒤 `FAILED`(`attempt_count` 2) |
+| 6 | 통과 | 목록에 FAILED 1건 → 일괄 재발행 `{"republished":1}`, `PENDING`(`attempt_count` 0) → `PUBLISHED`, 알림 2건 |
+| 7 | 통과 | DLT에는 2-4 검증(2026-11-15) 때 넣은 2건만 있음 — 이번 확인으로 새로 들어간 메시지 없음 |
+
+#### 재검증 결과 (2026-11-18 #61, 2-2 재검증과 같은 환경 — 5·6단계는 `OUTBOX_PUBLISHER_MAX_ATTEMPTS=2`로 재기동)
+
+| 단계 | 결과 | 실제 값 |
+|---|---|---|
+| 1 | 통과 | 토픽에 `PAYMENT_COMPLETED` JSON 1건(`orderId` 15·`paymentId` 11 등 8개 필드) |
+| 2 | 통과 | 고객·사장님 알림 각 1건 `SENT`(생성 약 2초 뒤 발송), 앱 로그 `알림 발송 notificationId=...` |
+| 3 | 통과 | 결제 201, 이벤트 `PENDING` — 3초 뒤 `attempt_count` 0, 23초 뒤 3, `last_error` `KafkaException: Send failed` |
+| 4 | 통과 | Kafka 시작 49초 뒤 `PUBLISHED`(`attempt_count` 6, 백오프 대기 포함), 알림 2건 |
+| 5 | 통과 | 결제 13초 뒤 `FAILED`(`attempt_count` 2) |
+| 6 | 통과 | `GET ?status=FAILED`에 해당 이벤트(`status` FAILED·`attemptCount` 2·`lastError`), 일괄 재발행 `{"republished":1}` → `PUBLISHED`·알림 2건. 단건 재발행 `POST /{id}/republish`도 200 → `PUBLISHED`·알림 2건 |
+| 7 | 통과 | DLT에는 2-4 검증 때의 키 `900`·`901` 2건만 — 새 메시지 없음 |
 
 ### 2-4. Kafka — DLT 재처리 (#52)
 
@@ -193,10 +247,87 @@ docker compose --profile monitoring up   # Prometheus http://localhost:9090 (.en
   docker run --rm --entrypoint promtool -v "<프로젝트 경로>/monitoring:/etc/prometheus:ro" \
     prom/prometheus:v3.5.0 check config /etc/prometheus/prometheus.yml
   ```
+- Prometheus는 compose `app:8081`을 수집하므로 앱도 compose로 띄워야 함. 호스트 8080을 다른 프로그램이 쓰면 `APP_PORT=8090 docker compose --profile monitoring up -d --build`
+
+#### 검증 결과 (2026-11-18, compose app + monitoring 프로필)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| 수집 대상 | 통과 | `delivery-app` up |
+| 규칙 | 통과 | 9개 로드, 평시 모두 inactive. `promtool` `SUCCESS: 9 rules found` |
+| Redis 중단 + 키 있는 결제 | 통과 | 503, `redis_failures_total{operation="idempotency.acquire"}` 1 |
+| Kafka 중단 + 결제 | 통과 | `outbox_events{status="pending"}` 1, `outbox_oldest_pending_age_seconds` 28 (약 40초 뒤) |
+| 복구 후 | 통과 | pending 0, `notification_send_total{result="sent"}` 2 |
+| `outbox_events{status="failed"}`·`outbox_dlt_records_total` | 미확인 | 이번에는 FAILED·DLT를 만들지 않아 0 (값 증가는 2-3 5단계·2-4에서 확인한 동작) |
+- 알림이 실제로 firing되는 것(`for` 시간 경과)까지는 기다리지 않음
+
+#### 재검증 결과 (2026-11-18 #61, `APP_PORT=8090 docker compose --profile monitoring up -d --build` — CORS 반영 이미지)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| 수집 대상 | 통과 | `delivery-app` up (기동 직후 한 번은 앱이 뜨기 전이라 down → 20초 뒤 up) |
+| 규칙 | 통과 | 9개 로드, 평시 모두 inactive. `promtool` `SUCCESS: 9 rules found` |
+| Redis 중단 + 키 있는 결제 | 통과 | 503, `redis_failures_total{operation="idempotency.acquire"}` 1. **응답 5.26초** (jar 실행 때는 약 1초, 아래 참고) |
+| Redis 실패 알림 | 통과 (이번에 처음 확인) | 약 1분 뒤 `RedisCommandFailures` **firing** (`increase(...[5m]) > 0`, `for: 1m`) |
+| Kafka 중단 + 결제 | 통과 | 45초 뒤 `outbox_events{status="pending"}` 1, `outbox_oldest_pending_age_seconds` 39 |
+| 복구 후 | 통과 | pending 0·failed 0, `notification_send_total{result="sent"}` 2 |
+| `outbox_dlt_records_total` | 미확인 | 0 (이번에 DLT를 만들지 않음) |
+
+- 관찰: compose 앱에서 Redis 컨테이너를 내리면 키 있는 결제의 503이 약 5초 걸림 (local jar → `localhost:6380`은 약 1초)
+  - **원인 확인·조치 (2026-11-21, #78 브랜치)**: 앱 컨테이너에서 `getent hosts redis`가 Redis 정상 시 18ms, 중단 시 **3.9초**(Docker 내장 DNS가 모르는 이름을 호스트 DNS로 넘김). Lettuce는 Netty 자체 DNS 조회기(`netty-resolver-dns`)를 쓰고, `connect-timeout`은 TCP 연결에만 걸려 이름 조회 시간이 그대로 더해짐(재현 3.9초·9.5초)
+  - 조치 `config.RedisClientConfig`(DNS 질의 상한 = `connect-timeout` 1초) 후 compose 재측정: Redis 정상 201 / 중단 3회 모두 503 **1.02~1.04초**
+
+### 2-6. Slack 알림 발송 (#69)
+
+Slack 워크스페이스에서 채널 하나에 Incoming Webhook을 만들고, URL은 **루트 `.env`에만** 넣음(`.gitignore` 대상, 코드·설정 파일·명령 기록에 남기지 않음)
+
+```bash
+# .env
+NOTIFICATION_SENDER=slack
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+```
+
+| 단계 | 하는 일 | 기대 결과 |
+|---|---|---|
+| 1 | 앱 기동 (jar local 프로필은 `.env`를 읽음, compose는 `.env` → `NOTIFICATION_SENDER`·`SLACK_WEBHOOK_URL` 전달) | 로그 `알림 발송기: Slack Incoming Webhook (connectTimeout=PT2S, readTimeout=PT3S)`, URL은 로그에 없음 |
+| 2 | 주문 → 결제 | 5초 안에 채널에 `[배달 알림] 결제 완료 알림이 생성되었습니다. (notificationId=N)` 2건(고객·사장님), `send_status = SENT` |
+| 3 | 배달 완료 처리 | `배달 완료` 알림 도착. 문구에 주문 번호·금액·user id 없음 |
+| 4 | 실패 → 재시도 → FAILED: URL 끝 토큰을 일부러 바꾸고 `NOTIFICATION_DISPATCHER_MAX_ATTEMPTS=2`, `NOTIFICATION_DISPATCHER_RETRY_DELAY=10s`로 재기동 후 결제 (compose는 이 두 값을 앱에 넘기지 않음 → 아래 override 파일 사용. `.env`를 고치지 않으려면 잘못된 URL은 셸 환경변수 `SLACK_WEBHOOK_URL`로 넘김 — 셸 값이 `.env`보다 우선) | 첫 실패 `send_status = PENDING`, `send_attempt_count = 1`, 로그 `재시도 예정` → 10초 뒤 `FAILED`, `last_send_error`에 `status=4xx, body=...`(URL 없음), `notification.send{result="failed"}` 증가 |
+| 5 | 미기동 확인: `NOTIFICATION_SENDER=slack`이고 `SLACK_WEBHOOK_URL`을 비운 채 기동 | 기동 실패 — `SLACK_WEBHOOK_URL이 필요합니다` (prod 프로필이면 `필수 환경변수가 없습니다: SLACK_WEBHOOK_URL`) |
+
+```yaml
+# 4단계용 임시 override (저장소 밖에 두고 docker compose -f docker-compose.yml -f <이 파일> up -d app)
+services:
+  app:
+    environment:
+      NOTIFICATION_DISPATCHER_MAX_ATTEMPTS: "2"
+      NOTIFICATION_DISPATCHER_RETRY_DELAY: "10s"
+```
+
+```sql
+SELECT id, event_type, send_status, send_attempt_count, last_send_error, sent_at FROM notifications ORDER BY id DESC LIMIT 10;
+```
+- `failed` 메트릭은 compose에서 관리 포트가 호스트에 열려 있지 않음 → `docker compose exec app wget -qO- localhost:8081/actuator/prometheus | grep notification_send`
+
+- 끝나면 `.env`를 `NOTIFICATION_SENDER=log`로 되돌리거나 두 줄을 지움. 웹훅을 다른 사람에게 보여 줬다면 Slack 앱 설정에서 재발급
+
+#### 검증 결과
+- 자동 테스트(2026-11-20): `SlackNotificationSenderTest`(로컬 HTTP 서버로 2xx·404·503·429·응답 시간 초과·연결 거부, 가짜 HttpClient로 연결 시간 초과, Dispatcher와 묶어 재시도 → FAILED·회복 → SENT), `NotificationSenderConfigTest`(설정 분기), `ProdProfileGuardTest`
+- 실제 Slack 수신(2026-11-20, compose 앱 포트 8091 — 호스트 8080·8090은 다른 프로젝트가 사용, `APP_PORT=8091`):
+  - 1 통과: 기동 로그 `알림 발송기: Slack Incoming Webhook (connectTimeout=PT2S, readTimeout=PT3S)`, 앱 로그 전체에 `hooks.slack.com` 0건
+    (처음엔 `.env`에 `NOTIFICATION_SENDER=slack`이 빠져 있었음 → 빠지면 기본 `log`라 Slack으로 가지 않음)
+  - 2 통과: 주문 25 결제 → 약 2초 뒤 채널에 `[배달 알림] 결제 완료 알림이 생성되었습니다. (notificationId=38)`·`(notificationId=39)` 2건 수신, 두 행 `SENT`
+  - 3 통과(서버 기준): 주문 25 수락 → 배달 완료 → 알림 40 `DELIVERY_COMPLETED` `SENT`
+  - 4 통과: `.env`는 그대로 두고 셸 환경변수로 토큰 끝 4자를 바꾼 URL + 임시 override 파일(`NOTIFICATION_DISPATCHER_MAX_ATTEMPTS=2`·`RETRY_DELAY=10s`,
+    compose 파일은 이 두 값을 넘기지 않음)로 재기동 → 주문 26 결제 → 알림 41·42 `PENDING`·1회·로그 `재시도 예정` → 10초 뒤 `FAILED`·2회,
+    `last_send_error` = `Slack 비정상 응답 status=403, body=invalid_token`(URL 없음, DB·로그 모두 0건), `notification_send_total{result="failed"} 2`·`{result="retry"} 2`
+  - 5 통과: `SLACK_WEBHOOK_URL=` 빈 값으로 기동 → `APPLICATION FAILED TO START`, `notification.sender=slack이면 notification.slack.webhook-url(SLACK_WEBHOOK_URL)이 필요합니다.`
+  - 끝난 뒤 정상 URL로 재기동해 둠
 
 ## 3. 주문 목록 keyset · 운영 프로필 (#54)
 
-> 이 장의 수동 절차는 아직 직접 실행하지 않음 — 같은 내용은 자동 테스트(1장 `OrderListPagingTest`·`StoreOrderIntegrationTest`·`ProdProfile*`·`DatabaseTimeoutIntegrationTest`)로 확인했고, 부하 측정은 [성능 개선](performance.md) 9장 절차로 실행함
+> 2026-11-18에 아래 수동 절차를 직접 실행함 (각 절 끝의 검증 결과). 같은 내용은 자동 테스트(1장 `OrderListPagingTest`·`StoreOrderIntegrationTest`·`ProdProfile*`·`DatabaseTimeoutIntegrationTest`)로도 확인하고, 부하 측정은 [성능 개선](performance.md) 9장 절차로 실행함
+> 확인 때는 호스트 8080을 다른 프로젝트가 쓰고 있어 앱을 `SERVER_PORT=8090`으로 띄움 (아래 명령의 8080을 8090으로 읽음)
 
 ### 3-1. 주문 목록 keyset 페이징
 
@@ -221,6 +352,18 @@ curl -s "http://localhost:8080/api/orders?page=0&afterId=1" -H "Authorization: B
 | 마지막 페이지 | `X-Has-Next: false`, `X-Next-After-Id` 헤더 없음 |
 | 넘기는 중간에 CUSTOMER로 새 주문 생성 | 이미 받은 주문이 다시 나오지 않고, 새 주문은 마지막 페이지에 이어서 나옴 |
 | 응답 본문 | 두 방식 모두 기존과 같은 JSON 배열 |
+
+#### 검증 결과 (2026-11-18, 주문 7건·size=2)
+
+- 통과: page 방식 `1,2 / 3,4 / 5,6 / 7`(마지막 `X-Has-Next: false`), keyset 방식 `1,2 / 3,4 / 5,6 / 7,8` — 두 번째 페이지를 받은 뒤 새 주문 8을 결제했고, 이미 받은 주문은 다시 나오지 않고 8이 마지막 페이지에 이어서 나옴
+- keyset 요청에는 `X-Page` 없음, 마지막 페이지에 `X-Next-After-Id` 없음
+- `page=0&afterId=1` 400, `afterId=-1` 400
+
+#### 재검증 결과 (2026-11-18 #61, compose 앱 포트 8090, OWNER 주문 9건·size=3)
+
+- 통과: page 방식 `12,13,14 / 15,16,17 / 18,19,20`(마지막 `X-Has-Next: false`, `X-Next-After-Id` 없음)
+- 통과: keyset 방식 `12,13,14 / 15,16,17 / 18,19,20 / 21` — 두 번째 페이지 뒤 새 주문 21을 결제, 중복 없이 마지막 페이지에 이어서 나옴. 첫 요청(afterId 없음)만 `X-Page: 0`, 이후 keyset 요청에는 없음
+- 통과: `page=0&afterId=1` 400, `afterId=-1` 400
 
 ### 3-2. prod 프로필
 
@@ -252,6 +395,37 @@ SPRING_PROFILES_ACTIVE=prod DB_URL=jdbc:postgresql://localhost:5432/delivery DB_
 
 - 8081(관리 포트)은 확인용으로 로컬에서만 접근. 실제 배포에서는 외부에 공개하지 않음 ([운영 프로필](operations.md))
 
+#### 검증 결과 (2026-11-18)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| 1) 필수 환경변수 전부 누락 | **기대와 다름** | 기동은 실패하지만 안내 메시지 대신 `'url' must start with "jdbc"`(DataSource 생성 실패). 값은 출력되지 않음 |
+| 1') DB·JWT는 있고 `REDIS_HOST`·`KAFKA_BOOTSTRAP_SERVERS`만 누락 | 통과 | `prod 프로필 설정 오류 — 필수 환경변수가 없습니다: REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS` |
+| swagger·api-docs·서비스 포트 actuator | 통과 | 모두 404 |
+| 8081 health | 통과 | `{"groups":["liveness","readiness"],"status":"UP"}` — 그룹 이름만 있고 DB 등 상세 없음 |
+| liveness·readiness | 통과 | 200 |
+| prometheus | 통과 | 메트릭 출력 |
+| `/actuator/env` | 통과 | 토큰 없음 401, ADMIN 토큰 404 |
+| `SPRINGDOC_SWAGGER_UI_ENABLED=true` | 통과 | `운영 프로필에서는 비활성이어야 합니다: springdoc.swagger-ui.enabled` |
+
+#### 재검증 결과 (2026-11-18 #61 — `CORS_ALLOWED_ORIGINS` 필수 추가 후, 서비스 포트 8091·관리 포트 8081)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| 필수 환경변수 전부 누락 | **기대와 다름 (기존 문제 그대로)** → 2026-11-19 수정 후 통과 | 수정 전 `'url' must start with "jdbc"` — 아래 "발견한 문제" |
+| DB·JWT만 있음 | 통과 | `필수 환경변수가 없습니다: REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS, CORS_ALLOWED_ORIGINS` |
+| `CORS_ALLOWED_ORIGINS`만 누락 | 통과 | `필수 환경변수가 없습니다: CORS_ALLOWED_ORIGINS` |
+| `CORS_ALLOWED_ORIGINS=*` | 통과 | 기동 실패 `cors.allowed-origins에 와일드카드(*)는 사용할 수 없습니다: *` |
+| `CORS_ALLOWED_ORIGINS=https://app.example.com/` | 통과 | 기동 실패 `scheme://host[:port] 형식이어야 합니다 (경로·끝 슬래시 없이)` |
+| `SPRINGDOC_SWAGGER_UI_ENABLED=true` | 통과 | `운영 프로필에서는 비활성이어야 합니다: springdoc.swagger-ui.enabled` |
+| swagger·api-docs·서비스 포트 actuator | 통과 | 모두 404 |
+| 8081 health·liveness·readiness·prometheus | 통과 | `{"groups":["liveness","readiness"],"status":"UP"}`, 200, 200, 메트릭 출력 |
+| `/actuator/env` | 통과 | 토큰 없음 401, ADMIN 토큰 404 |
+| CORS (4장과 같은 요청) | 통과 | `https://app.example.com` Preflight 200·`Access-Control-Allow-Origin` 일치, local 기본값 `http://localhost:5173`은 403, 실제 요청에 노출 헤더 포함, `Allow-Credentials` 없음 |
+| 로그의 비밀 값 | 통과 | 실패 로그에 비밀번호·키 값 없음 (`grep` 0건) |
+
+- **발견한 문제**: `ProdProfileGuard`는 일반 `@Component`라 생성 순서가 보장되지 않음 — `entityManagerFactory`가 `flyway`→`dataSource`를 먼저 만들기 때문에 `DB_URL`이 없으면 가드보다 DataSource가 먼저 실패함. 기동 실패라는 결과는 같지만 빠진 변수 목록이 한 번에 나오지 않음. → **#61에서 수정**: 가드를 빈이 아닌 `EnvironmentPostProcessor`(`META-INF/spring.factories`)로 바꿔 설정 파일·프로필 반영 직후, 빈 생성 전에 검사. 자동 테스트 `ProdProfileGuardStartupTest`. 수정 후 확인(2026-11-19, prod jar를 필수 환경변수 없이 실행): `prod 프로필 설정 오류 — 필수 환경변수가 없습니다: DB_URL, DB_USERNAME, DB_PASSWORD, JWT_SECRET, REDIS_HOST, KAFKA_BOOTSTRAP_SERVERS, CORS_ALLOWED_ORIGINS`
+
 ### 3-3. compose DB 포트 · DB 타임아웃
 
 compose `db` 컨테이너는 포트 매핑이 바뀌었으므로 **재생성 필요** (`up -d`가 설정 변경을 감지해 다시 만듦, `db-data` 볼륨은 유지)
@@ -282,3 +456,273 @@ curl -i -X PATCH "http://localhost:8080/api/orders/<주문 id>/status" -H "Autho
 | `DB_LOCK_TIMEOUT=2s`로 앱 재기동 후 반복 | 약 2초 뒤 503 |
 
 - 세션 타임아웃 값·이유는 [운영 프로필](operations.md) 6장
+- Git Bash에서는 터미널 A 대신 `psql -c "BEGIN; SELECT ... FOR UPDATE; SELECT pg_sleep(15); ROLLBACK;"`를 백그라운드로 실행해 잠금을 잡아도 됨
+
+#### 검증 결과 (2026-11-18)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| `docker compose port db 5432` | 통과 | `127.0.0.1:5432` |
+| 잠금 중 수락 | 통과 | 5.05초 뒤 503 `일시적으로 요청을 처리할 수 없습니다...`(DB 오류 메시지 없음), 주문 `PAYMENT_COMPLETED` 그대로 |
+| `ROLLBACK` 후 재요청 | 통과 | 204, `ORDER_ACCEPTED` |
+| `DB_LOCK_TIMEOUT=2s`(prod 프로필 실행에서 확인) | 통과 | 2.11초 뒤 503 |
+
+#### 재검증 결과 (2026-11-18 #61 — db 컨테이너 재생성 포함)
+
+| 확인 | 결과 | 실제 값 |
+|---|---|---|
+| `docker compose up -d --force-recreate db` | 통과 | 컨테이너 id 바뀜, 주문/결제 행 수 21/16 → 21/16 (`db-data` 볼륨 유지) |
+| 재생성 후 포트 | 통과 | `127.0.0.1:5432` |
+| 재생성 후 실행 중인 앱 | 통과 | compose 앱·prod jar 모두 재시작 없이 바로 200 (Hikari가 끊긴 커넥션을 새로 맺음) |
+| 잠금 중 수락 (compose 앱, 기본 5초) | 통과 | 5.14초 뒤 503 `일시적으로 요청을 처리할 수 없습니다...`, 주문 `PAYMENT_COMPLETED` 그대로 |
+| 잠금 해제 후 재요청 | 통과 | 204, `ORDER_ACCEPTED` |
+| `DB_LOCK_TIMEOUT=2s` (prod jar) | 통과 | 2.05초 뒤 503, 주문 `ORDER_ACCEPTED` 그대로 (기동 직후 첫 요청은 3.05초 — 첫 요청 준비 시간 포함) |
+
+## 4. CORS (#61)
+
+설정 근거는 [운영 프로필](operations.md) 7장. 앱을 띄운 뒤 `Origin` 헤더를 직접 붙여 브라우저 요청을 흉내 냄 (local·dev 기본 허용 출처: `http://localhost:5173`, `http://localhost:3000`)
+
+```bash
+# 1) 허용 출처 Preflight — 토큰 없이 200, 허용 메서드·헤더·노출 헤더
+curl -s -o /dev/null -D - -X OPTIONS localhost:8080/api/payments -H "Origin: http://localhost:5173" \
+  -H "Access-Control-Request-Method: POST" -H "Access-Control-Request-Headers: authorization,content-type,idempotency-key"
+# 2) 허용 출처 실제 요청 — Access-Control-Allow-Origin·Expose-Headers + X-Has-Next
+curl -s -o /dev/null -D - "localhost:8080/api/orders?size=1" -H "Origin: http://localhost:5173" -H "Authorization: Bearer $TOKEN"
+# 3) 허용하지 않은 출처 — Preflight·실제 요청 모두 403 "Invalid CORS request"
+curl -s -D - -X OPTIONS localhost:8080/api/orders -H "Origin: https://evil.example.com" -H "Access-Control-Request-Method: GET"
+```
+
+| 확인 | 기대 결과 |
+|---|---|
+| 1) 허용 출처 Preflight | 200, `Access-Control-Allow-Origin` = 요청 출처, `Allow-Headers`에 `authorization, content-type, idempotency-key`, `Max-Age: 3600`, `Allow-Credentials` 없음 |
+| 2) 허용 출처 실제 요청 | 200, `Access-Control-Expose-Headers`에 `X-Has-Next`·`X-Next-After-Id` 등 |
+| 3) 허용하지 않은 출처 | Preflight 403, 토큰이 있는 실제 요청도 403 (컨트롤러에 닿지 않음), `Access-Control-Allow-Origin` 없음 |
+| 허용 출처 + 목록에 없는 요청 헤더 | Preflight 403 |
+| 관리자 경로 Preflight (토큰 없음) | 200 — Preflight는 인증 전에 처리 |
+| `Origin` 없는 요청 (curl·서버 간 호출) | CORS와 관계없이 기존 동작 |
+
+#### 검증 결과 (2026-11-18)
+
+**수동 확인** — 실제 브라우저가 아닌 curl로 `Origin`·`Access-Control-Request-*` 헤더를 붙여 확인 (브라우저 확인은 프론트엔드 연동 때)
+
+| 환경 | 확인 | 결과 | 실제 값 |
+|---|---|---|---|
+| local jar (8090) | 1) 허용 출처 Preflight | 통과 | 200, `Allow-Origin: http://localhost:5173`, `Allow-Methods: GET,POST,PUT,PATCH,DELETE,OPTIONS`, `Allow-Headers: authorization, content-type, idempotency-key`, `Max-Age: 3600`, `Allow-Credentials` 없음 |
+| local jar | 2) 허용 출처 실제 요청 | 통과 | 200, `Expose-Headers: X-Has-Next, X-Next-After-Id, X-Page, X-Size, X-Trace-Id, Idempotent-Replayed`, `X-Has-Next: false` |
+| local jar | 3) 허용하지 않은 출처 | 통과 | Preflight 403, 토큰 있는 실제 요청 403, 본문 `Invalid CORS request`, `Allow-Origin` 없음 |
+| local jar | 목록에 없는 요청 헤더(`x-custom`) | 통과 | 403 |
+| local jar | 관리자 경로 Preflight (`http://localhost:3000`, 토큰 없음) | 통과 | 200 |
+| local jar | `Origin` 없는 `GET /api/stores` | 통과 | 200 |
+| compose 앱 (dev, 8090) | dev 기본값 | 통과 | `http://localhost:5173` 200, `https://evil.example.com` 403 |
+| prod jar (8091) | 환경변수 출처만 허용·누락/와일드카드 시 기동 실패 | 통과 | 3-2 재검증 결과 |
+
+**자동 테스트** — 2026-11-18 통과
+
+| 테스트 | 건수 | 확인한 내용 |
+|---|---|---|
+| `CorsSecurityTest` (`@WebMvcTest`) | 7 | 허용 출처 Preflight(토큰 없음·관리자 경로 포함, `Idempotency-Key`·`X-Trace-Id` 헤더), 실제 요청 노출 헤더, 허용하지 않은 출처 Preflight·실제 요청 403(컨트롤러 호출 없음), 허용하지 않은 요청 헤더 403, `Origin` 없는 요청은 기존 401, `Allow-Credentials` 없음 |
+| `CorsPropertiesTest` | 4 | 공백·빈 값 정리, 미설정 시 빈 목록, 와일드카드 거부, 경로·끝 슬래시·scheme 누락 거부 |
+| `ProdProfileGuardTest` | 5 (+1) | `CORS_ALLOWED_ORIGINS`가 비어 있으면 기동 실패 |
+| `ProdProfileGuardStartupTest` | 2 (신규) | `DB_URL`이 비어 있으면 DB 없이도 DataSource 오류가 아닌 가드 메시지(빠진 변수 목록)로 기동 실패, prod가 아니면 검사하지 않음 |
+| `ProdProfileIntegrationTest` | 6 (+1) | `test,prod`로 실제 기동 후 환경변수 출처만 허용, local 기본값은 403 |
+
+- 수동 확인 뒤 허용 요청 헤더에 `X-Trace-Id`를 추가함 (API 명세상 클라이언트가 보낼 수 있는 헤더) → 이 항목은 자동 테스트(`CorsSecurityTest` Preflight)로만 확인
+
+발견한 점
+- 거부 응답(403) 본문은 Spring 기본 `Invalid CORS request`(text/plain) — 다른 오류처럼 `ApiErrorResponse` 형식이 아님. 브라우저 JS는 CORS로 막힌 응답을 읽을 수 없어 클라이언트 영향은 없고 curl·로그 확인 때만 보임 → 이번에는 그대로 둠
+
+## 5. 모니터링 — 대시보드 · 알림 규칙 발생 (#67)
+
+2-5에서 확인한 "메트릭 값이 오른다"에서 한 걸음 더: **규칙이 실제로 firing되는지**와 **대시보드 패널이 장애 구간을 보여 주는지** 확인. 메트릭·규칙 정의는 [프로젝트 구조](architecture.md) Redis 장 "관측성"·Kafka 장
+
+```bash
+APP_PORT=8090 docker compose --profile monitoring up -d --build   # Grafana http://localhost:3000 (admin / .env의 GRAFANA_ADMIN_PASSWORD)
+```
+
+### 5-1. 대시보드 구성 (`monitoring/grafana/dashboards/delivery-app.json`, 패널 18개 + 행 4개)
+
+| 행 | 패널 | 대응 규칙 |
+|---|---|---|
+| 알림 규칙 상태 | 발생·대기 중인 알림 표 (`ALERTS`, 현재 시점) | 전체 |
+| HTTP · DB | 요청 수·5xx 비율·평균 응답 시간·JVM 힙·HikariCP(active·pending·max)·**HTTP 503 누적**(URI별 + 커넥션 대기 초과) | — |
+| Outbox · Kafka | 발행 대기·실패 건수, 가장 오래된 대기 시간(300초 점선), DLT 유입, Kafka 발행·소비 처리량, Consumer lag(1000 점선), Consumer 평균 처리 시간 | `OutboxPublishDelayed`·`OutboxEventsFailed`·`OutboxDeadLetters`·`NotificationConsumerLag` |
+| 알림 발송 · Redis · 정산 스케줄러 | 알림 발송 결과, Redis 명령 실패(작업별), 스케줄러 실행 결과, 집계 시간 vs 락 TTL 절반, 락 유지 시간 초과 | `NotificationSendFailed`·`RedisCommandFailures`·`SettlementScheduler*`·`DistributedLockOverrun` |
+
+- 패널 설명(ⓘ)에 대응 규칙과 조치(재발행 API, DLT 재처리 CLI 등)를 적어 둠
+- 대시보드 파일을 고치면 Grafana가 약 10초 안에 다시 읽음 (재시작 불필요)
+- 스크린샷(2026-11-22, compose 8091 · 가짜 PG로 결제 몇 건 후): `docs/images/grafana-outbox.png`(최근 30분 — Kafka 발행·소비, Consumer 처리 시간, 알림 발송 누적 12건), `docs/images/grafana.png`(최근 1시간, 결제 직후). Outbox 대기·DLT·Redis 실패 0
+
+### 5-2. 점검에서 발견해 고친 것
+
+| 발견 | 원인 | 조치 |
+|---|---|---|
+| `distributed_lock_overrun_total` 시계열이 없음 → `DistributedLockOverrun`이 **첫 초과를 놓침** | 카운터가 처음 증가할 때 생성됨. `increase()`는 직전 샘플이 없으면 첫 증가를 0으로 계산 | `SettlementScheduler`가 기동 시 `lock=settlement-daily-aggregation`을 0으로 등록 (`DistributedLock.OVERRUN_METRIC`, `SettlementSchedulerTest`) |
+| `NotificationConsumerLag` 식의 `records_lag_max`가 평시 NaN | 최근 샘플 구간의 최대값이라 메시지가 없으면 NaN (대시보드에서 빈 그래프) | 파티션별 현재 값 `records_lag{topic="delivery-events"}`로 변경 |
+| HTTP 503 패널(`increase`)이 장애 후에도 0 | HTTP 타이머는 URI·상태 조합의 첫 요청 때 생성 → 위와 같은 이유로 첫 1건을 놓침. 미리 등록할 수 없음 | 패널을 기동 후 누적값으로 변경 (계단이 오른 시점 = 발생 시각) |
+
+- 같은 이유로 "요청 수"·"5xx 비율" 패널도 **처음 생긴 URI·상태 조합의 첫 요청**은 반영되지 않음 (추세 확인용이라 그대로 둠)
+- 알림 규칙에 쓰는 앱 카운터(`redis.failures`·`settlement.scheduler.runs`·`notification.send`·`outbox.dlt.records`)는 원래 0으로 등록돼 있어 문제 없음
+
+### 5-3. 장애 재현 → firing 확인
+
+평가 주기는 Prometheus 기본값 1분(`evaluation_interval` 미지정), 수집 15초 → **발생 후 감지까지 최대 약 1분 15초 + `for`**
+
+| 단계 | 하는 일 | 기대 결과 |
+|---|---|---|
+| 1 | `docker compose stop redis` → 새 주문 + `Idempotency-Key` 결제 | 503, `RedisCommandFailures{operation="idempotency.acquire"}` pending → 1분 뒤 firing |
+| 2 | 2-4의 형식 오류 메시지 전송 (Git Bash는 `MSYS_NO_PATHCONV=1` 필요) | 재시도 없이 DLT, `OutboxDeadLetters` firing (`for` 없음) |
+| 3 | `docker compose start redis` → `docker compose stop kafka` → 결제 | 201, 대기 300초 넘으면 `OutboxPublishDelayed` pending → 2분 뒤 firing |
+| 4 | Kafka를 내린 채 계속 둠 | 재시도 10회(약 10분) 뒤 `FAILED` → `OutboxPublishDelayed` 해제, `OutboxEventsFailed` pending → 1분 뒤 firing |
+| 5 | `docker compose start kafka` → 관리자 `POST /api/admin/outbox-events/republish` | `{"republished":1}`, 발행·알림 생성 후 모든 알림 해제 |
+
+#### 검증 결과 (2026-11-20, compose app(8090) + monitoring 프로필, #67 수정 반영 이미지)
+
+| 단계 | 결과 | 시각·실제 값 |
+|---|---|---|
+| 수집 대상·규칙 | 통과 | `delivery-app` up, 9개 로드·평시 inactive, `promtool` `SUCCESS: 9 rules found` |
+| 대시보드 쿼리 | 통과 | Grafana API(`/api/ds/query`)로 패널 쿼리 전체 오류 없음 |
+| 1 Redis 중단 | 통과 | 11:38:35 결제 503(**4.73초** — 2-5 재검증의 약 5초와 같은 현상, 원인 미확인) → 11:39:05 pending → 약 11:40:10 firing. 패널 "Redis 명령 실패" `idempotency.acquire` 1, "HTTP 503 누적" `/api/payments` 1 |
+| 2 DLT | 통과 | 11:38:53 전송 → `outbox_dlt_records_total` 1 → 11:39:49 firing |
+| 3 Kafka 중단 | 통과 | 11:40:26 결제 201(Outbox 이벤트 18) → 11:45:51 pending(대기 315초) → 11:47:53 firing(435초) |
+| 4 FAILED | 통과 | 시도 10회 후 11:50:49 `FAILED` → `OutboxPublishDelayed` 해제, `OutboxEventsFailed` 11:51:50 firing |
+| 5 복구 | 통과 | 11:52 Kafka 시작·재발행 1건 → 11:52:53 알림 0건, pending 0·failed 0, `notification_send_total{result="sent"}` 4 |
+
+- 이번 기간 firing 이력: `RedisCommandFailures`·`OutboxDeadLetters`·`OutboxPublishDelayed`·`OutboxEventsFailed` (`count_over_time(ALERTS{alertstate="firing"}[30m])`)
+- 재현하지 않은 규칙과 이유
+  - `NotificationConsumerLag`: 1000건 이상 밀리게 해야 함 → #68 k6 쓰기 부하(결제 최대 314건/s)에서도 lag 최대 695건으로 발생하지 않음.
+    Outbox 발행기가 약 92건/s로 앞에서 속도를 제한해 Consumer까지 밀리지 않음 — 대신 대기는 `outbox_events`에 쌓임(최대 20,857건, 가장 오래된 대기 82초 < `OutboxPublishDelayed` 300초) ([성능 개선](performance.md) 11장)
+  - `NotificationSendFailed`: 기본 발송기(로그)는 실패하지 않음 → #69 Slack 발송기에서 웹훅 주소를 틀리게 해 확인
+  - `SettlementSchedulerSkippedByRedis`·`SettlementSchedulerNearLockTtl`·`DistributedLockOverrun`: 스케줄러가 매일 01:10에만 실행 → 자동 테스트(`SettlementSchedulerTest`·`RedisDistributedLockTest`)로 메트릭 증가를 확인하고, 시계열이 기동 시 0으로 있는지만 수동 확인(`distributed_lock_overrun_total{lock="settlement-daily-aggregation"}` 0)
+- 임계값(300초·1000건 등)은 실측 전 초기값 그대로 — 재현용으로 `for`·임계값을 줄이지 않고 기다림. 조정 근거는 #68 측정 후 기록
+
+### 5-4. 평소 Redis · Kafka 상태 확인
+
+| 대상 | 대시보드에서 볼 곳 | 정상 |
+|---|---|---|
+| 전체 | 맨 위 "발생·대기 중인 알림" 표, Prometheus `/alerts` | 비어 있음 / 모두 inactive |
+| Redis | "Redis 명령 실패" | 모든 작업 0 |
+| Kafka 발행 | "Outbox 이벤트", "가장 오래된 발행 대기 이벤트 경과 시간" | 대기·실패 0, 경과 시간 0 (300초를 넘으면 발행 멈춤) |
+| Kafka 소비 | "DLT 유입", "알림 Consumer lag", "Kafka 발행·소비" | DLT 0, lag 0 근처 |
+
+직접 확인 (Git Bash는 `/`로 시작하는 컨테이너 경로가 Windows 경로로 바뀌므로 `MSYS_NO_PATHCONV=1`)
+```bash
+docker compose exec redis redis-cli ping                                    # PONG
+docker compose exec redis redis-cli --scan --pattern 'idempotency:payment:*' # 멱등성 키
+docker compose exec redis redis-cli --scan --pattern 'lock:*'                # 분산 락 (평소에는 없음)
+
+MSYS_NO_PATHCONV=1 docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --all-groups                 # LAG 0이면 다 처리
+```
+- 토픽 메시지·DLT 내용은 2-3·2-4의 consumer 명령, Outbox 상태는 2-3의 SQL
+
+## 6. 사장님 실시간 주문 알림 (SSE, #76)
+
+자동 테스트: `OwnerOrderStreamRegistryTest`, `OwnerOrderStreamIntegrationTest`(백엔드), `frontend/src/owner/orderStreamController.test.ts`(재연결·폴링·끊김 감지)
+
+### 6-1. compose 실제 확인 (2026-11-21, 결과 통과)
+compose 앱(`APP_PORT=8091`)을 새 코드로 다시 빌드. `.env`가 `NOTIFICATION_SENDER=slack`이면 확인용 결제가 Slack으로 나가므로 이번 실행만 log로 덮어씀
+```bash
+APP_PORT=8091 NOTIFICATION_SENDER=log docker compose up -d --build app
+```
+1. 사장님 `fc110847` 로그인 → `curl -N -H "Accept: text/event-stream" -H "Authorization: Bearer <Access>" http://localhost:8091/api/owner/order-events`
+2. 고객 `demo70c1`로 매장 4 메뉴 주문 → 결제
+3. 결과
+
+| 확인 | 결과 |
+|---|---|
+| 토큰 없음 / 고객 토큰 / 없는 매장(`storeId=999999`) | 401 / 403 / 404, 본문은 공통 JSON (`Accept: text/event-stream`만 보냄) |
+| 구독 응답 | 200 `text/event-stream`, `X-Accel-Buffering: no`, 바로 `event:connected` |
+| 결제 → `event:order` | 주문 516 결제 후 **2.3초**에 수신 (`notificationId` 99, `type` PAYMENT_COMPLETED, `amount` 4500). Outbox 발행 주기(1s) + Kafka 소비 + 알림 저장 커밋 |
+| SSE 3개 연결 유지 중 DB 커넥션 | Prometheus `hikaricp_connections_active` 60초 동안 **0** (open-in-view 제외 효과) |
+| 연결 수·버림 | `owner_stream_connections` 연결 수만큼, `owner_stream_events_dropped_total` 0 |
+| 클라이언트 종료 후 정리 | 프로세스 종료 후 약 80초 안에 `owner_stream_connections` 0 — 하트비트(25초) 쓰기 실패로 정리. Docker Desktop 포트 프록시가 끊김을 늦게 전달해 하트비트 1~2번이 더 걸림 |
+
+### 6-2. 브라우저 확인 (아직 — 사용자 확인 항목)
+- 사장님 홈·주문 화면 제목 옆 `실시간 연결됨` 배지, 다른 창에서 고객 결제 → 토스트 + 주문 목록 갱신
+- '알림 소리 켜기' 클릭 → 확인음 → 다음 결제 때 소리
+- 폴링 전환: compose app 중지(`docker compose stop app`) → 재연결 3번 실패 후 `30초마다 확인 중` → 다시 시작하면 `실시간 연결됨`으로 돌아오고 목록 갱신
+
+## 7. 배송 주소 · 주문/결제 오류 코드 (#77)
+
+### 7-1. 자동 테스트
+- `OrderAddressMigrationTest`(V17 데이터 → V18: 한 줄 주소 유지·새 컬럼 NULL·CHECK), `DeliveryAddressTest`, `OrderAddressErrorCodeIntegrationTest`(HTTP: 주소 400·기존 주문 조회·중복 결제·취소된 주문 409 code)
+- 프론트 `npm test`: `validateAddress.test.ts`, `postcode.test.ts`, `errorMessages.test.ts`
+
+### 7-2. 브라우저 확인 (아직 — 사용자 확인 항목)
+- (확인함, 2026-11-21 헤드리스 Chromium) 스크립트 URL에 파라미터 없이 로드 → "허용되지 않는 파라미터" 오류 없음, '테헤란로 152' 검색 → 결과 선택 시 06236·도로명 채움·검색 창 닫힘·상세 주소 포커스. 예전 `?autoload=false`는 현재 스크립트가 거부함
+- (확인함, 2026-11-21 헤드리스 Chromium, 13개 항목) 장바구니 기본 체험용 주소, '주소 검색' 전환 시 경고, 요청사항 칩·글자 수, 주문 본문(zipCode 00000·deliveryRequest), 주문 상세·사장님 홈·주문 관리의 요청사항 표시 — 로컬 compose 앱이 V17 이미지라 주문 API 응답은 가로채서 확인(서버 저장·400은 `OrderAddressErrorCodeIntegrationTest`)
+- 고객 로그인 → 메뉴 담기 → 장바구니 '주소 검색' → 검색 창이 화면 안에 열림 → 주소 선택 시 우편번호·도로명이 채워지고 상세 주소 칸으로 포커스
+- 주소를 고르지 않고 '주문하기' → 주소 칸 아래 안내, 요청은 나가지 않음
+- 주문 상세에 `(우편번호) 한 줄 주소` 표시, V18 이전 주문은 우편번호 없이 기존 주소 그대로
+- 같은 주문을 두 탭에서 열고 한쪽에서 결제 → 다른 탭에서 '카드 결제' → "이미 결제된 주문입니다…" 안내 후 화면이 결제완료로 갱신
+- 랜딩(`/`): 헤드리스 Chromium(DevTools Protocol)으로 확인함(2026-11-21, 39개 항목) — 1440·834·390px 가로 스크롤 없음·등장 요소 표시·콘솔 오류 없음(비로그인 refresh 401은 기존 동작), 헤더 스크롤 상태, 섹션 이동·포커스, 탭 클릭·화살표 키, 모바일 메뉴 열기·Esc·포커스 복귀, 동작 줄이기, CTA 이동(/signup·/stores·/login), 로그인 OWNER→/owner·CUSTOMER→/stores·ADMIN→/admin/settlements
+  - 남은 수동 확인: 실제 휴대폰·Safari, 스크린리더 낭독
+- 고객 매장 목록(`/stores`): 헤드리스 Chromium으로 확인함(2026-11-21, 34개 항목, 로컬 매장 5곳·메뉴 13개) — 목록 수·순서·메뉴 수·최저가가 API 값과 일치, 이름·메뉴 검색, 결과 없음·초기화, 필터 2종, 정렬 3종, 카드 → 상세 → 뒤로 시 조건 유지, 1440 4열·834 2열·390 1열, 가로 스크롤 없음, 요청 가로채기로 로딩 스켈레톤·오류 → 다시 시도·빈 목록 확인, 콘솔 오류 없음
+- 개발자 도구에서 `t1.kakaocdn.net` 요청 차단 → '주소 검색' → 직접 입력 안내 후 우편번호·도로명 입력 가능
+
+## 8. 토스페이먼츠 테스트 모드 결제 (#78, V20)
+
+### 8-1. 자동 테스트 (2026-11-21, 통과)
+- `TossPaymentIntegrationTest`(18건, 실제 PostgreSQL·Redis + 가짜 토스 클라이언트): 승인 기록·PG 컬럼, 같은 결제 키 재전송, `Idempotency-Key` 재전송, 금액·주문번호 불일치 시 승인 미호출, 거절, 시간 초과 → 조회로 기록, 결과 불명 503 → 같은 요청 재시도로 기록, 승인 중 주문 취소 → 보상 취소, 주문 취소·관리자 환불 → 커밋 후 토스 취소, 취소 시간 초과 → 백오프 재시도에서 `ALREADY_CANCELED_PAYMENT`면 DONE
+- `TossPaymentsClientTest`(로컬 HTTP 서버): Basic 인증·멱등 키·경로 인코딩, 4xx 확정 거절 / 5xx·처리 중 409·시간 초과·해석 불가 = 결과 불명
+- `TossPaymentServiceTest`·`PgCancelRequestTest`·`TossPaymentsPropertiesTest`, 프론트 `payments/tossConfirm.test.ts`
+
+### 8-2. 실제 테스트 결제창 확인 (아직 — 사용자 확인 항목)
+준비: 루트 `.env`에 공식 문서의 공개 테스트 키 "API 개별 연동 키"(`TOSS_CLIENT_KEY=test_ck_…`, `TOSS_SECRET_KEY=test_sk_…`) → 앱 재시작(compose면 `docker compose up -d --build app`, 빌드 시 V20 적용). 기동 로그 `토스페이먼츠 결제: 켜짐(테스트 모드)`
+
+| # | 시나리오 | 기대 결과 |
+|---|---|---|
+| 1 | 고객 로그인 → 주문 → 주문 상세 | '토스페이먼츠로 결제 (테스트)' 버튼 (키가 없으면 '카드 결제' 모의 결제) |
+| 2 | 버튼 → 결제창에서 카드 결제 | `/payments/toss/success` → '결제가 완료되었습니다', 주문 상세 결제완료. DB `payments.pg_payment_key`·`pg_order_id` 채워짐 |
+| 3 | 2의 성공 화면에서 새로 고침 | 같은 결제 결과(재전송), 결제 1건 그대로 |
+| 4 | 결제창을 닫음 | `/payments/toss/fail` → '결제를 취소했습니다', 주문은 결제 전 |
+| 5 | 성공 주소의 `amount`를 바꿔 직접 열기 | 400 금액 불일치 안내, 결제 기록 없음 (10분 뒤 토스 쪽 만료) |
+| 6 | 결제완료 주문 취소 | 주문 취소 → `pg_cancel_requests` DONE, 토스 개발자센터 테스트 결제 내역에서 취소 확인 |
+| 7 | (선택) 앱의 `toss.payments.base-url`을 응답 없는 주소로 바꾸고 승인 | 503 `PG_RESULT_UNKNOWN` 안내 + '다시 확인' 버튼, 결제창을 다시 열지 않음 |
+
+### 8-3. 가짜 PG 모드 (V21, `TOSS_MODE=fake`)
+- 자동 테스트: `FakeTossPaymentIntegrationTest`(앱 전체를 fake로 띄워 가짜 결제창 인증 → 승인(응답 유실) → 부분 환불 → 가짜 부분 취소, 금액 조작 거절), `FakeTossPaymentsClientTest`(시나리오별 약속)
+- compose 확인 (2026-11-21, 통과): `APP_PORT=8091 TOSS_MODE=fake NOTIFICATION_SENDER=log docker compose up -d --build app` → 기동 로그 `가짜 PG 모드`, config `mode: FAKE`. 주문 519를 `PG_DELAYED`로 승인 → 첫 요청 503 `PG_RESULT_UNKNOWN`, 같은 요청 재시도 201
+- 브라우저 확인 (아직 — 사용자 확인 항목): 주문 상세 '가짜 결제창으로 결제 (시연)' → 시나리오 버튼별 결과(성공·카드 거절·응답 유실·PG 지연 자동 재시도·금액 조작 400·창 닫기)
+
+### 8-4. 부분 환불 (V21)
+- 자동 테스트: `PartialRefundIntegrationTest`(환불 1건씩 정산 차감·이월, 나눠 환불해도 수수료 합계 = 전액, 동시 부분 환불 8건 중 한도 안 3건만, API 201·400·403), `PartialRefundMigrationTest`(기존 전액 환불 백필·차감 기록 연결), `PaymentTest`·`PaymentFeeTest`, 토스 부분 취소는 `TossPaymentIntegrationTest`
+- 로컬 DB(`delivery`)는 위 compose 빌드 때 V18~V21 적용됨 — 기존 전액 환불 데이터가 있는 DB에서 V21 데이터 이전 성공
+
+
+## 9. 소셜 로그인 (V22, 카카오·구글)
+
+### 9-1. 자동 테스트 (2026-11-21, 통과)
+- `SocialLoginIntegrationTest`(21건): 실제 Spring Security OAuth2 필터 + PostgreSQL. 공급자와 통신하는 두 곳(코드 → 토큰 교환, 사용자 정보)만 가짜 빈
+  - 시작 리다이렉트·시작 기록 쿠키(HttpOnly·Lax·세션 없음), 구글 OIDC nonce, 꺼진 공급자 404
+  - 첫 로그인 CUSTOMER 가입 + Refresh 쿠키만 발급(URL에 토큰 없음) → `/api/users/refresh` 호환, 재로그인·동시 첫 로그인 5건 중복 가입 없음, 소셜 전용 회원 비밀번호 로그인 401
+  - 취소(`access_denied`)·쿠키 없음·변조·10분 초과·state 불일치 → `?error=`, 회원 생성 없음
+  - 연결: 연결 쿠키 → `?mode=link` → 그 회원에 연결, 쿠키 없음·5분 초과 → `SOCIAL_LINK_EXPIRED`, 다른 회원이 쓰는 계정 409 계열, 관리자 403, 해제·마지막 수단 409
+- `SocialLoginPropertiesTest`·`SocialCookieSignerTest`·`ProdProfileGuardTest`(소셜 키 + 콜백 주소)
+- 프론트 `api/social.test.ts`(콜백 쿼리 해석·문구·주소)
+
+### 9-2. 공급자 콘솔 설정 (사용자 작업)
+| 공급자 | 설정 | 값 |
+|---|---|---|
+| 카카오 (developers.kakao.com) | 앱 → 플랫폼 키 → REST API 키 | `KAKAO_CLIENT_ID` |
+| | 카카오 로그인 활성화 ON, Redirect URI | `http://localhost:8090/login/oauth2/code/kakao` (compose는 8091) |
+| | 보안 → Client Secret 발급·**사용함** | `KAKAO_CLIENT_SECRET` |
+| | 동의 항목 | 설정 불필요 (회원번호만 사용) |
+| 구글 (console.cloud.google.com) | OAuth 동의 화면(외부·테스트 사용자에 본인 추가) → 사용자 인증 정보 → OAuth 클라이언트 ID(웹) | `GOOGLE_CLIENT_ID`·`GOOGLE_CLIENT_SECRET` |
+| | 승인된 리디렉션 URI | `http://localhost:8090/login/oauth2/code/google` (compose는 8091) |
+
+- 키는 루트 `.env`에만. 앱 재시작 후 `GET /api/users/social/providers`에 공급자가 보이면 켜진 것 (기동 로그 `소셜 로그인 공급자 enabled=[...]`)
+
+### 9-3. 브라우저 확인 (일부 확인 — 2026-11-21 compose 8091, 실제 카카오·구글 키)
+| # | 시나리오 | 기대 결과 |
+|---|---|---|
+| 1 | 로그인 화면 '카카오 로그인' → 동의 | 고객 첫 화면(`/stores`), `/me` 아이디 `kakao_...`, DB `social_accounts` 1행 |
+| 2 | 로그아웃 후 같은 카카오로 다시 로그인 | 같은 회원 (users 행 늘지 않음) |
+| 3 | 동의 화면에서 취소 | `/oauth/callback?error=OAUTH2_CANCELLED` '소셜 로그인을 취소했습니다.' |
+| 4 | 아이디 회원으로 로그인 → 내 정보 → 구글 '연결' | 구글 동의 후 내 정보에 '구글 연결됨' 안내, 로그아웃 후 구글 로그인 = 그 회원 |
+| 5 | 1번 카카오 계정을 4번 회원에 연결 시도 | `SOCIAL_ACCOUNT_ALREADY_LINKED` 안내 |
+| 6 | 1번 회원(비밀번호 없음)에서 카카오 해제 | 버튼 비활성 (API는 409) |
+| 7 | 새로고침 | 로그인 유지 (Refresh 쿠키) |
+
+- 확인 결과(2026-11-21): 4번 연결 흐름을 사장님 `fc110847`(user 12, 비밀번호 있음)로 구글·카카오 모두 통과 → DB `social_accounts` 2행(google 23:58, kakao 23:59). 나머지 시나리오는 아직
+- **이 데이터는 지우지 않고 남겨 둠**(사용자 요청, 이후 수동 확인·시연용). 그래서 1번(새 소셜 회원 가입)을 하려면 연결되지 않은 다른 카카오·구글 계정이 필요하고, 같은 계정으로 하면 `fc110847`(OWNER)로 로그인됨 — 5번(이미 연결된 계정) 확인에는 그대로 쓸 수 있음

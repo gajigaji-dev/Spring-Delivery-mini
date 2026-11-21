@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.TestcontainersConfiguration;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.entity.*;
@@ -7,6 +9,7 @@ import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
+import com.sparta.springdeliverymini.repository.PaymentRefundRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
@@ -52,9 +55,13 @@ class PaymentConcurrencyIntegrationTest {
     @Autowired
     private PaymentRepository paymentRepository;
 
+    @Autowired
+    private PaymentRefundRepository paymentRefundRepository;
+
     @AfterEach
     void tearDown() {
         // FK 순서대로 삭제: payments → orders(order_items는 ON DELETE CASCADE로 함께 삭제) → menus → stores → users
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -69,7 +76,7 @@ class PaymentConcurrencyIntegrationTest {
         User customer = userRepository.save(new User("customer1", "encoded-password", Role.CUSTOMER));
         Store store = storeRepository.save(new Store("치킨집", owner));
         Menu menu = menuRepository.save(new Menu("후라이드 치킨", 18000, "바삭한 치킨", store));
-        Order newOrder = new Order(customer, store, "서울시", OrderStatus.ORDER_REQUEST);
+        Order newOrder = new Order(customer, store, TestAddresses.seoul(), OrderStatus.ORDER_REQUEST);
         newOrder.addItem(menu, 2);
         Order order = orderRepository.save(newOrder);
         PaymentRequest request = new PaymentRequest(order.getId(), PaymentMethod.CARD.name());

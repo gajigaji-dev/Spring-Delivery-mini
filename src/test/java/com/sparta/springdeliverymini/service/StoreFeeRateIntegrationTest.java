@@ -50,6 +50,7 @@ class StoreFeeRateIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
     @Autowired private SettlementRepository settlementRepository;
     @Autowired private SettlementStatusHistoryRepository settlementStatusHistoryRepository;
     @Autowired private SettlementAggregationFailureRepository settlementAggregationFailureRepository;
@@ -78,6 +79,7 @@ class StoreFeeRateIntegrationTest {
         settlementCarryoverRepository.deleteAllInBatch();
         settlementRefundRepository.deleteAllInBatch();
         settlementRepository.deleteAllInBatch();
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -90,7 +92,7 @@ class StoreFeeRateIntegrationTest {
     private PaymentResponse paidOrder(LocalDateTime paidAt) {
         clock.set(paidAt);
         OrderResponse order = orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1");
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
         return paymentService.pay(new PaymentRequest(order.id(), "CARD"), "customer1");
     }
 

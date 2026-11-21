@@ -5,7 +5,9 @@ import lombok.extern.slf4j.Slf4j;
 import com.sparta.springdeliverymini.config.PaymentIdempotencyProperties;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
+import com.sparta.springdeliverymini.dto.TossConfirmRequest;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.service.PaymentService.IdempotentPayment;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -75,17 +77,20 @@ public class PaymentIdempotencyService {
             """, Long.class);
 
     private final PaymentService paymentService;
+    private final TossPaymentService tossPaymentService;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private final PaymentIdempotencyProperties properties;
     private final MeterRegistry meterRegistry;
 
     public PaymentIdempotencyService(PaymentService paymentService,
+                                     TossPaymentService tossPaymentService,
                                      StringRedisTemplate redisTemplate,
                                      ObjectMapper objectMapper,
                                      PaymentIdempotencyProperties properties,
                                      MeterRegistry meterRegistry) {
         this.paymentService = paymentService;
+        this.tossPaymentService = tossPaymentService;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
@@ -118,18 +123,39 @@ public class PaymentIdempotencyService {
         }
     }
 
+    // 멱등성 기록 안에서 실행할 결제 — idempotencyKey·fingerprint는 결제와 같은 트랜잭션의 DB 기록용
+    @FunctionalInterface
+    public interface IdempotentPaymentAction {
+        PaymentResult execute(String idempotencyKey, String fingerprint);
+    }
+
     public PaymentResult pay(PaymentRequest request, String username, String idempotencyKey) {
         // 헤더가 없으면 기존 동작 그대로 (Redis를 쓰지 않음 → Redis 장애와 무관)
         if (idempotencyKey == null) {
             return new PaymentResult(paymentService.pay(request, username), false);
         }
+        return execute(username, idempotencyKey, fingerprint(request),
+                (key, fingerprint) -> new PaymentResult(paymentService.pay(request, username, key, fingerprint), false));
+    }
+
+    // 토스 결제 승인 (V20) — 모의 결제와 같은 Idempotency-Key 규칙(같은 키 재시도 → 처음 응답, 다른 요청 → 422, 처리 중 → 409)
+    // 헤더가 없어도 결제 키(pg_payment_key UNIQUE)·토스 멱등 키로 중복 승인·기록은 막힘 (TossPaymentService)
+    public PaymentResult confirmToss(TossConfirmRequest request, String username, String idempotencyKey) {
+        if (idempotencyKey == null) {
+            return tossPaymentService.confirm(request, username, null, null);
+        }
+        return execute(username, idempotencyKey, fingerprint(request),
+                (key, fingerprint) -> tossPaymentService.confirm(request, username, key, fingerprint));
+    }
+
+    private PaymentResult execute(String username, String idempotencyKey, String fingerprint,
+                                  IdempotentPaymentAction action) {
         if (!KEY_PATTERN.matcher(idempotencyKey).matches()) {
-            throw new ApiException(HttpStatus.BAD_REQUEST,
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_IDEMPOTENCY_KEY,
                     "Idempotency-Key는 영문·숫자·'-'·'_'로 1~64자여야 합니다.");
         }
 
         String key = redisKey(username, idempotencyKey);
-        String fingerprint = fingerprint(request);
         String processing = objectMapper.writeValueAsString(IdempotencyRecord.processing(fingerprint));
 
         boolean acquired;
@@ -157,8 +183,9 @@ public class PaymentIdempotencyService {
                 response = committed.get().response();
                 replayed = true;
             } else {
-                response = paymentService.pay(request, username, idempotencyKey, fingerprint);
-                replayed = false;
+                PaymentResult result = action.execute(idempotencyKey, fingerprint);
+                response = result.response();
+                replayed = result.replayed();
             }
         } catch (RuntimeException e) {
             // 실패한 결제는 기록을 지워 같은 키로 다시 시도할 수 있게 함
@@ -214,7 +241,7 @@ public class PaymentIdempotencyService {
 
     private static void requireSameRequest(String storedFingerprint, String fingerprint) {
         if (!storedFingerprint.equals(fingerprint)) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT,
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, ErrorCode.IDEMPOTENCY_KEY_REUSED,
                     "같은 Idempotency-Key로 다른 결제 요청을 보낼 수 없습니다.");
         }
     }
@@ -256,6 +283,12 @@ public class PaymentIdempotencyService {
         return sha256(request.orderId() + "\n" + request.paymentMethod());
     }
 
+    // 토스 승인 — 접두어로 모의 결제 요청과 구분 (같은 키를 두 종류의 결제에 쓰면 422)
+    static String fingerprint(TossConfirmRequest request) {
+        return sha256("toss\n" + request.orderId() + "\n" + request.paymentKey() + "\n"
+                + request.tossOrderId() + "\n" + request.amount());
+    }
+
     private static String sha256(String value) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -272,12 +305,12 @@ public class PaymentIdempotencyService {
 
     private static ApiException unavailable(DataAccessException e) {
         log.warn("결제 멱등성 저장소(Redis) 사용 불가 — 결제하지 않고 503", e);
-        return new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
+        return new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.PAYMENT_UNAVAILABLE,
                 "일시적으로 결제를 처리할 수 없습니다. 잠시 후 같은 Idempotency-Key로 다시 시도해 주세요.");
     }
 
     private static ApiException inProgress() {
-        return new ApiException(HttpStatus.CONFLICT,
+        return new ApiException(HttpStatus.CONFLICT, ErrorCode.PAYMENT_IN_PROGRESS,
                 "같은 Idempotency-Key의 결제가 처리 중입니다. 잠시 후 다시 시도해 주세요.");
     }
 }

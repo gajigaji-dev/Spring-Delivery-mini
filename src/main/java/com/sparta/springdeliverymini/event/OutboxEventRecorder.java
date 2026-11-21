@@ -30,8 +30,10 @@ public class OutboxEventRecorder {
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
-    public void paymentRefunded(Payment payment) {
-        record(OutboxEventType.PAYMENT_REFUNDED, payment.getOrder(), payment.getId(), payment.getAmount());
+    // 환불 1건마다 (V21 부분 환불 포함) — 알림 금액은 이번 환불 금액
+    public void paymentRefunded(PaymentRefund refund) {
+        Payment payment = refund.getPayment();
+        record(OutboxEventType.PAYMENT_REFUNDED, payment.getOrder(), payment.getId(), refund.getAmount());
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

@@ -60,6 +60,9 @@ spring:
 
   # JPA
   jpa:
+    # 기본 open-in-view 등록은 끄고 config.OpenEntityManagerInViewConfig에서 SSE 경로만 빼고 다시 등록 (#76)
+    # (다른 API의 동작은 그대로, 오래 열린 SSE 응답이 DB 커넥션을 잡고 있지 않도록)
+    open-in-view: false
     hibernate:
       # 스키마 변경은 Flyway(db/migration)만 담당, Hibernate는 엔티티와 테이블이 맞는지 검사만 함
       # 맞지 않으면 기동 실패 → 엔티티를 바꿨다면 마이그레이션 파일도 함께 추가
@@ -91,6 +94,35 @@ payment:
   idempotency:
     processing-ttl: 1m
     completed-ttl: 24h
+
+# 토스페이먼츠 테스트 모드 결제 (V20) — config.TossPaymentsProperties, pg.TossPaymentsClient, docs/api.md 토스페이먼츠 결제 장
+# mode: real(기본) | fake — fake는 키 없이 가짜 결제창(/payments/fake-toss)으로 흐름 전체를 시연 (pg.FakeTossPaymentsClient)
+# client-key·secret-key: 기본값 없음, TOSS_CLIENT_KEY·TOSS_SECRET_KEY 환경변수로만 (공식 문서의 공개 테스트 키, test_ck_·test_sk_만 허용)
+#   둘 다 없으면 토스 결제를 끔 → 화면은 모의 결제(POST /api/payments)를 보여 줌
+# 시간 초과: confirm-timeout + query-timeout(+ 연결)이 payment.idempotency.processing-ttl(1m)보다 짧아야 함
+#   승인 결과를 모르면(시간 초과) 조회로 확인하고, 그래도 모르면 503 PG_RESULT_UNKNOWN → 같은 승인 요청 재시도(토스 멱등 키로 승인은 한 번)
+# cancel: 취소 요청(pg_cancel_requests) 주기 재시도 — 커밋 직후 1회 시도 후 실패분만
+#   재시도 간격 = min(initial-backoff × 2^(실패 횟수-1), max-backoff) → 10s, 20s, 40s ... 최대 10분, max-attempts번 실패하면 FAILED
+#   lease: 작업자가 행을 가져간 뒤 다른 작업자가 가져가지 못하는 시간 (connect + cancel-timeout보다 길어야 함)
+toss:
+  payments:
+    # real: 토스 테스트 서버(테스트 키, 실제 돈 없음) / fake: 토스에 접속하지 않는 가짜 PG — 오프라인 데모·장애 재현, prod 불가 (V21)
+    mode: ${TOSS_MODE:real}
+    client-key: ${TOSS_CLIENT_KEY:}
+    secret-key: ${TOSS_SECRET_KEY:}
+    base-url: https://api.tosspayments.com
+    connect-timeout: 3s
+    confirm-timeout: 15s
+    query-timeout: 5s
+    cancel-timeout: 15s
+    cancel:
+      enabled: true
+      fixed-delay: 10s
+      batch-size: 20
+      max-attempts: 10
+      initial-backoff: 10s
+      max-backoff: 10m
+      lease: 1m
 
 # 일 정산 자동 확정 — scheduler.SettlementScheduler
 # enabled: false면 스케줄 실행 안 함 (config.SchedulingConfig)
@@ -134,13 +166,21 @@ outbox:
 #   enabled: false면 이 인스턴스는 발송하지 않음 (기록 저장은 계속, 여러 인스턴스가 켜져 있어도 SKIP LOCKED로 나눠 발송)
 #   fixed-delay: 발송 주기 / batch-size: 한 번에 발송하는 최대 건수
 #   max-attempts: 이 횟수만큼 실패하면 FAILED (자동 발송 중단) / retry-delay: 실패 후 재시도 간격
+#   sender: 발송 채널 — log(기본, 로그 출력) / slack(운영 채널 1곳으로 Incoming Webhook 발송, #69)
+#   slack.webhook-url: 기본값 없음, SLACK_WEBHOOK_URL 환경변수로만 주입 (URL 자체가 발송 권한 → 설정 파일·저장소에 두지 않음)
+#   slack.connect-timeout / read-timeout: 발송은 알림 행을 잠근 트랜잭션 안에서 하므로 짧게 (Slack 응답은 보통 1초 이내)
 notification:
+  sender: ${NOTIFICATION_SENDER:log}
   dispatcher:
     enabled: true
     fixed-delay: 5s
     batch-size: 100
     max-attempts: 5
     retry-delay: 1m
+  slack:
+    webhook-url: ${SLACK_WEBHOOK_URL:}
+    connect-timeout: 2s
+    read-timeout: 3s
 
 # 보관 기간이 지난 기록 정리 (V14) — config.RetentionProperties, maintenance.RetentionCleaner
 #   enabled: false면 이 인스턴스는 정리하지 않음 / fixed-delay: 정리 주기
@@ -148,6 +188,14 @@ notification:
 #   outbox-published: 발행 완료(PUBLISHED) 이벤트 보관 기간 — PENDING·FAILED는 지우지 않음
 #   consumed-events: Consumer 처리 기록 보관 기간 — Kafka 토픽 보관 기간(기본 7일)보다 길어야 재전달된 메시지를 중복으로 걸러냄
 #   payment-idempotency-keys: DB 결제 멱등성 기록 보관 기간 — 지난 뒤 같은 키 재시도는 처음 응답 대신 409(이미 결제됨)
+# 사장님 실시간 주문 알림(SSE, #76) — config.OwnerStreamProperties, docs/architecture.md 실시간 알림 장
+# 연결은 이 서버 메모리에만 보관(단일 인스턴스 기준). timeout은 Access Token(15분)보다 짧게 → 재연결 때 권한 재확인
+owner-stream:
+  timeout: 10m
+  heartbeat: 25s
+  max-connections-per-user: 5
+  send-queue-capacity: 1000
+
 retention:
   enabled: true
   fixed-delay: 1h
@@ -156,13 +204,51 @@ retention:
   outbox-published: 7d
   consumed-events: 30d
   payment-idempotency-keys: 30d
+  # 만료된 Refresh Token 행 — 만료(expires_at) 후 이 기간이 지나면 삭제 (V16). 만료된 토큰은 어차피 재발급에 못 쓰므로
+  # 기간은 문의·감사 확인용 여유. 지운 토큰이 다시 오면 "모르는 값"(REFRESH_TOKEN_INVALID)으로 거부됨
+  refresh-tokens: 7d
+
+# CORS — 브라우저(프론트엔드)에서 API를 호출할 수 있는 출처 (config.CorsProperties, SecurityConfig, docs/operations.md 7장)
+# 환경변수 CORS_ALLOWED_ORIGINS에 쉼표로 구분해 지정 (scheme://host[:port], 와일드카드·경로·끝 슬래시 불가 → 기동 실패)
+# 기본값은 빈 목록 = 다른 출처의 브라우저 요청을 모두 막음. local·dev는 로컬 프론트엔드 개발 서버 주소를 기본값으로 둠
+# prod는 기본값 없이 환경변수 필수 (없으면 config.ProdProfileGuard가 기동을 막음)
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:}
 
 # JWT — secret은 Base64 인코딩된 256비트 이상 키, JWT_SECRET 환경변수로만 주입
 # 기본값을 두지 않음: 저장소에 공개된 키로 운영 토큰이 서명되는 일을 막기 위해, 값이 없으면 기동 실패
 # 테스트는 src/test/resources/application-test.yml의 테스트 전용 키 사용
 jwt:
   secret: ${JWT_SECRET}
-  expiration-ms: 3600000  # 1시간
+  # Access Token 수명 15분 (V16, 이전 1시간) — 서명만 검증하는 방식이라 로그아웃해도 만료까지는 유효하므로
+  # 노출 시간을 짧게 둠. 요청마다 DB·Redis 확인 없이 끝나는 장점은 유지 (docs/architecture.md 인증 장)
+  expiration-ms: 900000
+
+# Refresh Token — config.RefreshTokenProperties, service.AuthTokenService (docs/architecture.md 인증 장)
+#   DB(refresh_tokens)에 해시만 저장, 브라우저에는 HttpOnly 쿠키(refresh_token, Path=/api/users)로 전달
+#   ttl: 수명. 재발급할 때마다 그 시점부터 다시 ttl (ttl 동안 한 번도 재발급하지 않으면 재로그인)
+#   absolute-ttl: 로그인 시점부터 최대 수명 (V16) — 계속 재발급해도 이 기간이 지나면 재로그인
+#   cookie-secure: HTTPS에서만 전송 (localhost는 브라우저가 http에서도 허용)
+#   cookie-same-site: 프론트엔드와 API가 다른 사이트(등록 도메인이 다름)에 배포되면 None 필요 (None이면 secure 필수)
+auth:
+  refresh-token:
+    ttl: 14d
+    absolute-ttl: 30d
+    cookie-secure: ${REFRESH_TOKEN_COOKIE_SECURE:true}
+    cookie-same-site: ${REFRESH_TOKEN_COOKIE_SAME_SITE:Strict}
+
+# 소셜 로그인 (V22, config.SocialLoginProperties) — 키는 .env에만. 공급자별로 id·secret이 둘 다 비면 그 공급자는 꺼짐
+#   공급자 콘솔에 등록할 Redirect URI: {API 주소}/login/oauth2/code/kakao · /login/oauth2/code/google
+#   frontend-callback-url: 로그인 결과(?result=·?error=)를 받는 프론트 화면
+social:
+  frontend-callback-url: ${SOCIAL_FRONTEND_CALLBACK_URL:http://localhost:5173/oauth/callback}
+  providers:
+    kakao:
+      client-id: ${KAKAO_CLIENT_ID:}
+      client-secret: ${KAKAO_CLIENT_SECRET:}
+    google:
+      client-id: ${GOOGLE_CLIENT_ID:}
+      client-secret: ${GOOGLE_CLIENT_SECRET:}
 
 # 로그 — 모든 로그 줄에 요청별 traceId(logging.TraceIdFilter가 MDC에 넣은 값)를 출력
 # 요청 밖(스케줄러 등)에서는 빈 값. 응답 헤더 X-Trace-Id·에러 응답 traceId와 같은 값으로 로그를 찾을 수 있음

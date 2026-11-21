@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.entity;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -34,12 +36,11 @@ class SettlementRefundCarryoverTest {
         return Settlement.aggregate(store, date, sales, refunds, carriedIn, AGGREGATED_AT);
     }
 
-    private Payment refundedPayment(Store store, LocalDateTime refundedAt) {
-        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, "서울시", OrderStatus.DELIVERY_COMPLETED);
+    private PaymentRefund refundedPayment(Store store, LocalDateTime refundedAt) {
+        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, TestAddresses.seoul(), OrderStatus.DELIVERY_COMPLETED);
         ReflectionTestUtils.setField(order, "deliveredAt", LocalDateTime.of(2026, 11, 1, 12, 0));
         Payment payment = new Payment(order, 10000, new BigDecimal("0.05"), PaymentMethod.CARD, LocalDateTime.of(2026, 11, 1, 11, 0));
-        payment.refund(refundedAt);
-        return payment;
+        return payment.refund(refundedAt);
     }
 
     // ===== 지급액·이월 계산 =====
@@ -124,9 +125,9 @@ class SettlementRefundCarryoverTest {
     // ===== 환불 차감 기록 =====
 
     @Test
-    void 환불_차감_기록은_결제_금액을_그대로_스냅샷한다() {
+    void 환불_차감_기록은_환불_1건의_금액을_그대로_스냅샷한다() {
         Settlement s = settlement(store, NOV_5, SettlementTotals.EMPTY, refunds(1), 0);
-        Payment refund = refundedPayment(store, LocalDateTime.of(2026, 11, 5, 23, 59, 59));
+        PaymentRefund refund = refundedPayment(store, LocalDateTime.of(2026, 11, 5, 23, 59, 59));
 
         SettlementRefund link = new SettlementRefund(s, refund);
 
@@ -139,19 +140,17 @@ class SettlementRefundCarryoverTest {
     void 환불보다_이른_날짜의_정산에서는_차감할_수_없다() {
         Settlement s = settlement(store, NOV_5, sales(1), SettlementTotals.EMPTY, 0);
         // 11/6 00:00 환불 → 11/5 정산 구간의 끝(미포함)과 같으므로 11/5에서는 차감 불가
-        Payment refund = refundedPayment(store, LocalDateTime.of(2026, 11, 6, 0, 0));
+        PaymentRefund refund = refundedPayment(store, LocalDateTime.of(2026, 11, 6, 0, 0));
 
         assertThatThrownBy(() -> new SettlementRefund(s, refund)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void 환불되지_않은_결제나_다른_매장_결제는_차감할_수_없다() {
+    void 다른_매장_결제의_환불은_차감할_수_없다() {
+        // (환불되지 않은 결제는 V21부터 차감 대상 타입이 환불 1건(PaymentRefund)이라 애초에 넘길 수 없음)
         Settlement s = settlement(store, NOV_5, sales(1), SettlementTotals.EMPTY, 0);
-        Payment completed = new Payment(new Order(new User("c", "pw", Role.CUSTOMER), store, "서울시",
-                OrderStatus.DELIVERY_COMPLETED), 10000, new BigDecimal("0.05"), PaymentMethod.CARD, LocalDateTime.of(2026, 11, 1, 11, 0));
-        Payment otherStoreRefund = refundedPayment(otherStore, LocalDateTime.of(2026, 11, 5, 9, 0));
+        PaymentRefund otherStoreRefund = refundedPayment(otherStore, LocalDateTime.of(2026, 11, 5, 9, 0));
 
-        assertThatThrownBy(() -> new SettlementRefund(s, completed)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new SettlementRefund(s, otherStoreRefund)).isInstanceOf(IllegalArgumentException.class);
     }
 

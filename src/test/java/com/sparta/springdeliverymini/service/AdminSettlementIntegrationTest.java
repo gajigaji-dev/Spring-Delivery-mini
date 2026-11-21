@@ -54,6 +54,7 @@ class AdminSettlementIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
     @Autowired private SettlementRepository settlementRepository;
     @Autowired private SettlementStatusHistoryRepository settlementStatusHistoryRepository;
     @Autowired private SettlementAggregationFailureRepository settlementAggregationFailureRepository;
@@ -76,6 +77,7 @@ class AdminSettlementIntegrationTest {
         settlementStatusHistoryRepository.deleteAllInBatch();
         settlementAggregationFailureRepository.deleteAllInBatch();
         settlementRepository.deleteAllInBatch();
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -96,7 +98,7 @@ class AdminSettlementIntegrationTest {
         clock.set(deliveredAt.minusHours(1));
         MenuResponse menu = menuService.createMenu(new MenuCreateRequest(chickenStore.id(), "메뉴", price, null), "owner1");
         OrderResponse order = orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1");
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
         paymentService.pay(new PaymentRequest(order.id(), "CARD"), "customer1");
         orderService.statusOrder(order.id(), "owner1", OrderStatus.ORDER_ACCEPTED);
         clock.set(deliveredAt);

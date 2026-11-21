@@ -56,7 +56,7 @@ class PaymentQuerySecurityTest {
     void CUSTOMER는_결제를_조회하면_200과_결제_정보를_받는다() throws Exception {
         given(paymentService.getPayment(1L, "customer1")).willReturn(new PaymentResponse(
                 1L, 10L, 36000, PaymentMethod.CARD, OrderStatus.PAYMENT_COMPLETED,
-                LocalDateTime.of(2026, 11, 15, 14, 5), PaymentStatus.COMPLETED, null, null));
+                LocalDateTime.of(2026, 11, 15, 14, 5), PaymentStatus.COMPLETED, null, null, 0));
 
         mockMvc.perform(get("/api/payments/1")
                         .header(HttpHeaders.AUTHORIZATION, bearer("customer1", Role.CUSTOMER)))

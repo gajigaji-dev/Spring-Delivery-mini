@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.repository.*;
@@ -37,6 +39,7 @@ class SettlementAggregationServiceTest {
     @Mock private SettlementRepository settlementRepository;
     @Mock private StoreRepository storeRepository;
     @Mock private SettlementRefundRepository settlementRefundRepository;
+    @Mock private PaymentRefundRepository paymentRefundRepository;
     @Mock private SettlementCarryoverRepository settlementCarryoverRepository;
     @Mock private SettlementStatusHistoryRepository settlementStatusHistoryRepository;
     @Mock private SettlementAggregationFailureRepository settlementAggregationFailureRepository;
@@ -57,7 +60,7 @@ class SettlementAggregationServiceTest {
         Clock clock = Clock.fixed(NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
         // Mock 트랜잭션 매니저로 TransactionTemplate을 만들어 콜백만 실행
         service = new SettlementAggregationService(paymentRepository, settlementRepository, storeRepository,
-                settlementRefundRepository, settlementCarryoverRepository,
+                settlementRefundRepository, paymentRefundRepository, settlementCarryoverRepository,
                 settlementStatusHistoryRepository, settlementAggregationFailureRepository,
                 new TransactionTemplate(transactionManager), clock);
     }
@@ -67,12 +70,11 @@ class SettlementAggregationServiceTest {
     }
 
     // 매장(store)의 배달완료 주문 결제 → refundedAt에 환불
-    private Payment refundedPayment(long amount, LocalDateTime refundedAt) {
-        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, "서울시", OrderStatus.DELIVERY_COMPLETED);
+    private PaymentRefund refundedPayment(long amount, LocalDateTime refundedAt) {
+        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, TestAddresses.seoul(), OrderStatus.DELIVERY_COMPLETED);
         ReflectionTestUtils.setField(order, "deliveredAt", LocalDateTime.of(2026, 11, 1, 12, 0));
         Payment payment = new Payment(order, amount, new BigDecimal("0.0500"), PaymentMethod.CARD, LocalDateTime.of(2026, 11, 1, 11, 0));
-        payment.refund(refundedAt);
-        return payment;
+        return payment.refund(refundedAt);
     }
 
     private void givenStore(Long storeId) {
@@ -136,7 +138,7 @@ class SettlementAggregationServiceTest {
 
         assertThat(result).isEqualTo(new DailyResult(NOV_5, 0, 1, 0));
         verify(paymentRepository, never()).findSettlementTargets(anyLong(), any(), any());
-        verify(paymentRepository, never()).findUnsettledRefunds(anyLong(), any());
+        verify(paymentRefundRepository, never()).findUnsettledRefunds(anyLong(), any());
         verify(settlementRepository, never()).saveAndFlush(any());
         verifyNoInteractions(settlementRefundRepository, settlementCarryoverRepository);
     }
@@ -144,11 +146,11 @@ class SettlementAggregationServiceTest {
     @Test
     void 미차감_환불만_있는_매장도_집계_대상에_포함된다() {
         given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of());
-        given(paymentRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of(10L));
+        given(paymentRefundRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of(10L));
         givenStore(10L);
         given(settlementRepository.existsByStoreIdAndSettlementDate(10L, NOV_5)).willReturn(false);
-        Payment refund = refundedPayment(10000, LocalDateTime.of(2026, 11, 3, 15, 0));
-        given(paymentRepository.findUnsettledRefunds(10L, END)).willReturn(List.of(refund));
+        PaymentRefund refund = refundedPayment(10000, LocalDateTime.of(2026, 11, 3, 15, 0));
+        given(paymentRefundRepository.findUnsettledRefunds(10L, END)).willReturn(List.of(refund));
 
         DailyResult result = service.aggregateDaily(NOV_5);
 
@@ -166,7 +168,8 @@ class SettlementAggregationServiceTest {
         ArgumentCaptor<List<SettlementRefund>> links = ArgumentCaptor.forClass(List.class);
         verify(settlementRefundRepository).saveAll(links.capture());
         assertThat(links.getValue()).singleElement().satisfies(link -> {
-            assertThat(link.getPayment()).isSameAs(refund);
+            assertThat(link.getPaymentRefund()).isSameAs(refund);
+            assertThat(link.getPayment()).isSameAs(refund.getPayment());
             assertThat(link.getSettlement()).isSameAs(saved);
             assertThat(link.getSettlementAmount()).isEqualTo(9500);
         });
@@ -175,7 +178,7 @@ class SettlementAggregationServiceTest {
     @Test
     void 판매와_환불_매장_id가_겹쳐도_한_번만_집계한다() {
         given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of(10L));
-        given(paymentRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of(10L));
+        given(paymentRefundRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of(10L));
         givenStore(10L);
         given(settlementRepository.existsByStoreIdAndSettlementDate(10L, NOV_5)).willReturn(false);
         given(paymentRepository.findSettlementTargets(10L, START, END)).willReturn(List.of(payment(10000)));
@@ -217,7 +220,7 @@ class SettlementAggregationServiceTest {
     @Test
     void 판매도_미차감_환불도_없으면_정산을_만들지_않는다() {
         // 매장 목록을 고른 뒤 다른 집계가 먼저 환불을 가져간 경우 등
-        given(paymentRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of(10L));
+        given(paymentRefundRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of(10L));
         givenStore(10L);
         given(settlementRepository.existsByStoreIdAndSettlementDate(10L, NOV_5)).willReturn(false);
 
@@ -257,11 +260,11 @@ class SettlementAggregationServiceTest {
 
     @Test
     void 환불_연결_기록이_UNIQUE_위반이면_정산까지_롤백하고_실패로_기록한다() {
-        given(paymentRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of(10L));
+        given(paymentRefundRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of(10L));
         givenStore(10L);
         // 롤백되므로 다시 확인해도 정산은 없음 → 중복이 아니라 실패
         given(settlementRepository.existsByStoreIdAndSettlementDate(10L, NOV_5)).willReturn(false, false);
-        given(paymentRepository.findUnsettledRefunds(10L, END))
+        given(paymentRefundRepository.findUnsettledRefunds(10L, END))
                 .willReturn(List.of(refundedPayment(10000, LocalDateTime.of(2026, 11, 5, 9, 0))));
         given(settlementRefundRepository.saveAll(any())).willThrow(new DataIntegrityViolationException("uk_settlement_refunds_payment"));
 
@@ -298,7 +301,7 @@ class SettlementAggregationServiceTest {
     @Test
     void 정산_대상이_없는_날은_아무것도_저장하지_않는다() {
         given(paymentRepository.findSettlementStoreIds(START, END)).willReturn(List.of());
-        given(paymentRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of());
+        given(paymentRefundRepository.findUnsettledRefundStoreIds(END)).willReturn(List.of());
 
         DailyResult result = service.aggregateDaily(NOV_5);
 

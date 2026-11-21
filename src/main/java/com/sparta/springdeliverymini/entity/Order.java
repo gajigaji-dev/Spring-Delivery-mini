@@ -3,6 +3,8 @@ package com.sparta.springdeliverymini.entity;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import com.sparta.springdeliverymini.exception.ErrorCode;
+import com.sparta.springdeliverymini.exception.InvalidDeliveryRequestException;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import jakarta.persistence.*;
 import org.hibernate.annotations.BatchSize;
@@ -11,6 +13,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.regex.Pattern;
 
 // BaseEntity 상속 → created_at(주문 시각), updated_at(상태 변경 시각) 자동 기록
 @Entity
@@ -50,9 +53,19 @@ public class Order extends BaseEntity {
     @Column(nullable = false)
     private long totalPrice;
 
-    // 배송 주소
+    // 배송 주소 한 줄 (도로명 + 상세) — V18 이전 주문은 이 값만 있음
+    // 기존 주문 조회·화면이 이 값을 그대로 쓰므로 새 주문도 계속 채움 (address.fullAddress())
     @Column(nullable = false)
     private String deliveryAddress;
+
+    // 우편번호·도로명·상세로 나눈 배송 주소 (#77, V18)
+    // V18 이전 주문은 세 컬럼이 모두 NULL → null (한 줄 주소를 안전하게 나눌 수 없어 백필하지 않음)
+    @Embedded
+    private DeliveryAddress address;
+
+    // 배달 요청사항 (선택, V19) — 생성 때 한 번 정하고 바꾸지 않음. 없으면 NULL
+    @Column(length = DELIVERY_REQUEST_MAX)
+    private String deliveryRequest;
 
     // 주문 상태
     @Enumerated(EnumType.STRING)
@@ -65,17 +78,51 @@ public class Order extends BaseEntity {
     // DB에서도 "배달완료 상태 ⇔ delivered_at 있음"을 CHECK 제약으로 강제 (V6)
     private LocalDateTime deliveredAt;
 
+    public static final int DELIVERY_REQUEST_MAX = 100;
+    private static final Pattern CONTROL_CHARS = Pattern.compile("\\p{Cntrl}");
+
     // 항목 없이 생성 → addItem()으로 항목을 담음 (총액은 0원에서 시작)
     public Order(
             User user,
             Store store,
-            String deliveryAddress,
+            DeliveryAddress address,
             OrderStatus status
     ) {
+        this(user, store, address, null, status);
+    }
+
+    // 배달 요청사항은 앞뒤 공백을 지우고, 비었으면 NULL로 저장
+    // 100자 초과·줄바꿈 등 제어 문자는 400 (사장님 주문 티켓·알림의 한 줄 표시가 깨지지 않도록)
+    public Order(
+            User user,
+            Store store,
+            DeliveryAddress address,
+            String deliveryRequest,
+            OrderStatus status
+    ) {
+        if (address == null) {
+            throw new IllegalArgumentException("배송 주소가 필요합니다.");
+        }
         this.user = user;
         this.store = store;
-        this.deliveryAddress = deliveryAddress;
+        this.address = address;
+        this.deliveryAddress = address.fullAddress();
+        this.deliveryRequest = normalizeDeliveryRequest(deliveryRequest);
         this.status = status;
+    }
+
+    private static String normalizeDeliveryRequest(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String trimmed = value.strip();
+        if (trimmed.length() > DELIVERY_REQUEST_MAX) {
+            throw new InvalidDeliveryRequestException("배달 요청사항은 " + DELIVERY_REQUEST_MAX + "자 이하여야 합니다.");
+        }
+        if (CONTROL_CHARS.matcher(trimmed).find()) {
+            throw new InvalidDeliveryRequestException("배달 요청사항에 줄바꿈 등 사용할 수 없는 문자가 있습니다.");
+        }
+        return trimmed;
     }
 
     // 주문 항목 추가 + 총액 갱신
@@ -129,19 +176,33 @@ public class Order extends BaseEntity {
     // 주문수락(ORDER_ACCEPTED) 이후는 매장이 조리를 시작했으므로 취소 불가
     // 결제완료 주문의 결제 취소(Payment.cancel)는 OrderService가 같은 트랜잭션에서 함께 처리
     public void cancel() {
+        if (this.status == OrderStatus.ORDER_CANCELLED) {
+            throw new InvalidOrderStatusException(ErrorCode.ORDER_ALREADY_CANCELLED, "이미 취소된 주문입니다.");
+        }
         if (this.status != OrderStatus.ORDER_REQUEST && this.status != OrderStatus.PAYMENT_COMPLETED) {
-            throw new InvalidOrderStatusException("주문수락 전(주문요청·결제완료) 상태에서만 주문을 취소할 수 있습니다.");
+            throw new InvalidOrderStatusException(ErrorCode.ORDER_NOT_CANCELLABLE,
+                    "주문수락 전(주문요청·결제완료) 상태에서만 주문을 취소할 수 있습니다.");
         }
         this.status = OrderStatus.ORDER_CANCELLED;
     }
 
     // 결제 완료: ORDER_REQUEST → PAYMENT_COMPLETED
-    // 이미 결제됐거나(중복 결제) 취소된 주문은 불가
+    // 이미 결제됐거나(중복 결제) 취소된 주문은 불가 — 화면 안내가 달라서 code를 나눔
     public void pay() {
-        if (this.status != OrderStatus.ORDER_REQUEST) {
-            throw new InvalidOrderStatusException("주문요청 상태의 주문만 결제할 수 있습니다.");
-        }
+        requirePayable();
         this.status = OrderStatus.PAYMENT_COMPLETED;
+    }
+
+    // 결제할 수 있는 상태인지만 확인 (상태는 바꾸지 않음)
+    // 토스 승인 API를 부르기 전에 미리 걸러 냄 → 결제할 수 없는 주문이 승인(실제 청구)까지 가지 않음 (service.TossPaymentService)
+    public void requirePayable() {
+        if (this.status == OrderStatus.ORDER_CANCELLED) {
+            throw new InvalidOrderStatusException(ErrorCode.ORDER_ALREADY_CANCELLED, "취소된 주문은 결제할 수 없습니다.");
+        }
+        if (this.status != OrderStatus.ORDER_REQUEST) {
+            // 결제완료·수락·배달완료 = 이미 결제된 주문
+            throw new InvalidOrderStatusException(ErrorCode.ORDER_ALREADY_PAID, "이미 결제된 주문입니다.");
+        }
     }
 
     // 주문 수락: PAYMENT_COMPLETED → ORDER_ACCEPTED

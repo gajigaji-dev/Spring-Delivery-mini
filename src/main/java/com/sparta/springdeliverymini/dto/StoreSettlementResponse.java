@@ -1,6 +1,7 @@
 package com.sparta.springdeliverymini.dto;
 
 import com.sparta.springdeliverymini.entity.Payment;
+import com.sparta.springdeliverymini.entity.PaymentRefund;
 import com.sparta.springdeliverymini.entity.SettlementPeriod;
 import com.sparta.springdeliverymini.entity.SettlementTotals;
 import com.sparta.springdeliverymini.entity.Store;
@@ -31,9 +32,9 @@ public record StoreSettlementResponse(
 
     // 합계 계산은 SettlementTotals — 정산 집계(Settlement)와 같은 계산을 사용
     public static StoreSettlementResponse of(Store store, SettlementPeriod period,
-                                             List<Payment> sales, List<Payment> refunds) {
+                                             List<Payment> sales, List<PaymentRefund> refunds) {
         SettlementTotals salesTotals = SettlementTotals.of(sales);
-        SettlementTotals refundTotals = SettlementTotals.of(refunds);
+        SettlementTotals refundTotals = SettlementTotals.ofRefunds(refunds);
 
         return new StoreSettlementResponse(
                 store.getId(),

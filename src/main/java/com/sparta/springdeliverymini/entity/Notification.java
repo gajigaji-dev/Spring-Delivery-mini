@@ -65,6 +65,14 @@ public class Notification {
     @Column(length = MAX_ERROR_LENGTH)
     private String lastSendError;
 
+    // 읽은 시각 (V15, NULL = 안 읽음) — 엔티티 저장으로는 쓰지 않고 조건부 UPDATE로만 기록
+    // (NotificationRepository.markReadIfUnread)
+    // 이유: @DynamicUpdate가 없어 엔티티 저장은 모든 컬럼을 UPDATE함 → 읽음 처리를 엔티티로 하면
+    //   발송기(NotificationDispatcher)가 같은 행의 발송 상태를 바꾸는 중에 오래된 send_status를 덮어쓸 수 있고,
+    //   반대로 발송기의 저장이 read_at을 NULL로 되돌릴 수 있음 → insertable·updatable=false로 두 경로를 분리
+    @Column(insertable = false, updatable = false)
+    private LocalDateTime readAt;
+
     public Notification(UUID eventId, OutboxEventType eventType, Long recipientUserId, Long orderId,
                         String message, LocalDateTime createdAt) {
         if (eventId == null || eventType == null || recipientUserId == null || orderId == null
@@ -81,6 +89,15 @@ public class Notification {
         this.sendStatus = NotificationSendStatus.PENDING;
         this.sendAttemptCount = 0;
         this.nextSendAt = createdAt;
+    }
+
+    public boolean isRead() {
+        return readAt != null;
+    }
+
+    // 받는 사람 본인인지 — 읽음 처리 권한 판단 (다른 사람의 알림은 403)
+    public boolean isRecipient(Long userId) {
+        return recipientUserId.equals(userId);
     }
 
     public boolean isSendPending() {

@@ -24,12 +24,26 @@ erDiagram
     settlements ||--o| settlement_aggregation_failures : "settlement_id (해결 시)"
     users ||--o{ payment_idempotency_keys : "user_id"
     payments ||--o| payment_idempotency_keys : "payment_id (UNIQUE)"
+    payments ||--o| pg_cancel_requests : "payment_id (V20, NULL 허용)"
+    payments ||--o{ payment_refunds : "payment_id (V21)"
+    payment_refunds ||--o| settlement_refunds : "payment_refund_id (UNIQUE, V21)"
+    payment_refunds ||--o| pg_cancel_requests : "payment_refund_id (UNIQUE)"
+    users ||--o{ refresh_tokens : "user_id"
+    users ||--o{ owner_applications : "user_id (신청자)"
+    users ||--o{ owner_applications : "decided_by (처리 관리자)"
+    users ||--o{ social_accounts : "user_id (V22, 공급자별 1개)"
 
     users {
         bigint id PK
         varchar username UK
-        varchar password
+        varchar password "NULL = 소셜 전용 (V22)"
         varchar role "CUSTOMER/OWNER/ADMIN"
+    }
+    social_accounts {
+        bigint id PK
+        bigint user_id FK
+        varchar provider "kakao/google"
+        varchar provider_user_id "UK (provider, provider_user_id)"
     }
     stores {
         bigint id PK
@@ -50,7 +64,11 @@ erDiagram
         bigint user_id FK
         bigint store_id FK
         bigint total_price
-        varchar delivery_address
+        varchar delivery_address "한 줄 주소"
+        varchar zip_code "V18, 이전 주문 NULL"
+        varchar road_address
+        varchar detail_address
+        varchar delivery_request "V19, 선택"
         varchar status
         timestamp delivered_at "정산 기간 기준"
     }
@@ -70,10 +88,34 @@ erDiagram
         bigint fee_amount
         bigint settlement_amount
         varchar payment_method
-        varchar status "COMPLETED/CANCELLED/REFUNDED"
+        varchar status "COMPLETED/CANCELLED/PARTIALLY_REFUNDED/REFUNDED"
+        bigint refunded_amount "V21, 누적 환불액"
         timestamp paid_at
         timestamp cancelled_at
         timestamp refunded_at
+        varchar pg_provider "V20, TOSS"
+        varchar pg_payment_key "V20, UK"
+        varchar pg_order_id "V20, UK"
+        timestamp pg_approved_at "V20"
+    }
+    payment_refunds {
+        bigint id PK
+        bigint payment_id FK
+        bigint amount
+        bigint fee_amount
+        bigint settlement_amount
+        timestamp refunded_at "정산 차감 기준"
+    }
+    pg_cancel_requests {
+        bigint id PK
+        bigint payment_id FK "NULL = 보상 취소"
+        bigint payment_refund_id FK,UK "V21"
+        varchar payment_key "전액 취소는 UK(부분)"
+        bigint balance_after "반영 후 토스 잔액"
+        bigint amount
+        varchar status "PENDING/DONE/FAILED"
+        int attempts
+        timestamp next_attempt_at
     }
     settlements {
         bigint id PK
@@ -158,6 +200,7 @@ erDiagram
         int send_attempt_count
         timestamp next_send_at
         timestamp sent_at
+        timestamp read_at "NULL = 안 읽음 (V15)"
     }
     payment_idempotency_keys {
         bigint id PK
@@ -166,6 +209,27 @@ erDiagram
         varchar fingerprint "요청 본문 SHA-256"
         bigint payment_id FK "UNIQUE"
         timestamp created_at
+    }
+    refresh_tokens {
+        bigint id PK
+        bigint user_id FK
+        varchar token_hash "UNIQUE, 원문의 SHA-256"
+        uuid family_id "로그인 1번 = 계열 1개"
+        timestamp created_at
+        timestamp expires_at "<= family_expires_at"
+        timestamp family_expires_at "계열 절대 만료 (V16)"
+        timestamp revoked_at "사유와 함께 NULL/NOT NULL"
+        varchar revoke_reason "ROTATED/LOGOUT/REUSE_DETECTED"
+    }
+    owner_applications {
+        bigint id PK
+        bigint user_id FK
+        varchar business_name
+        varchar status "REQUESTED/APPROVED/REJECTED"
+        varchar reject_reason "REJECTED만"
+        timestamp requested_at
+        timestamp decided_at
+        bigint decided_by FK
     }
 ```
 
@@ -182,7 +246,8 @@ erDiagram
 | orders ─ payments | 1 : 1 | `payments.order_id` → `orders.id` (unique) | 주문 1건당 결제는 1건만 가능 |
 | stores ─ settlements | 1 : N | `settlements.store_id` → `stores.id` | 한 매장에 날짜별 정산 기록 (매장·날짜당 1건) |
 | settlements ─ settlement_refunds | 1 : N | `settlement_refunds.settlement_id` → `settlements.id` | 정산 1건에서 여러 환불을 차감 |
-| payments ─ settlement_refunds | 1 : 1 | `settlement_refunds.payment_id` → `payments.id` (unique) | 환불 1건은 정확히 한 정산에서만 차감 |
+| payments ─ payment_refunds | 1 : N | `payment_refunds.payment_id` → `payments.id` | 부분 환불 여러 건 (V21), 합계 ≤ 결제액 |
+| payment_refunds ─ settlement_refunds | 1 : 0..1 | `settlement_refunds.payment_refund_id` → `payment_refunds.id` (unique) | 환불 1건은 정확히 한 정산에서만 차감 (V21 전에는 `payment_id` unique) |
 | settlements ─ settlement_carryovers | 1 : 1 / 1 : N | `from_settlement_id` (unique), `to_settlement_id` → `settlements.id` | 한 정산의 이월분은 한 번만, 한 정산은 여러 이월분을 받을 수 있음 |
 | settlements ─ settlement_status_histories | 1 : N | `settlement_status_histories.settlement_id` → `settlements.id` | 정산 1건에 상태 변경 이력 여러 건 (전이마다 1건, 최대 3건) |
 | users ─ settlement_status_histories | 1 : N | `settlement_status_histories.actor_user_id` → `users.id` (NULL 허용) | 확정·지급한 관리자. 스케줄러 집계는 NULL |
@@ -190,6 +255,10 @@ erDiagram
 | settlements ─ settlement_aggregation_failures | 1 : 0..1 | `settlement_aggregation_failures.settlement_id` → `settlements.id` (NULL 허용) | 재집계로 만들어진 정산 |
 | users ─ payment_idempotency_keys | 1 : N | `payment_idempotency_keys.user_id` → `users.id` | 회원별 결제 멱등성 키 (회원·키당 1건) |
 | payments ─ payment_idempotency_keys | 1 : 0..1 | `payment_idempotency_keys.payment_id` → `payments.id` (unique) | 키가 있는 결제만 기록 1건 (V14) |
+| payments ─ pg_cancel_requests | 1 : 0..1 | `pg_cancel_requests.payment_id` → `payments.id` (NULL 허용) | 토스 결제의 취소·환불 때 1건 (V20). 보상 취소는 결제 행 없이 `payment_key`만 |
+| users ─ refresh_tokens | 1 : N | `refresh_tokens.user_id` → `users.id` | 로그인(계열)마다, 재발급마다 1건 (V15). 같은 `family_id` 행끼리가 한 로그인 |
+| users ─ social_accounts | 1 : N | `social_accounts.user_id` → `users.id` | 공급자별 최대 1개 (V22). 같은 소셜 계정은 한 회원에만 (`(provider, provider_user_id)` UNIQUE) |
+| users ─ owner_applications | 1 : N (신청자), 1 : N (처리자) | `owner_applications.user_id`, `decided_by` → `users.id` | 회원당 여러 번 신청 가능(거절 후 재신청), 대기 중은 1건 (V17 부분 유니크) |
 
 - **Outbox·알림 테이블(V13)은 FK 없음**: `outbox_events`·`consumed_events`·`notifications`는 `event_id`로만 이어지는 이벤트 기록 — 주문·회원 id는 발생 시점 스냅샷 값이라 원본이 지워져도 남음 ([데이터베이스](database.md#outbox_events--발행-대기-이벤트-v13))
 - **OWNER가 받은 주문 조회**: `orders → stores → users(owner)`로 본인 매장에 들어온 주문만 찾음 (`findAllByStoreOwnerId`), 매장 하나는 `findAllByStoreId`

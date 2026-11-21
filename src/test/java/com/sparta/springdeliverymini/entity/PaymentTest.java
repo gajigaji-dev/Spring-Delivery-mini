@@ -1,5 +1,8 @@
 package com.sparta.springdeliverymini.entity;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.exception.InvalidPaymentStatusException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -21,7 +24,7 @@ class PaymentTest {
 
     private static Order order(OrderStatus status) {
         Store store = new Store("치킨집", new User("owner1", "pw", Role.OWNER));
-        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, "서울시", status);
+        Order order = new Order(new User("customer1", "pw", Role.CUSTOMER), store, TestAddresses.seoul(), status);
         if (status == OrderStatus.DELIVERY_COMPLETED) {
             ReflectionTestUtils.setField(order, "deliveredAt", DELIVERED_AT);
         }
@@ -142,5 +145,73 @@ class PaymentTest {
         assertThatThrownBy(() -> payment.refund(null)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> payment.refund(DELIVERED_AT.minusSeconds(1))).isInstanceOf(IllegalArgumentException.class);
         assertThat(payment.getStatus()).isEqualTo(PaymentStatus.COMPLETED);
+    }
+
+    // ===== 부분 환불 (V21) =====
+
+    @Test
+    void 일부_금액을_환불하면_PARTIALLY_REFUNDED이고_수수료는_환불액_비율로_취소된다() {
+        Payment payment = payment(OrderStatus.DELIVERY_COMPLETED);
+
+        PaymentRefund refund = payment.refund(1000, "콜라 누락", REFUNDED_AT);
+
+        assertThat(payment.getStatus()).isEqualTo(PaymentStatus.PARTIALLY_REFUNDED);
+        assertThat(payment.getRefundedAmount()).isEqualTo(1000);
+        assertThat(payment.refundableAmount()).isEqualTo(17009);
+        assertThat(payment.getRefundedAt()).isNull(); // 전액 환불이 끝났을 때만 기록
+        assertThat(refund.getFeeAmount()).isEqualTo(50);
+        assertThat(refund.getSettlementAmount()).isEqualTo(950);
+        assertThat(refund.getReason()).isEqualTo("콜라 누락");
+        // 원 결제 기록은 그대로
+        assertThat(payment.getAmount()).isEqualTo(18009);
+        assertThat(payment.getFeeAmount()).isEqualTo(900);
+    }
+
+    @Test
+    void 여러_번_나눠_환불해도_수수료_합계는_전액_환불과_정확히_같다() {
+        Payment payment = payment(OrderStatus.DELIVERY_COMPLETED);
+
+        // 건별로 반올림하면 167 + 389 + 345 = 901이 될 수 있지만, 누적 기준 반올림이라 합계가 결제 수수료 900과 같음
+        PaymentRefund first = payment.refund(3333, "1차", REFUNDED_AT);
+        PaymentRefund second = payment.refund(7777, "2차", REFUNDED_AT.plusHours(1));
+        PaymentRefund last = payment.refund(6899, "3차", REFUNDED_AT.plusHours(2));
+
+        assertThat(first.getFeeAmount() + second.getFeeAmount() + last.getFeeAmount()).isEqualTo(payment.getFeeAmount());
+        assertThat(first.getSettlementAmount() + second.getSettlementAmount() + last.getSettlementAmount())
+                .isEqualTo(payment.getSettlementAmount());
+        assertThat(payment.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+        assertThat(payment.getRefundedAt()).isEqualTo(REFUNDED_AT.plusHours(2)); // 마지막 환불 시각
+    }
+
+    @Test
+    void 부분_환불_뒤_전액_환불은_남은_금액만_환불한다() {
+        Payment payment = payment(OrderStatus.DELIVERY_COMPLETED);
+        payment.refund(1000, "부분", REFUNDED_AT);
+
+        PaymentRefund rest = payment.refund(REFUNDED_AT.plusDays(1));
+
+        assertThat(rest.getAmount()).isEqualTo(17009);
+        assertThat(payment.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
+        assertThat(payment.getRefundedAmount()).isEqualTo(18009);
+    }
+
+    @Test
+    void 남은_금액을_넘거나_0원인_환불은_할_수_없다() {
+        Payment payment = payment(OrderStatus.DELIVERY_COMPLETED);
+        payment.refund(18000, "부분", REFUNDED_AT);
+
+        assertThatThrownBy(() -> payment.refund(10, "초과", REFUNDED_AT)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> payment.refund(0, "0원", REFUNDED_AT)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(payment.getRefundedAmount()).isEqualTo(18000); // 실패한 요청은 반영되지 않음
+    }
+
+    @Test
+    void 전액_환불이_끝난_결제는_부분_환불도_409() {
+        Payment payment = payment(OrderStatus.DELIVERY_COMPLETED);
+        payment.refund(REFUNDED_AT);
+
+        assertThatThrownBy(() -> payment.refund(100, "추가", REFUNDED_AT))
+                .isInstanceOfSatisfying(InvalidPaymentStatusException.class,
+                        e -> assertThat(e.getCode()).isEqualTo(ErrorCode.PAYMENT_ALREADY_REFUNDED));
     }
 }

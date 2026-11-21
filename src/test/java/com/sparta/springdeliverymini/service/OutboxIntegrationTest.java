@@ -84,6 +84,7 @@ class OutboxIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
     @Autowired private OutboxEventRepository outboxEventRepository;
     @Autowired private ConsumedEventRepository consumedEventRepository;
     @Autowired private NotificationRepository notificationRepository;
@@ -109,6 +110,7 @@ class OutboxIntegrationTest {
         notificationRepository.deleteAllInBatch();
         consumedEventRepository.deleteAllInBatch();
         outboxEventRepository.deleteAllInBatch();
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -120,7 +122,7 @@ class OutboxIntegrationTest {
 
     private OrderResponse order() {
         return orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1");
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
     }
 
     private PaymentResponse pay() {

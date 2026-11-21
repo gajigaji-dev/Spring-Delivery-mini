@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.dto.OrderCreateRequest;
 import com.sparta.springdeliverymini.dto.OrderItemRequest;
 import com.sparta.springdeliverymini.dto.OrderItemResponse;
@@ -9,6 +11,7 @@ import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.exception.InvalidOrderStatusException;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
@@ -68,6 +71,9 @@ class OrderServiceTest {
     @Mock
     private OutboxEventRecorder outboxEventRecorder;
 
+    @Mock
+    private PgCancelService pgCancelService; // 토스 결제 취소 요청 (V20)
+
     // 배달완료 시각을 고정해 deliveredAt이 Clock 기준으로 기록되는지 확인
     private static final LocalDateTime FIXED_NOW = LocalDateTime.of(2026, 11, 5, 23, 59, 59);
     private final Clock fixedClock = Clock.fixed(FIXED_NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
@@ -78,7 +84,7 @@ class OrderServiceTest {
     @BeforeEach
     void setUp() {
         orderService = new OrderService(orderRepository, menuRepository, userRepository, storeService,
-                paymentRepository, fixedClock, outboxEventRecorder);
+                paymentRepository, fixedClock, outboxEventRecorder, pgCancelService);
     }
 
     private final User customer = user(1L, "customer1", Role.CUSTOMER);
@@ -108,14 +114,14 @@ class OrderServiceTest {
 
     // customer가 owner의 매장(store) 메뉴를 주문한 상태
     private Order order(OrderStatus status) {
-        Order order = new Order(customer, store, "서울시", status);
+        Order order = new Order(customer, store, TestAddresses.seoul(), status);
         order.addItem(menu(1L, "후라이드 치킨", 18000, store), 1);
         ReflectionTestUtils.setField(order, "id", 10L);
         return order;
     }
 
     private static OrderCreateRequest request(OrderItemRequest... items) {
-        return new OrderCreateRequest(List.of(items), "서울시");
+        return new OrderCreateRequest(List.of(items), "06236", "서울 강남구 테헤란로 152", "101호");
     }
 
     private static OrderItemRequest item(Long menuId, int quantity) {
@@ -321,7 +327,8 @@ class OrderServiceTest {
 
         assertThatThrownBy(() -> orderService.cancelOrder(10L, "customer1"))
                 .isInstanceOf(InvalidOrderStatusException.class)
-                .hasMessage("주문수락 전(주문요청·결제완료) 상태에서만 주문을 취소할 수 있습니다.");
+                .extracting("code").isEqualTo(status == OrderStatus.ORDER_CANCELLED
+                        ? ErrorCode.ORDER_ALREADY_CANCELLED : ErrorCode.ORDER_NOT_CANCELLABLE);
         assertThat(order.getStatus()).isEqualTo(status);
         verify(paymentRepository, never()).findByOrderId(any());
     }
@@ -425,7 +432,7 @@ class OrderServiceTest {
     void 같은_OWNER의_다른_매장_주문도_처리할_수_있다() {
         // 소유권은 매장 단위로 판단 — owner가 가진 두 번째 매장의 주문
         Store secondStore = store(21L, "피자집", owner);
-        Order order = new Order(customer, secondStore, "서울시", OrderStatus.PAYMENT_COMPLETED);
+        Order order = new Order(customer, secondStore, TestAddresses.seoul(), OrderStatus.PAYMENT_COMPLETED);
         order.addItem(menu(2L, "피자", 20000, secondStore), 1);
         given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
         given(orderRepository.findByIdForUpdate(10L)).willReturn(Optional.of(order));

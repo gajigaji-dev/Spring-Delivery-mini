@@ -20,12 +20,14 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.List;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // 결제 단건 조회 API(#53)를 실제 PostgreSQL + 보안 필터까지 통과시켜 검증
 // - 본인 결제는 현재 결제·주문 상태(환불 반영)를 돌려줌 (fetch join으로 지연 로딩 오류 없이 주문 정보 포함)
 // - 다른 CUSTOMER 403, 없는 결제 404, OWNER 403
+// 내 결제 목록(#62): 본인 결제만 id 오름차순 페이지, 헤더 X-Has-Next, OWNER 403
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
@@ -47,6 +49,7 @@ class PaymentQueryIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
 
     private MenuResponse menu;
 
@@ -63,6 +66,7 @@ class PaymentQueryIntegrationTest {
     @AfterEach
     void tearDown() {
         // FK 순서대로 삭제: payments → orders → menus → stores → users
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -72,7 +76,7 @@ class PaymentQueryIntegrationTest {
 
     private PaymentResponse pay(String username) {
         OrderResponse order = orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), username);
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), username);
         return paymentService.pay(new PaymentRequest(order.id(), "CARD"), username);
     }
 
@@ -137,5 +141,71 @@ class PaymentQueryIntegrationTest {
         mockMvc.perform(get("/api/payments/{id}", payment.id())
                         .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void 내_결제_목록은_본인_결제만_id_오름차순으로_돌려준다() throws Exception {
+        PaymentResponse first = pay("customer1");
+        pay("customer2");
+        PaymentResponse second = pay("customer1");
+
+        mockMvc.perform(get("/api/payments")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("customer1", Role.CUSTOMER)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Has-Next", "false"))
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].id").value(first.id()))
+                .andExpect(jsonPath("$[1].id").value(second.id()))
+                .andExpect(jsonPath("$[0].orderStatus").value("PAYMENT_COMPLETED"));
+    }
+
+    @Test
+    void 내_결제_목록은_페이지_단위로_나뉜다() throws Exception {
+        pay("customer1");
+        pay("customer1");
+        PaymentResponse third = pay("customer1");
+
+        mockMvc.perform(get("/api/payments").param("page", "0").param("size", "2")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("customer1", Role.CUSTOMER)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Has-Next", "true"))
+                .andExpect(jsonPath("$.length()").value(2));
+
+        mockMvc.perform(get("/api/payments").param("page", "1").param("size", "2")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("customer1", Role.CUSTOMER)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Has-Next", "false"))
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(third.id()));
+    }
+
+    @Test
+    void 결제가_없으면_빈_배열() throws Exception {
+        mockMvc.perform(get("/api/payments")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("customer1", Role.CUSTOMER)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void 내_결제_목록의_size가_범위를_벗어나면_400() throws Exception {
+        mockMvc.perform(get("/api/payments").param("size", "101")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("customer1", Role.CUSTOMER)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void OWNER는_결제_목록을_조회할_수_없다() throws Exception {
+        mockMvc.perform(get("/api/payments")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.OWNER)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void 토큰은_CUSTOMER여도_DB의_역할이_OWNER면_403() throws Exception {
+        mockMvc.perform(get("/api/payments")
+                        .header(HttpHeaders.AUTHORIZATION, bearer("owner1", Role.CUSTOMER)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("CUSTOMER만 결제를 조회할 수 있습니다."));
     }
 }

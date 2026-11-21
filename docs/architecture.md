@@ -82,33 +82,50 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── TimeConfig.java                  # 기준 시간대(Asia/Seoul), 현재 시각용 Clock 빈
 │   ├── PaymentFeeProperties.java        # 수수료율 설정(payment.fee.rate) 바인딩·검증
 │   ├── PaymentIdempotencyProperties.java # 결제 멱등성 기록 TTL(payment.idempotency.*) 바인딩·검증 (#41)
+│   ├── RefreshTokenProperties.java      # Refresh Token 수명·쿠키 속성(auth.refresh-token.*) 바인딩·검증 (V15)
 │   ├── SchedulingConfig.java            # @EnableScheduling (settlement.scheduler.enabled로 켜고 끔)
 │   ├── OutboxProperties.java            # Outbox 발행·Consumer 재시도 설정(outbox.*) 바인딩·검증, 백오프 계산 (#42)
 │   ├── KafkaConfig.java                 # 토픽·DLT 생성, Consumer 오류 처리(재시도 후 DLT, 형식 오류는 즉시 DLT) (#42)
-│   ├── NotificationProperties.java      # 알림 발송 설정(notification.dispatcher.*) 바인딩·검증 (V14)
+│   ├── NotificationProperties.java      # 알림 발송 설정(notification.dispatcher.*·sender·slack.*) 바인딩·검증 (V14, #69)
 │   ├── RetentionProperties.java         # 보관 기간 정리 설정(retention.*) 바인딩·검증 (V14)
-│   ├── BackgroundTaskConfig.java        # 알림 발송·보관 기간 정리 주기 작업 등록, 기본 발송기(로그) 빈 (V14)
+│   ├── BackgroundTaskConfig.java        # 알림 발송·보관 기간 정리 주기 작업 등록, 발송기 선택(log·slack) 빈 (V14, #69)
+│   ├── OwnerStreamConfig.java           # 실시간 주문 알림 하트비트 주기 작업 등록 (#76)
+│   ├── TossPaymentsProperties.java      # 토스 키(test_ 키만)·시간 초과·취소 재시도 설정(toss.payments.*) 바인딩·검증 (V20)
+│   ├── TossPaymentsConfig.java          # PG 취소 재시도 주기 작업 등록 (V20)
+│   ├── RedisClientConfig.java           # Lettuce DNS 조회 상한(= connect-timeout) — compose Redis 장애 시 5초 지연 원인 조치
+│   ├── OwnerStreamProperties.java       # 사장님 실시간 주문 알림 설정(owner-stream.*) 바인딩·검증 (#76)
+│   ├── OpenEntityManagerInViewConfig.java # open-in-view를 직접 등록하고 SSE 경로만 제외 — 긴 응답이 DB 커넥션을 잡지 않도록 (#76)
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing, 생성·수정 시각을 Clock 기준으로 기록
 │   ├── OpenApiConfig.java               # springdoc 문서 정보, JWT(Bearer) 인증 방식
-│   └── ProdProfileGuard.java            # prod 프로필 기동 점검: 필수 환경변수 누락·Swagger 활성 시 기동 실패 (#54)
+│   ├── SocialLoginProperties.java       # 소셜 로그인 키·프론트 콜백 주소(social.*) 바인딩·검증 (V22)
+│   ├── SocialLoginConfig.java           # 공급자 등록·oauth2Login 구성 (SecurityConfig가 있을 때만 적용) (V22)
+│   └── ProdProfileGuard.java            # prod 프로필 기동 점검: 필수 환경변수 누락·Swagger 활성 시 기동 실패 (#54), EnvironmentPostProcessor로 빈 생성 전 실행 (#61)
 ├── logging
 │   └── TraceIdFilter.java               # 요청별 traceId 생성·전달(MDC, X-Trace-Id 헤더), 요청 결과 로그
 ├── jwt
-│   ├── JwtProvider.java                 # JWT 생성·검증
-│   └── JwtAuthenticationFilter.java     # 요청마다 토큰을 확인해 인증 정보 등록
+│   ├── JwtProvider.java                 # JWT 생성·검증 (Access Token)
+│   └── JwtAuthenticationFilter.java     # 요청마다 토큰을 확인해 인증 정보 등록, 실패 사유(만료·위조)를 요청 속성에 남김 (V15)
 ├── controller
-│   ├── UserController.java              # 회원가입, 로그인
+│   ├── UserController.java              # 회원가입, 로그인, Access 재발급·로그아웃(Refresh Token 쿠키) (V15)
+│   ├── RefreshTokenCookies.java         # Refresh Token HttpOnly 쿠키 생성·삭제 (V15)
+│   ├── SocialAccountController.java     # 소셜 공급자 목록, 내 소셜 계정·연결 시작·해제 (V22)
 │   ├── StoreController.java             # 매장 생성·조회, 매장별 주문 조회, 매장별 정산 조회, 일 정산 기록 조회
 │   ├── AdminSettlementController.java   # 관리자 정산 조회·확정·지급·이력·재집계·실패 기록 (/api/admin/settlements)
 │   ├── AdminStoreController.java        # 관리자 매장 수수료율 설정·해제 (/api/admin/stores/{id}/fee-rate)
 │   ├── AdminOutboxController.java       # 관리자 Outbox 이벤트 조회·FAILED 재발행 (/api/admin/outbox-events) (V14)
-│   ├── NotificationController.java      # 내 알림 목록 (/api/notifications) (V14)
+│   ├── OwnerApplicationController.java  # 사장님 전환 신청·내 신청 조회 (/api/owner-applications) (V17)
+│   ├── AdminOwnerApplicationController.java # 관리자 사장님 전환 신청 목록·승인·거절 (/api/admin/owner-applications) (V17)
+│   ├── NotificationController.java      # 내 알림 목록 (/api/notifications) (V14), 안 읽은 개수·읽음 처리 (V15)
+│   ├── OwnerOrderStreamController.java  # 사장님 실시간 주문 알림 구독 (/api/owner/order-events, SSE) (#76)
 │   ├── MenuController.java              # 메뉴 등록·조회·수정·삭제
 │   ├── OrderController.java             # 주문 생성·조회·취소·상태 변경
 │   ├── PaymentController.java           # 결제 (선택 헤더 Idempotency-Key, 재전송 시 Idempotent-Replayed), 결제 단건 조회 (#53)
 │   └── SliceResponse.java               # 목록 페이지 응답: 본문은 배열, 페이지 정보는 X-Page·X-Size·X-Has-Next 헤더 (#40), 주문 목록은 X-Next-After-Id (#54)
 ├── service
-│   ├── UserService.java
+│   ├── SocialAccountService.java        # 소셜 로그인(없으면 CUSTOMER 가입)·연결·해제 (V22)
+│   ├── UserService.java                 # 회원가입(CUSTOMER만, V17)·로그인·내 정보
+│   ├── OwnerApplicationService.java     # 사장님 전환 신청·승인·거절 (DB 역할 확인, 진행 중 주문 409, 행 잠금, 승인 시 OWNER 전환) (V17)
+│   ├── AuthTokenService.java            # Access·Refresh Token 발급, 재발급(rotation)·재사용 감지·로그아웃 — DB 기준 (V15)
 │   ├── StoreService.java                # 매장 생성·조회, 매장 소유권 검증(getOwnedStore)
 │   ├── MenuService.java
 │   ├── OrderService.java
@@ -120,7 +137,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── AdminStoreService.java           # 관리자 매장 수수료율 설정·해제 (이후 결제부터 적용)
 │   ├── OwnerSettlementService.java      # 사장님 일 정산 기록 목록·상세 (지급액·이월·상태, 차감 내역)
 │   ├── AdminOutboxService.java          # 관리자 Outbox 조회·재발행 (FAILED → PENDING, 행 잠금) (V14)
-│   └── NotificationService.java         # 이벤트 → 알림 기록, eventId 기준 멱등성(consumed_events) (#42), 내 알림 목록 (V14)
+│   ├── NotificationService.java         # 이벤트 → 알림 기록, eventId 기준 멱등성(consumed_events) (#42), 내 알림 목록 (V14), 읽음 처리·안 읽은 개수 (V15), 사장님 알림 저장 시 OwnerOrderNotified 발행 (#76)
+│   └── OwnerOrderStreamService.java     # 실시간 주문 알림 구독 전 DB 기준 역할·매장 소유권 확인 (#76)
 ├── event                                # Kafka Transactional Outbox (#42)
 │   ├── OutboxEventRecorder.java         # 업무 트랜잭션 안에서 이벤트 저장 (MANDATORY — 업무 데이터와 함께 커밋·롤백)
 │   ├── OutboxPublisher.java             # outbox_events → Kafka 발행 (SKIP LOCKED, 실패 시 백오프 재시도, 한도 초과 FAILED)
@@ -128,7 +146,10 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── OutboxMetrics.java               # 발행 대기·FAILED 건수, 가장 오래된 대기 시간 게이지 (V14)
 │   ├── NotificationDispatcher.java      # 알림 기록 → 발송 (SKIP LOCKED, 실패 시 재시도, 한도 초과 FAILED) (V14)
 │   ├── NotificationSender.java / LoggingNotificationSender.java # 발송 채널 인터페이스 / 기본 구현(로그 출력) (V14)
+│   ├── SlackNotificationSender.java     # Slack Incoming Webhook 발송기 — 운영 채널 1곳, notification.sender=slack (#69)
 │   ├── NotificationEventListener.java   # Kafka Consumer — 메시지 해석·검증 후 NotificationService 호출
+│   ├── OwnerOrderNotified.java          # 사장님 주문 알림 저장 애플리케이션 이벤트 (#76)
+│   ├── OwnerOrderStreamRegistry.java    # SSE 연결 보관(메모리)·커밋 후 전송·하트비트·연결 상한·종료 시 정리 (#76)
 │   ├── DltReprocessor.java              # DLT → 원래 토픽 재발행 (kafka_dlt-* 헤더 제거, 그룹 오프셋으로 진행 위치 기록) (#52)
 │   ├── DltReprocessRunner.java          # DLT 재처리 CLI (dlt-reprocess 프로필, --all / --partition·--offset, 분산 락) (#52)
 │   ├── DeliveryEventMessage.java        # 이벤트 본문(payload) — 발생 시점 스냅샷
@@ -136,8 +157,25 @@ src/main/java/com/sparta/springdeliverymini
 ├── scheduler
 │   ├── SettlementScheduler.java         # 매일 01:10 최근 N일 정산 자동 집계 (분산 락을 잡은 인스턴스만), 실행 결과·소요 시간 메트릭
 │   └── FixedDelayTask.java              # 전용 스레드로 fixed-delay 반복 실행 (알림 발송·보관 기간 정리) (V14)
+├── pg
+│   ├── TossPaymentsClient.java          # 토스 코어 API 인터페이스(승인·조회·취소) — toss.payments.mode로 구현 선택 (V20·V21)
+│   ├── TossPaymentsHttpClient.java      # real: 토스 테스트 서버 호출 — Basic 인증, 멱등 키, 확정 거절/결과 불명 예외 구분
+│   ├── FakeTossPaymentsClient.java      # fake: 토스에 접속하지 않는 가짜 PG (메모리, 장애 시나리오, prod 불가) (V21)
+│   ├── TossPayment.java                 # 토스 Payment 응답 중 쓰는 값만 (상태·금액·승인 시각)
+│   └── TossApiException.java / TossUnknownResultException.java # 토스가 거절(4xx) / 처리 여부 모름(시간 초과·5xx·처리 중)
+├── social                               # 소셜 로그인 (V22) — 공급자 인증 뒤 기존 인증으로 연결
+│   ├── SocialProvider.java              # 공급자 확장 지점 (registrationId·엔드포인트·식별자 속성)
+│   ├── KakaoSocialProvider.java / GoogleSocialProvider.java # 카카오(OAuth2, id) / 구글(OIDC, sub)
+│   ├── SocialClientRegistrations.java   # 키가 설정된 공급자만 담는 ClientRegistrationRepository
+│   ├── SocialAuthorizationRequestResolver.java # 꺼진 공급자 404, mode=link면 연결할 회원 id를 시작 기록에
+│   ├── CookieAuthorizationRequestRepository.java # 시작 기록(state·nonce)을 세션 대신 서명 쿠키에
+│   ├── SocialCookieSigner.java          # 쿠키 HMAC 서명 (jwt.secret에서 용도별 파생 키)
+│   ├── SocialLinkCookies.java           # 기존 회원 연결 요청 쿠키 (5분)
+│   ├── SocialLoginSuccessHandler.java / SocialLoginFailureHandler.java # 로그인·연결 처리 → 프론트로 302 (?result / ?error)
+│   ├── SocialLoginRedirects.java        # 프론트 콜백 주소(설정값)에 결과 쿼리
+│   └── NoOpAuthorizedClientRepository.java # 공급자 Access Token 보관 안 함
 ├── maintenance
-│   └── RetentionCleaner.java            # 보관 기간이 지난 발행 완료 이벤트·처리 기록·멱등성 기록 삭제 (V14)
+│   └── RetentionCleaner.java            # 보관 기간이 지난 발행 완료 이벤트·처리 기록·멱등성 기록 삭제 (V14), 만료된 Refresh Token (V16)
 ├── lock
 │   ├── DistributedLock.java             # 인스턴스 간 실행 락 인터페이스 (#41)
 │   ├── RedisDistributedLock.java        # Redis 구현 — SET NX PX 획득, token 확인 후 해제(Lua), 최소 유지 시간
@@ -148,15 +186,20 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── MenuRepository.java
 │   ├── OrderRepository.java
 │   ├── PaymentRepository.java
+│   ├── PgCancelRequestRepository.java   # PG 취소 요청 — 시도할 행 FOR UPDATE SKIP LOCKED, 같은 결제는 순서대로 (V20·V21)
+│   ├── PaymentRefundRepository.java     # 환불 1건 — 미차감 환불·기간별 환불 (정산 차감 단위, V21)
 │   ├── SettlementRepository.java
 │   ├── SettlementStatusHistoryRepository.java       # 정산 상태 변경 이력 (처리자 함께 조회)
 │   ├── SettlementAggregationFailureRepository.java  # 정산 집계 실패 기록
 │   ├── OutboxEventRepository.java       # 발행 대상 조회 (FOR UPDATE SKIP LOCKED) (#42)
 │   ├── ConsumedEventRepository.java     # 처리 기록 INSERT ... ON CONFLICT DO NOTHING (#42)
-│   └── NotificationRepository.java      # 알림 기록 (#42)
+│   ├── NotificationRepository.java      # 알림 기록 (#42), 읽음 처리 조건부 UPDATE (V15)
+│   ├── RefreshTokenRepository.java      # Refresh Token — 해시로 행 잠금 조회(FOR UPDATE), 계열 전체 폐기 (V15)
+│   └── OwnerApplicationRepository.java  # 사장님 전환 신청 — 상태별 목록, 내 최근 신청, 승인·거절용 행 잠금 (V17)
 ├── entity
 │   ├── BaseEntity.java                  # 생성·수정 시각 자동 기록 (@MappedSuperclass)
-│   ├── User.java / Role.java            # 회원, 역할(CUSTOMER / OWNER / ADMIN)
+│   ├── User.java / Role.java            # 회원, 역할(CUSTOMER / OWNER / ADMIN), 사장님 전환 promoteToOwner (V17)
+│   ├── OwnerApplication.java / OwnerApplicationStatus.java # 사장님 전환 신청, 상태(REQUESTED → APPROVED / REJECTED) (V17)
 │   ├── Store.java                       # 매장 (OWNER 1 : N, 소유권 판단 isOwnedBy)
 │   ├── Menu.java                        # 메뉴 (매장에 속함, Soft Delete)
 │   ├── Order.java / OrderStatus.java    # 주문, 주문 상태 (항목 추가·총액 계산은 addItem, 배달완료 시각 deliveredAt)
@@ -171,14 +214,19 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── OutboxEvent.java / OutboxEventStatus.java / OutboxEventType.java # 발행 대기 이벤트, 상태(PENDING → PUBLISHED / FAILED), 종류 (#42)
 │   ├── ConsumedEvent.java               # Consumer가 처리한 이벤트 (eventId PK) (#42)
 │   ├── Notification.java / NotificationSendStatus.java # 알림 기록, 발송 상태(PENDING → SENT / FAILED, SKIPPED) (#42, V14)
-│   └── PaymentIdempotencyKey.java       # DB 결제 멱등성 기록 — 결제와 같은 트랜잭션에 저장 (V14)
+│   ├── PaymentIdempotencyKey.java       # DB 결제 멱등성 기록 — 결제와 같은 트랜잭션에 저장 (V14)
+│   ├── PaymentRefund.java               # 환불 1건 (V21) — 정산 차감 단위, 생성 후 불변
+│   ├── PgProvider.java / PgCancelRequest.java / PgCancelStatus.java # PG 공급자(TOSS), PG 취소 요청 PENDING → DONE / FAILED (V20)
+│   └── RefreshToken.java / RefreshTokenRevokeReason.java # Refresh Token(해시만), 폐기 사유 ROTATED·LOGOUT·REUSE_DETECTED (V15)
 ├── dto                                  # 요청(Request) / 응답(Response) 객체, PageQuery(목록 page·size 검증, id 오름차순 고정), KeysetQuery(주문 목록 afterId·size, #54)
 └── exception
     ├── ApiException.java                # 상태 코드를 담아 던지는 예외
+    ├── ErrorCode.java                   # 응답 code — 401 토큰 만료·위조, Refresh Token 거부 사유 구분 (V15)
     ├── InvalidOrderStatusException.java # 허용되지 않는 주문 상태 전이 (Order 엔티티가 던짐 → 409)
     ├── InvalidSettlementStatusException.java # 허용되지 않는 정산 상태 전이 (Settlement 엔티티가 던짐 → 409)
     ├── InvalidOutboxEventStatusException.java # 허용되지 않는 Outbox 상태 전이 (FAILED가 아닌 이벤트 재발행 → 409)
-    ├── ApiErrorResponse.java            # 공통 에러 응답 {status, error, message, path, traceId}
+    ├── InvalidOwnerApplicationStatusException.java # 사장님 전환 신청 상태 전이 위반 (처리된 신청 재처리, 고객 아닌 회원 전환 → 409) (V17)
+    ├── ApiErrorResponse.java            # 공통 에러 응답 {status, error, code, message, path, traceId} (code는 V15)
     └── GlobalExceptionHandler.java      # 예외를 ApiErrorResponse로 변환, 4xx WARN / 5xx ERROR(스택 트레이스) 로그
 
 src/main/resources
@@ -201,7 +249,7 @@ src/main/resources
 | `dto` | 요청·응답 전용 객체(`record`). 엔티티를 그대로 노출하지 않고 필요한 값만 주고받음 (예: 응답에 비밀번호 제외, 요청에 금액 제외) |
 | `config`, `jwt` | Spring Security + JWT 인증. 1차 권한 검사(역할별 URL 접근)는 `SecurityConfig`, 본인 데이터 여부 같은 세부 검사는 Service에서 처리. 역할 제한이 있는 API는 모두 `SecurityConfig`에 규칙을 두고, Service에서도 토큰 발급 후 역할 변경에 대비해 한 번 더 확인 |
 | `scheduler` | `@Scheduled` 작업. 직접 로직을 갖지 않고 Service를 호출 (예: `SettlementScheduler` → `SettlementAggregationService`) |
-| `exception` | 모든 에러 응답을 `ApiErrorResponse`(`status`·`error`·`message`·`path`·`traceId`)로 통일. Security의 401/403도 같은 형식 |
+| `exception` | 모든 에러 응답을 `ApiErrorResponse`(`status`·`error`·`code`·`message`·`path`·`traceId`)로 통일. Security의 401/403도 같은 형식 |
 | `lock` | 여러 인스턴스 사이의 실행 락. `DistributedLock`(인터페이스) / `RedisDistributedLock`(Redis 구현) — 스케줄러가 한 인스턴스에서만 실행되도록 사용 |
 | `logging` | 관측성. `TraceIdFilter`가 Security보다 먼저 실행되어 요청마다 traceId를 MDC에 넣음 → 요청 로그·서비스 로그·예외 로그·에러 응답이 같은 traceId로 연결 |
 
@@ -213,6 +261,7 @@ src/main/resources
   - 엔티티 상태 변경 직후(커밋 전) 기록 → 커밋이 실패하면 같은 traceId의 500 에러 로그가 이어서 남음
 - DB 제약 위반 로그는 제약 조건 이름만 기록 (PostgreSQL 에러 상세에 입력값이 들어 있어서)
 - 메트릭: Actuator + Micrometer Prometheus. `docker compose --profile monitoring up`이면 Prometheus가 `app:8081`을 수집하고 Grafana가 데이터 소스·대시보드(`monitoring/grafana`)를 자동 등록
+  - 대시보드 `Delivery App` 4개 행: 알림 규칙 상태(`ALERTS` 표) / HTTP·DB(요청·5xx·응답 시간·힙·HikariCP·503) / Outbox·Kafka(대기·실패·최고 대기 시간·DLT·발행·소비·lag·처리 시간) / 알림 발송·Redis·정산 스케줄러. 규칙 임계값은 빨간 점선, 패널 설명에 대응 규칙·조치 (#67)
 - 노출 정책: 기본 설정은 health만·Swagger 비활성(운영 기준), local·dev 프로필에서만 prometheus·Swagger UI를 켬
 - 운영 프로필(#54): `prod` — Swagger 비활성(켜면 기동 실패), Actuator는 비공개 관리 포트(8081)에서 health·prometheus만 켜고 나머지 엔드포인트는 비활성, 접속 정보·비밀 값은 환경변수 필수(`config.ProdProfileGuard`), Flyway 자동 baseline 끔. 상세는 [운영 프로필](operations.md)
 - 커넥션 풀·DB 타임아웃(모든 프로필): 풀 10·커넥션 대기 10초, `lock_timeout` 5초·`statement_timeout` 30초 → 넘으면 503 ([운영 프로필 6장](operations.md))
@@ -262,6 +311,9 @@ src/main/resources
   - 결제: 처리 중 기록을 못 남기면 새 결제는 하지 않고 503(이미 커밋된 결제의 재시도는 DB 기록으로 재전송). 결제 후 완료 기록·실패 후 삭제가 실패하면 결제 결과는 그대로 응답하고 로그·메트릭만 → 이후 재시도는 DB 기록으로 재전송
   - 스케줄러: 락 확인이 안 되면 실행하지 않음 (다음 실행의 catch-up·관리자 재집계로 보충)
   - 명령 타임아웃 1초(`spring.data.redis.timeout`) — Lettuce 기본 60초 동안 요청이 묶이지 않도록
+  - **DNS 조회 상한 1초** (`config.RedisClientConfig`, 2026-11-21) — compose에서 Redis 중단 시 503이 5초 넘게 걸리던 원인
+    - 원인: Lettuce는 `netty-resolver-dns`가 있으면 Netty 자체 DNS 조회기를 씀. Redis 컨테이너가 멈추면 Docker 내장 DNS가 `redis`를 호스트 DNS로 넘겨 NXDOMAIN까지 약 4초(앱 컨테이너 `getent hosts redis` 3.9초, 정상 18ms). `connect-timeout`(1초)은 TCP 연결에만 걸려 이름 조회에는 적용되지 않음. local jar는 `localhost`라 조회가 없어 1초
+    - 조치: Lettuce `ClientResources`의 DNS 조회기를 질의 상한 = `connect-timeout`으로 교체 → 키 있는 결제 503이 3.9~9.5초 → **1.02~1.04초**(compose 실측 3회, `docs/local-verification.md` 2-5)
   - Redis 헬스체크는 끔 (`management.health.redis.enabled: false`) — 키 없는 결제·조회 등 나머지 API는 정상이므로 인스턴스 전체가 DOWN 처리되지 않도록
 - 단일 Redis 노드 기준. 복제·클러스터 장애 조치(failover) 중 기록 유실은 DB 제약이 최종 방어 (Redlock은 쓰지 않음)
 
@@ -286,12 +338,13 @@ Redis 헬스체크를 꺼 두었으므로 장애는 메트릭으로 알아챔. �
 | `settlement.scheduler.last.duration.seconds`, `settlement.scheduler.lock.at.most.seconds` | 마지막 집계 소요 시간과 락 TTL | 소요 시간 > TTL의 50% |
 | `distributed.lock.overrun{lock}` | 락 TTL보다 오래 실행된 횟수 | 1건 이상 |
 
-- 카운터는 기동 시 0으로 등록 → 첫 실패부터 `increase()`로 잡힘
+- 카운터는 기동 시 0으로 등록 → 첫 실패부터 `increase()`로 잡힘 (처음 증가할 때 생기는 카운터는 직전 값이 없어 첫 증가를 놓침)
+  - `distributed.lock.overrun`은 락 이름이 태그라 락을 쓰는 쪽이 등록: `SettlementScheduler`가 `settlement-daily-aggregation`을 0으로 등록(#67 점검에서 누락 발견). DLT 재처리 CLI는 수집 대상이 아니라 등록하지 않음
 - 락 TTL(30분)은 위 게이지로 실측해 조정: 소요 시간이 절반을 넘으면 TTL을 늘리거나 집계를 나눔
 
 ### 후속 개선
 - **Redis 고가용성·장애 복구**: 단일 노드 기준 → 복제·Sentinel(또는 클러스터) 구성과 장애 조치 중 기록 유실 시 동작, 복구 절차 검토
-- **알림 전달**: 규칙만 정의됨 → Alertmanager 연동(메신저·메일), Lettuce 명령 지연 메트릭 대시보드
+- **알림 전달**: 규칙만 정의됨 → Alertmanager 연동(메신저·메일), Lettuce 명령 지연 메트릭 대시보드 (Redis 실패·스케줄러 패널은 #67에서 추가)
 - ~~**결제 단건 조회 API**: 재전송 본문은 결제 직후 값이라, 현재 결제 상태는 주문 조회로만 확인 가능~~ → `GET /api/payments/{id}` (#53, 본인 결제의 현재 상태)
 
 ## Kafka · Transactional Outbox (#42)
@@ -365,8 +418,26 @@ sequenceDiagram
 - Consumer는 알림을 `PENDING`으로 저장만 하고, 발송은 별도 주기 작업(5초)이 담당 → 채널이 느리거나 실패해도 Kafka 오프셋 진행을 막지 않고 발송 실패가 DLT로 가지 않음
 - `FOR UPDATE SKIP LOCKED`로 가져와 결과를 같은 트랜잭션에 기록(Outbox 발행과 같은 방식) → 여러 인스턴스가 함께 돌아도 한 알림은 한 인스턴스만 발송. 최소 한 번 발송(발송 후 기록 전 종료 시 재발송)
 - 실패는 1분 뒤 재시도, 5번 실패하면 `FAILED`(자동 발송 중단). V14 이전에 저장된 알림은 `SKIPPED` — 뒤늦게 발송하지 않음
-- 기본 발송기는 `LoggingNotificationSender`(로그 출력). 실제 채널은 `NotificationSender` 빈을 등록하면 대체됨
+- 발송기는 `notification.sender`로 선택 — `log`(기본, `LoggingNotificationSender`) / `slack`(`SlackNotificationSender`, 아래 #69). 다른 `NotificationSender` 빈을 등록하면 설정과 관계없이 그 빈이 쓰임(테스트의 가짜 발송기)
 - 받는 사람은 `GET /api/notifications`로 본인 알림과 발송 상태를 조회
+
+**Slack 발송 (#69)** — `event.SlackNotificationSender`, Incoming Webhook
+- **데모 기능**: 받는 사람별 채널이 아니라 **운영 채널 1곳**으로 보냄(웹훅 URL 하나 = 채널 하나). 고객·가맹점에게 직접 가는 알림이 아님
+- 문구: `[배달 알림] 결제 완료 알림이 생성되었습니다. (notificationId=123)` — notification id·이벤트 종류만. 주문 번호·금액·user id는 넣지 않음(채널 참가자 모두가 보는 외부 서비스). 자세한 내용은 id로 DB에서 확인. 최소 한 번 발송이라 같은 id가 두 번 올 수 있음
+- 전송: JDK `HttpClient`, `POST {"text": ...}`, 리다이렉트 따라가지 않음. 연결 2초(`connect-timeout`)·응답 3초(`read-timeout`, 요청 후 응답 헤더까지)
+
+| 결과 | 처리 |
+|---|---|
+| 2xx | `SENT` |
+| 비 2xx (4xx·5xx) | `SlackSendException("Slack 비정상 응답 status=..., body=앞 200자")` → 기존 재시도(1분 뒤)·5번 실패 시 `FAILED` |
+| 429 | 같은 실패 처리, `Retry-After`는 기록만 하고 따르지 않음 — 재시도 간격(1분)이 Slack 대기 시간보다 길어 별도 처리 불필요 |
+| 연결·응답 시간 초과, 연결 거부 | `Slack 연결 시간 초과` / `Slack 응답 시간 초과` / `Slack 요청 실패 (예외 종류)` → 같은 실패 처리 |
+
+- 4xx(잘못된 URL·삭제된 웹훅 등)도 재시도함: 일시 장애와 구분하는 분기를 두지 않고 기존 경로를 재사용. 최대 5번이라 비용이 작고, `FAILED`·`notification.send{result=failed}` 알림으로 드러남
+- **웹훅 URL 보호**: URL 자체가 발송 권한이라 기본값 없이 `SLACK_WEBHOOK_URL` 환경변수로만 주입. 예외 메시지(`last_send_error` 컬럼·로그)에 URL을 넣지 않고 원인 예외도 붙이지 않음(JDK 예외 메시지에 주소가 들어갈 수 있어서), 설정 객체 `toString`은 `******`, 설정 오류 메시지에도 값을 출력하지 않음
+- 기동 검사: `sender=slack`인데 URL이 없거나 http(s) 주소가 아니면 모든 프로필에서 기동 실패(`NotificationProperties`), prod는 `ProdProfileGuard`가 빈 생성 전에 `SLACK_WEBHOOK_URL` 이름으로 알려 줌. 알 수 없는 `sender` 값도 기동 실패
+- 실제 Slack 확인(2026-11-20): 결제·배달 완료 알림 채널 수신, 잘못된 토큰 → `403 invalid_token` → 재시도 → `FAILED`(URL은 DB·로그에 없음), URL 없이 기동 실패 — `local-verification.md` 2-6 검증 결과
+- **한계**: 발송은 알림 행을 잠근 트랜잭션 안에서 함(기존 구조) → Slack이 응답하지 않으면 건당 최대 약 5초 × batch 100 = 최대 약 8분 동안 행 잠금·DB 커넥션 1개를 잡음(다른 인스턴스는 SKIP LOCKED라 막히지 않음). 또 Incoming Webhook은 초당 약 1건 한도라 알림이 몰리면 429 → 재시도. 데모 규모에서는 문제없고, 운영에서 쓰면 `NOTIFICATION_DISPATCHER_BATCH_SIZE`를 10 정도로 낮추거나 발송을 트랜잭션 밖으로 빼는 구조 변경이 필요(이번 범위 밖)
 
 **보관 기간 정리** — `RetentionCleaner` (1시간마다)
 
@@ -375,6 +446,7 @@ sequenceDiagram
 | `outbox_events` 중 `PUBLISHED` | 7일 | 발행이 끝난 이벤트는 추적용으로만 필요. `PENDING`·`FAILED`는 기간과 관계없이 남김 |
 | `consumed_events` | 30일 | 같은 메시지가 다시 올 수 있는 기간(Kafka 토픽 보관 기본 7일)보다 길어야 중복을 걸러냄 |
 | `payment_idempotency_keys` | 30일 | 재시도가 올 수 있는 기간. 지난 뒤 재시도는 DB 검사 409 |
+| `refresh_tokens` (V16) | 만료 후 7일 | 만료된 토큰은 재발급에 쓸 수 없어 지워도 동작이 같음. 만료 전 행은 폐기됐어도 남김(재사용 감지 근거) |
 
 - 1,000건씩 나눠 삭제(DELETE마다 별도 트랜잭션, 주기당 테이블별 최대 100번) → 긴 트랜잭션·큰 WAL 방지. 대상 행은 SKIP LOCKED라 여러 인스턴스가 함께 돌아도 서로 기다리지 않음
 - 결제·정산·알림 기록은 지우지 않음 (업무 기록)
@@ -387,7 +459,7 @@ sequenceDiagram
 | `outbox.events{status=pending\|failed}` | 발행 대기·발행 포기 건수 (수집 때마다 DB에서 셈, 부분 인덱스) | `failed` > 0 |
 | `outbox.oldest.pending.age.seconds` | 가장 오래된 발행 대기 이벤트의 대기 시간 | 5분 초과 |
 | `outbox.dlt.records` | Consumer가 DLT로 보낸 메시지 수 (DLT 전송 성공 후에만 증가 — 전송 실패 재시도는 세지 않음, #52) | 10분간 1건 이상 |
-| `kafka.consumer.fetch.manager.records.lag.max` | Consumer lag (Kafka 클라이언트 메트릭, Boot 자동 등록) | 1,000건 초과 5분 |
+| `kafka.consumer.fetch.manager.records.lag{topic,partition}` | 파티션별 현재 Consumer lag (Kafka 클라이언트 메트릭, Boot 자동 등록). `records.lag.max`는 최근 샘플 구간의 최대값이라 메시지가 없으면 NaN → #67에서 현재 값으로 변경 | 1,000건 초과 5분 |
 | `notification.send{result}` | 발송 결과 — `sent` / `retry` / `failed` | `failed` 발생 |
 | `retention.deleted{table}` | 정리한 행 수 | - |
 
@@ -426,9 +498,181 @@ docker compose run --rm app --spring.profiles.active=dev,dlt-reprocess --all
 - 재처리 대상(파티션·오프셋·`kafka_dlt-*` 헤더) 확인과 로컬 수동 시나리오는 [로컬 확인 가이드 2-4](local-verification.md#2-4-kafka--dlt-재처리-52)
 
 ### 후속 개선
-- **실제 발송 채널**: 이메일·SMS·푸시 연동, 발송 `FAILED` 알림의 재발송 API
+- **실제 발송 채널**: 운영 채널 Slack은 #69에서 연결. 받는 사람별 이메일·SMS·푸시 연동, 발송 `FAILED` 알림의 재발송 API, 발송을 행 잠금 트랜잭션 밖으로 분리(위 Slack 한계)
 - **대용량 정리**: 행 수가 크게 늘면 주기 삭제 대신 테이블 파티셔닝(파티션 DROP)
-- **알림 전달**: Alertmanager 연동, Outbox·알림 대시보드 패널
+- **알림 전달**: Alertmanager 연동 (~~Outbox·알림 대시보드 패널~~ #67에서 추가)
+
+## 실시간 주문 알림 (SSE, #76)
+
+접속 중인 사장님 화면에 새 주문(결제 완료)·고객 취소(환불)를 바로 보냄. 기존 알림 기록 흐름(#42)의 끝에 붙임
+
+```
+결제 → outbox_events → Kafka → NotificationService.handle (알림 저장 + OwnerOrderNotified 발행)
+  → 커밋 후(@TransactionalEventListener) OwnerOrderStreamRegistry → 전용 스레드 → 그 사장님의 SSE 연결들
+```
+
+| 결정 | 이유 |
+|---|---|
+| SSE (WebSocket 아님) | 서버 → 화면 한 방향이면 충분. 일반 HTTP라 기존 인증 필터·CORS·프록시 설정을 그대로 씀 |
+| 알림 **저장 커밋 후** 전송 | 커밋 전에 보내면 롤백된 알림(Kafka 재시도 대상)이 화면에 먼저 뜰 수 있음. 저장된 알림만 보냄 |
+| 전용 전송 스레드 + 대기열(1,000) | 소켓 쓰기는 느린 클라이언트에서 막힐 수 있어 Kafka 소비 스레드에서 직접 쓰지 않음. 가득 차면 버리고 `owner.stream.events.dropped` 증가 — 화면은 재연결·주기 조회로 따라잡음 |
+| 이벤트는 "다시 받으라"는 신호 | 화면 목록은 항상 주문 API 결과. 이벤트가 빠지거나 순서가 바뀌어도 화면 데이터가 틀어지지 않음. `Last-Event-ID` 재전송은 하지 않음(재연결 후 목록 조회로 충분) |
+| 연결 최대 10분 | Access Token(15분)보다 짧게 → 재연결 때 새 토큰·DB 기준 역할·매장 소유권을 다시 확인. 오래 열린 연결이 권한 변경을 계속 무시하지 않음 |
+| 하트비트 25초(`:ping`) | 프록시·로드밸런서 유휴 끊김(보통 60초) 방지 + 말없이 사라진 클라이언트를 쓰기 실패로 찾아 정리 |
+| 사용자당 연결 5개 | 탭 여러 개 허용, 넘으면 가장 오래된 연결을 닫음 (새로고침 직후 이전 연결이 아직 남아 있는 경우가 흔해 새 연결을 거절하지 않음) |
+| 종료 시 먼저 연결 정리 | 등록부가 `SmartLifecycle`(기본 phase)이라 웹 서버 graceful shutdown보다 먼저 연결을 닫음 → 열린 SSE 때문에 종료가 30초 제한을 다 기다리지 않음 (테스트 종료 30초 → 0.1초) |
+
+### open-in-view와 DB 커넥션 (구현 중 발견)
+- Spring Boot 기본 open-in-view는 요청마다 EntityManager를 열고 **응답이 끝날 때** 닫음. Spring의 Hibernate 설정(`DELAYED_ACQUISITION_AND_HOLD`)이라 한 번 조회하면 그 커넥션을 EntityManager가 닫힐 때까지 잡음
+  → SSE 응답은 몇 분씩 열려 있으므로 **연결 수만큼 커넥션을 점유** (풀 20 → 사장님 20명이면 다른 API가 모두 대기)
+- `@Transactional(propagation = REQUIRES_NEW)`로는 못 피함: open-in-view EntityManager는 "진행 중 트랜잭션"이 아니어서 새 트랜잭션도 같은 EntityManager를 씀 — 통합 테스트에서 열린 SSE 4개 = 활성 커넥션 4개로 확인
+- 해결: `spring.jpa.open-in-view=false`로 기본 등록을 끄고 `config.OpenEntityManagerInViewConfig`에서 같은 인터셉터를 **SSE 경로만 빼고** 다시 등록. 다른 API 동작은 그대로. SSE 경로의 서비스는 엔티티가 아니라 id만 반환(지연 로딩 금지)
+- 검증: `OwnerOrderStreamIntegrationTest` — 연결이 열린 상태에서 Hikari 활성 커넥션 0
+
+### 보안
+- URL 규칙 `GET /api/owner/order-events` = OWNER + 서비스에서 DB 기준 역할·`storeId` 소유권 재확인 (토큰은 OWNER지만 DB가 아니면 403)
+- 비동기 디스패치(`DispatcherType.ASYNC`)는 `permitAll` — 원래 요청이 이미 인증을 통과했고 JWT 필터는 비동기 디스패치에서 다시 돌지 않아, 막으면 이미 응답이 나간 연결에 403을 쓰려다 오류 로그만 남음
+- 토큰을 URL에 넣지 않음 (`EventSource` 대신 fetch 스트림 + Bearer, `frontend/README.md`)
+- 오류 응답은 Content-Type을 JSON으로 고정 → `Accept: text/event-stream`뿐인 요청의 403·404가 협상 실패(500)로 바뀌지 않음
+
+### 메트릭
+- `owner_stream_connections`(게이지, 이 인스턴스의 열린 연결 수), `owner_stream_events_dropped_total`(대기열이 가득 차 버린 알림)
+
+### 한계 · 후속
+- **단일 인스턴스 기준**: 연결은 각 서버 메모리에만 있음. 서버가 여러 대면 알림을 저장한 인스턴스(Kafka 소비)와 사장님이 연결된 인스턴스가 다를 수 있어 일부 사장님에게 안 감
+  → 후속: 알림 저장 커밋 후 Redis Pub/Sub(채널 예: `owner-orders`)로 발행하고 **모든 인스턴스가 구독**해 자기 연결에 전달. Redis 장애 시에도 화면은 주기 조회로 대체되므로 데이터에는 영향 없음 (Redis는 보조 수단 원칙)
+  → 대안: 인스턴스마다 다른 groupId의 전달 전용 Consumer로 모두 받기(브로드캐스트) — 알림 저장(멱등)과 전달을 분리해야 함
+- Kafka가 멈추면 알림 저장도 멈춰 실시간 알림이 안 옴. 연결은 살아 있어 화면은 live로 보임 → 수동 새로고침. 필요하면 live 상태에서도 긴 주기(예: 5분) 조회 추가
+- 연결은 비동기라 스레드를 잡지 않지만 소켓·메모리 비용은 연결당 발생 — 수천 연결 이상이면 별도 게이트웨이(또는 WebFlux) 검토
+
+## 인증 (Access · Refresh Token, V15)
+
+Access Token(JWT, V15까지 1시간 → V16부터 15분)이 만료됐을 때 다시 로그인하지 않도록 Refresh Token을 추가했다. 클라이언트 사용법은 [API 명세 · 인증 토큰](api.md#인증-토큰-access--refresh)
+
+| 결정 | 선택 | 근거 · 대안 |
+|---|---|---|
+| 저장소 | **DB** `refresh_tokens` (해시만) | Refresh Token은 로그인 상태 그 자체라 유실되면 전원 로그아웃 → "Redis는 보조 수단" 원칙상 원본을 Redis에 두지 않음. Redis만 쓰면 장애·유실 때 로그아웃·재발급이 막히고, DB + Redis 캐시는 현재 트래픽(재발급은 사용자당 1시간에 1번)에 비해 복잡도만 늘어남 |
+| 전달 | **HttpOnly 쿠키** `refresh_token` | JS가 읽을 수 없어 XSS로 Refresh Token이 유출되지 않음. 대가로 CORS `allowCredentials`를 켬(#61에서는 끔, [운영 프로필 7장](operations.md)). 응답 본문으로 주는 방식은 #61 설계를 유지하지만 프론트가 storage에 두면 XSS에 노출 |
+| 토큰 형식 | 무작위 256비트, SHA-256 해시 저장 | 유효성은 어차피 DB 행(폐기·만료)으로 판단 → JWT일 필요 없음. 해시만 저장해 DB·백업 유출 시에도 재발급 불가 (무작위 값이라 솔트·느린 해시 불필요) |
+| 재사용 | **엄격**: 이미 쓴 토큰이 다시 오면 계열(로그인 1번) 전체 폐기 | 정상 사용자·탈취자 중 늦게 쓴 쪽이 재사용으로 걸려 양쪽 다 재로그인 → 탈취 토큰 수명이 끝남. 대안(폐기 직후 몇 초 유예)은 동시 요청에 관대하지만 그 사이 탈취 토큰을 놓침 → 프론트가 재발급을 한 번에 하나만 보내는 것으로 대응 |
+| 401 구분 | 오류 본문 `code` 추가 | `TOKEN_EXPIRED`(재발급) / `TOKEN_INVALID`(재로그인) / `REFRESH_TOKEN_*`. 필드 추가만이라 기존 클라이언트 영향 없음. 대안: `WWW-Authenticate` 헤더(CORS 노출·파싱 필요), 메시지 문구 비교(깨지기 쉬움) |
+
+### 흐름
+- **로그인**: 비밀번호 확인 → 새 계열(`family_id`)의 Refresh Token 행 저장 + Access 발급. 로그인마다 계열이 따로 생겨 기기별 로그아웃이 서로 영향 없음
+- **재발급** `POST /api/users/refresh` (`AuthTokenService.refresh`)
+  1. 쿠키 값 형식 확인(43자 Base64URL) → 해시로 `SELECT ... FOR UPDATE`
+  2. 폐기된 행: `ROTATED`면 재사용 → 계열의 유효한 행 전부 `REUSE_DETECTED`로 폐기 후 401 `REFRESH_TOKEN_REUSED` / 그 밖(로그아웃 등) 401 `REFRESH_TOKEN_REVOKED`
+  3. 만료: 401 `REFRESH_TOKEN_EXPIRED` (행은 그대로)
+  4. 현재 행 `ROTATED` + 같은 계열에 새 행(수명 다시 14일) + Access 발급(역할은 DB의 현재 값)
+  - 재사용 감지 뒤 401을 던져도 계열 폐기는 커밋돼야 함 → `@Transactional(noRollbackFor = ApiException.class)` (다른 401 경로는 DB를 바꾸지 않음)
+- **로그아웃** `POST /api/users/logout`: 쿠키의 계열을 `LOGOUT`으로 폐기, 쿠키 삭제, 항상 204. Access 없이도 호출 가능
+- **Access Token 검증**: `JwtAuthenticationFilter`가 `ExpiredJwtException`과 그 밖의 `JwtException`을 나눠 요청 속성에 남기고, 인증이 필요한 경로면 entry point가 401 `code`로 응답. jjwt는 서명을 먼저 검증하므로 위조된 만료 토큰은 `TOKEN_INVALID`
+
+### 동시성
+- 같은 토큰의 동시 재발급: 행 잠금으로 뒤 요청은 앞 요청이 커밋될 때까지 기다린 뒤 `ROTATED` 상태를 읽음 → 새 토큰이 두 번 발급되지 않고, 뒤 요청은 재사용으로 처리되어 계열 전체(앞 요청이 받은 토큰 포함) 폐기 (`AuthTokenIntegrationTest` 5개 동시 요청)
+- READ COMMITTED에서 계열 폐기 UPDATE는 문장 시작 시점의 커밋된 행을 보므로, 앞 요청이 커밋한 새 행까지 폐기됨
+- 행 잠금 대기는 `lock_timeout`(5초)을 넘으면 503 ([운영 프로필 6장](operations.md))
+
+### CSRF
+Refresh Token이 쿠키라 다른 사이트가 재발급·로그아웃을 위조 요청할 수 있는지가 문제
+- 쿠키 `SameSite=Strict`: 다른 사이트에서 시작된 요청에는 쿠키가 실리지 않음
+- CORS: 허용 출처 목록에 없는 `Origin`의 요청은 `CorsFilter`가 컨트롤러 전에 403 (`AuthTokenIntegrationTest`) → 허용 출처에 와일드카드를 쓰지 않는 규칙(`CorsProperties`)이 전제
+- 응답 본문(새 Access Token)은 허용 출처가 아니면 브라우저가 읽지 못함
+- 쿠키 `Path=/api/users` → 다른 API 요청에는 쿠키가 실리지 않고, API 인증은 여전히 `Authorization` 헤더라 다른 API는 CSRF 대상이 아님
+
+### 장애 시 동작
+| 상황 | 동작 |
+|---|---|
+| Redis 장애 | 영향 없음 (Refresh Token은 Redis를 쓰지 않음) |
+| DB 장애·잠금 대기 초과 | 로그인·재발급·로그아웃 503 → 데이터를 바꾸지 않음. 클라이언트는 재시도(같은 Refresh Token은 아직 유효) |
+| 재발급 응답 유실(서버는 커밋, 클라이언트는 못 받음) | 브라우저 쿠키는 이전 값 → 다음 재발급이 재사용으로 처리되어 재로그인. 엄격 정책의 대가 |
+
+### 한계 · 후속 (V16에서 처리한 항목 포함)
+- ~~**로그아웃 후 Access Token**: 서명만 검증하므로 만료(1시간)까지 유효~~ → **Access 수명 15분으로 단축** (V16). 즉시 차단은 하지 않음
+  - 검토한 대안: ① 요청마다 DB에서 계열 상태 확인(즉시 차단, 모든 인증 요청에 쿼리 1번 추가) ② Redis 차단 목록(빠르지만 Redis 장애 시 통과시키면 차단 무력화, 막으면 전체 API 503 — "Redis는 보조" 원칙과 충돌)
+  - 선택 근거: 요청 경로에 저장소 의존을 추가하지 않고 노출 시간을 1/4로 줄임. 재발급 흐름(`TOKEN_EXPIRED` → refresh)이 이미 있어 프론트 추가 작업 없음 (재발급 빈도만 15분에 1번)
+  - 남는 위험: 로그아웃·재사용 감지 뒤에도 이미 발급된 Access는 최대 15분 유효. 즉시 차단이 필요해지면 ①을 추가
+- ~~**만료·폐기 행 정리**~~ → `RetentionCleaner`가 **만료(`expires_at`) 후 7일** 지난 행을 삭제 (V16, `retention.refresh-tokens`, `idx_refresh_tokens_expires_at`)
+  - 만료 전 행은 폐기됐어도 남김 — 아직 유효 기간 안의 `ROTATED` 행이 있어야 재사용을 감지할 수 있음
+  - 지운 토큰이 다시 오면 재사용이 아니라 모르는 값(`REFRESH_TOKEN_INVALID`)으로 거부 → 이미 만료된 토큰이라 결과(재로그인)는 같음
+- ~~**수명 연장**: 재발급마다 14일이 다시 시작되어 로그인이 끝나지 않음~~ → **계열 절대 만료 30일** (V16, `family_expires_at`, `auth.refresh-token.absolute-ttl`)
+  - 재발급 토큰의 만료 = min(재발급 시각 + 14일, 로그인 시각 + 30일). 탈취 토큰도 최대 로그인 후 30일까지만 쓸 수 있음
+  - V16 이전 계열은 첫 발급 + 30일로 백필하되, 이미 더 늦게 만료되는 토큰이 있으면 그 시각까지 (발급된 토큰을 앞당겨 끊지 않음)
+  - 쿠키 `Max-Age`는 계속 14일 — 절대 만료에 가까우면 쿠키가 서버 기록보다 늦게 사라지지만, 서버가 `REFRESH_TOKEN_EXPIRED`로 거부하며 쿠키를 지움
+- **다른 사이트 배포**: 프론트·API의 등록 도메인이 다르면 `SameSite=None` 필요 → CSRF 방어가 CORS(Origin 검사)에만 의존하게 됨
+
+### 역할 부여 — 사장님 승인제 (V17)
+- 가입은 `CUSTOMER`만 (`role` 선택값, `OWNER`·`ADMIN` 400). `OWNER`는 신청(`owner_applications`) → 관리자 승인으로만, `ADMIN`은 DB에서 직접 지정
+  - 이전에는 가입 요청의 `role: OWNER`만으로 확인 없이 매장·메뉴를 만들 수 있었음 (사용자 결정 2026-11-21, 기존 OWNER 계정은 유지)
+- 승인은 신청 행 `FOR UPDATE` + 같은 트랜잭션에서 `User.promoteToOwner()` → 신청 상태와 역할이 어긋나지 않음
+- 역할이 바뀌어도 이미 발급된 Access(최대 15분)의 `role`은 그대로 → URL 규칙(`SecurityConfig`)은 재발급 전까지 CUSTOMER로 판단, Service는 DB 역할로 재확인.
+  `/api/users/refresh`가 DB 역할로 새 Access를 주므로 프론트는 승인 확인 후 재발급 → `/me` 재조회
+- 진행 중 주문이 있으면 신청·승인 409 (전환 후 고객 API가 403이 되어 그 주문을 다룰 수 없으므로). 승인 직전 1번만 검사 — 같은 순간 들어온 새 주문은 막지 못함
+- 상세 API·오류는 [API 명세 — 사장님 전환 신청](api.md#사장님-전환-신청-v17), 테이블은 [데이터베이스](database.md#owner_applications--사장님-전환-신청-v17)
+
+## 소셜 로그인 (V22)
+
+카카오(OAuth2)·구글(OIDC) 로그인. 공급자 인증만 Spring Security `oauth2Login`에 맡기고, 그 뒤는 기존 인증(Access + Refresh 쿠키)을 그대로 씀. API·오류 코드는 [API 명세 · 소셜 로그인](api.md#소셜-로그인-v22-카카오구글)
+
+| 결정 | 선택 | 근거 · 대안 |
+|---|---|---|
+| 결과 전달 | **Refresh 쿠키만** 심고 프론트로 302 → 프론트가 `/api/users/refresh` | URL에 토큰이 남지 않음(기록·Referer·로그). 새로고침 복구와 같은 경로라 프론트 추가 로직이 거의 없음. 대안(1회용 코드 교환)은 테이블·API가 하나 더 필요 — 프론트·API가 다른 사이트에 배포돼 쿠키를 못 쓸 때 검토 (사용자 결정 2026-11-21) |
+| 기존 회원 연결 | **로그인한 회원이 직접 연결** | `users`에 이메일이 없고, 이메일 자동 매칭은 공급자의 이메일 확인 여부에 계정 보안을 맡김(확인 안 된 이메일로 남의 계정 탈취). 카카오 이메일 필수 동의는 비즈 앱 심사도 필요 (사용자 결정 2026-11-21) |
+| 시작 기록 저장 | **서명된 HttpOnly 쿠키** (`CookieAuthorizationRequestRepository`) | 기본은 HttpSession → STATELESS 서버에 세션이 생기고 다중 인스턴스에서 고정 세션 필요. 값은 JSON + HMAC(Java 직렬화는 클라이언트 값 역직렬화 위험). 콜백은 공급자 사이트에서 오는 이동이라 `SameSite=Lax` |
+| 연결 의사 전달 | 연결 API(Bearer)가 HttpOnly 쿠키 `social_link`(서명·5분) 발급 → `?mode=link`로 이동 | 페이지 이동에는 Authorization 헤더를 못 실음. URL에 티켓을 넣으면 그 티켓을 얻은 사람이 **자기 소셜 계정을 남의 회원에 연결**(이후 그 소셜 계정으로 로그인) 가능 → 연결을 시작한 브라우저에만 있는 쿠키로 묶음 |
+| 서명 키 | `jwt.secret`에서 용도별 파생 (HMAC(jwt.secret, "social-login-cookie")) | 운영 필수 환경변수를 늘리지 않음. 같은 키를 그대로 쓰지 않아 쿠키 값이 Access 서명으로 통하지 않음 |
+| 공급자 설정 | 자체 `social.providers.*` → `SocialClientRegistrations` | Boot 기본(`spring.security.oauth2.client.registration`)은 키가 비면 기동 실패 → 키 없이 뜨는 로컬·CI·테스트에서 끌 수 없음(토스와 같은 방식). id·secret 중 하나만 있으면 기동 실패 |
+| 저장 개인정보 | 공급자 회원 식별자만 | 로그인에 이메일·닉네임이 필요 없음. 카카오는 동의 항목 없이, 구글은 `openid`만 요청 |
+| 공급자 Access Token | 저장 안 함 (`NoOpAuthorizedClientRepository`) | 이후 공급자 API를 부르지 않음. 기본(메모리 저장소)은 로그인마다 비밀 값이 쌓임 |
+
+### 흐름
+1. `GET /oauth2/authorization/{provider}` → `SocialAuthorizationRequestResolver`(꺼진 공급자 null → 404, `mode=link`면 연결 쿠키의 회원 id를 시작 기록 속성에) → 시작 기록 쿠키 저장·연결 쿠키 삭제 → 공급자로 302
+2. 콜백 `/login/oauth2/code/{provider}` → 시작 기록 쿠키 확인(서명·10분·state) → 코드 교환·사용자 정보(구글은 ID 토큰 서명·nonce 검증) → `SocialLoginSuccessHandler`
+3. 성공 처리: 공급자별 식별자 추출(`SocialProvider.providerUserId`) →
+   - 일반: `SocialAccountService.login` — 연결된 회원 또는 CUSTOMER 가입 → `AuthTokenService.issue`(새 Refresh 계열) → 쿠키 → `?result=login`
+   - 연결: `SocialAccountService.link` → `?result=linked`
+   - 업무 오류(`ApiException`)는 `?error=code`, 공급자 단계 실패는 `SocialLoginFailureHandler`가 `?error=code`
+4. Spring Security 인증 결과는 저장하지 않음(STATELESS의 `RequestAttributeSecurityContextRepository`) — 이후 요청은 우리 JWT
+
+### 확장 — 공급자 추가
+`social.SocialProvider` 구현 1개(@Component: registrationId, 엔드포인트, 식별자 속성) + `social.providers.{id}` 키. 흐름·연결·토큰·쿠키·DB는 그대로(`provider`가 문자열 컬럼이라 마이그레이션 없음). 프론트는 `/api/users/social/providers`로 버튼을 그리고 `socialLabel`에 이름만 추가
+
+### 동시성 · 중복
+- 같은 소셜 계정으로 동시에 첫 로그인: 한쪽이 `uk_social_accounts_provider_user` 위반 → 그 트랜잭션은 롤백되므로 `TransactionTemplate`으로 **새 트랜잭션에서 다시 조회**(최대 3번, 자동 생성 아이디 충돌도 같은 경로) → 회원 1명 (`SocialLoginIntegrationTest` 5개 동시 요청)
+- 연결 해제: 회원 행 `FOR UPDATE` 후 "비밀번호 없음 + 마지막 1개" 검사 → 두 계정을 동시에 해제해 로그인 수단이 0이 되는 일 없음
+- 같은 브라우저 두 탭에서 동시에 시작하면 나중 시작 기록이 덮어써 먼저 탭은 state 불일치(`OAUTH2_FAILED`)·쿠키 없음 → 다시 시도
+
+### 한계 · 후속
+- 소셜로 먼저 가입한 회원과 기존 아이디 회원은 합치지 않음 → 기존 회원에 연결하려 하면 `SOCIAL_ACCOUNT_ALREADY_LINKED`
+- 소셜 전용 회원은 비밀번호 설정 기능이 없음 (마지막 소셜 계정 해제 불가로 잠금만 막음)
+- `{baseUrl}` 콜백 주소는 요청 Host 기준 → 프록시 뒤 배포 시 `server.forward-headers-strategy` 필요
+- 프론트·API가 다른 사이트면 Refresh 쿠키 `SameSite=None` 필요(인증 장과 같음), 연결 쿠키도 같은 설정을 따름
+- 공급자 장애 시 소셜 로그인만 실패(`OAUTH2_FAILED`), 아이디 로그인·재발급은 영향 없음
+
+## 토스페이먼츠 결제 (테스트 모드, V20)
+
+API·오류 코드·중복 방지 장치는 [API · 토스페이먼츠 결제](api.md)가 기준. 여기는 구조만.
+
+```
+TossPaymentController ─▶ PaymentIdempotencyService.confirmToss (Idempotency-Key 규칙, 모의 결제와 공통)
+                          └▶ TossPaymentService.confirm   (@Transactional 없음 — 외부 호출을 트랜잭션 밖에서)
+                               ├ PaymentService.findTossPayment / validateTossConfirm   (읽기 트랜잭션)
+                               ├ TossPaymentsClient.confirm → (결과 불명) getPayment     (HTTP, 트랜잭션 밖)
+                               ├ PaymentService.recordTossPayment                       (주문 행 잠금 → 기록, 모의 결제와 같은 completePayment)
+                               └ (기록 불가) PgCancelService.requestCompensation        (REQUIRES_NEW)
+
+OrderService.cancelOrder / AdminPaymentService.refund
+  └ PgCancelService.requestCancel (MANDATORY — 같은 트랜잭션에 pg_cancel_requests INSERT + 이벤트)
+       └ 커밋 후 PgCancelProcessor.onRequested (AFTER_COMMIT, 1회 시도)
+         실패분은 pg-cancel-retry 주기 작업 → processDue (SKIP LOCKED + 임대, 백오프, FAILED + 메트릭)
+```
+
+- **왜 승인 호출을 트랜잭션 밖에서**: 토스 응답(최대 15초)을 기다리는 동안 커넥션·주문 행 잠금을 잡으면 사장님 수락·고객 취소가 막히고 풀이 마름(#76 open-in-view와 같은 문제). 대신 승인 전후로 주문 상태를 두 번 확인하고, 그 사이 바뀌었으면 보상 취소
+- **왜 취소 호출을 커밋 후에**: 커밋 전에 토스 취소가 성공하고 커밋이 실패하면 "환불됐는데 주문은 살아 있음". DB를 먼저 확정하고 외부 호출은 재시도 가능한 기록(Outbox와 같은 방식)으로
+- **부분 취소 (V21)**: 관리자 부분 환불 1건 = 취소 요청 1건(`amount`·`balance_after`). 같은 결제의 요청은 순서대로 하나씩, 결과 불명 뒤 재시도는 토스 잔액을 먼저 조회해 이미 반영됐으면 다시 보내지 않음
+- **가짜 PG 모드 (V21)**: `TossPaymentsClient`를 인터페이스로 나눠 `toss.payments.mode`로 구현 선택 — `real`(`TossPaymentsHttpClient`) / `fake`(`FakeTossPaymentsClient`, 메모리, prod 기동 불가). 서버의 승인·취소 코드는 그대로, PG만 바뀜 → 응답 유실·PG 지연 같은 장애를 버튼으로 재현
+- **메트릭**: `pg_cancel_attempts_total{result=done|retry|failed}` — 알림 `PgCancelFailed`(failed 증가, `monitoring/alerts.yml`)
+- **한계·후속**: 승인 결과를 끝내 확인하지 못한 채 고객이 떠나면 토스에는 승인됐지만 결제 기록이 없는 건이 남을 수 있음(화면이 자동 재시도하고, 로그에 결제 키를 남김). 주기적인 토스 대사(조회 API로 미기록 승인 찾기), 고객 화면의 환불 진행 상태 표시, 부분 취소는 후속
 
 ## 요청 처리 흐름
 
@@ -472,9 +716,9 @@ sequenceDiagram
 
 | 종류 | 대상 | DB |
 |---|---|---|
-| 단위 테스트 | `TraceIdFilterTest`(traceId 생성·전달, 잘못된 외부 값 거부, MDC 정리), `OrderTest`(상태 전이, 항목 추가·총액 합산), `PaymentFeeTest`(수수료 계산·반올림), `PaymentFeePropertiesTest`(수수료율 설정 검증), `StoreTest`(소유권 판단, 매장 수수료율·공통 수수료율 fallback), `SettlementPeriodTest`(정산 기간·확정 시각), `SettlementTest`(정산 집계·합계, PENDING → CONFIRMED → PAID 전이·중복 지급 거부), `OrderServiceTest`, `MenuServiceTest`, `StoreServiceTest`, `PaymentServiceTest`(결제 + 단건 조회 401·403·404·현재 상태), `SettlementServiceTest`, `SettlementAuditTest`(상태 이력 생성 규칙·처리자 필수, 실패 기록 FAILED ↔ RESOLVED), `SettlementAggregationServiceTest`(집계·중복 건너뜀·오류 격리, 집계 이력 처리자, 실패 기록·해결, 매장 지정 재집계), `SettlementSchedulerTest`(집계 날짜 선택, 실행별 traceId·MDC 정리, 분산 락 미획득·Redis 장애 시 건너뜀), `AdminSettlementServiceTest`(관리자 확인, 확정·지급 시각 기록, 잘못된 전이, 상태 변경 로그, 확정·지급 이력의 처리자, 재집계 400·404·409), `UserServiceTest`(ADMIN 가입 거부), `AdminStoreServiceTest`(관리자 확인, 매장 404, 수수료율 설정·해제), `OwnerSettlementServiceTest`(권한, 기간 400, 상태 필터, 다른 매장 정산 404, 이월 차감 전), `ProdProfileGuardTest`(prod 필수 환경변수 누락·공백 시 이름만 담아 실패, Swagger 활성 시 실패, #54) | 없음 (Mockito) |
+| 단위 테스트 | `TraceIdFilterTest`(traceId 생성·전달, 잘못된 외부 값 거부, MDC 정리), `OrderTest`(상태 전이, 항목 추가·총액 합산), `PaymentFeeTest`(수수료 계산·반올림), `PaymentFeePropertiesTest`(수수료율 설정 검증), `StoreTest`(소유권 판단, 매장 수수료율·공통 수수료율 fallback), `SettlementPeriodTest`(정산 기간·확정 시각), `SettlementTest`(정산 집계·합계, PENDING → CONFIRMED → PAID 전이·중복 지급 거부), `OrderServiceTest`, `MenuServiceTest`, `StoreServiceTest`, `PaymentServiceTest`(결제 + 단건 조회 401·403·404·현재 상태), `SettlementServiceTest`, `SettlementAuditTest`(상태 이력 생성 규칙·처리자 필수, 실패 기록 FAILED ↔ RESOLVED), `SettlementAggregationServiceTest`(집계·중복 건너뜀·오류 격리, 집계 이력 처리자, 실패 기록·해결, 매장 지정 재집계), `SettlementSchedulerTest`(집계 날짜 선택, 실행별 traceId·MDC 정리, 분산 락 미획득·Redis 장애 시 건너뜀), `AdminSettlementServiceTest`(관리자 확인, 확정·지급 시각 기록, 잘못된 전이, 상태 변경 로그, 확정·지급 이력의 처리자, 재집계 400·404·409), `UserServiceTest`(ADMIN 가입 거부, 내 정보 OWNER 매장 id·CUSTOMER 빈 목록·회원 없음 401, #62), `AdminStoreServiceTest`(관리자 확인, 매장 404, 수수료율 설정·해제), `OwnerSettlementServiceTest`(권한, 기간 400, 상태 필터, 다른 매장 정산 404, 이월 차감 전), `ProdProfileGuardTest`(prod 필수 환경변수 누락·공백 시 이름만 담아 실패, Swagger 활성 시 실패, #54), `ProdProfileGuardStartupTest`(빈 생성 전 검사 — DB 없이 가드 메시지로 실패, #61) | 없음 (Mockito) |
 | 웹 계층 테스트 | `ErrorResponseFormatTest`(401·403·404·405·409·500 공통 형식, 본문·헤더·로그 traceId 일치, 500 내부 메시지 숨김), `OrderCancelSecurityTest` (`@WebMvcTest`, 401/403), `OrderListPagingTest`(주문 목록 page·keyset 응답 헤더, `X-Next-After-Id`, page+afterId·범위 400, #54), `PaymentQuerySecurityTest`(결제 단건 조회 401·OWNER 403·응답 필드·404 형식), `AmountInputRangeTest`(가격·수량 범위 초과 400), `StoreSecurityTest`(매장·정산·일 정산 기록 API 401/403, 조회 파라미터 400, 목록 페이지 기본값·헤더·page/size 범위 400), `AdminSettlementSecurityTest`(관리자 API 401, CUSTOMER·OWNER 403, 잘못된 전이 409, 재집계·이력·실패 기록 API 권한과 처리자 파라미터 무시), `AdminStoreSecurityTest`(수수료율 API 401/403, 잘못된 수수료율 400) | 없음 |
-| 통합 테스트 | `ObservabilityDefaultExposureIntegrationTest`(기본 설정: health만 공개·prometheus/Swagger 비노출·기타 Actuator ADMIN), `ObservabilityEnabledIntegrationTest`(local·dev 설정: prometheus 수집, metrics ADMIN, OpenAPI 명세·Swagger UI), `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장), `PaymentQueryIntegrationTest`(결제 단건 조회: 본인 결제·환불 후 현재 상태, 다른 고객 403, 없음 404, OWNER 403), `TimeZoneIntegrationTest`, `AmountMigrationTest`(기존 데이터가 있는 DB에 V3 적용), `StoreMigrationTest`(기존 메뉴·주문을 매장으로 백필하는 V4 적용), `OrderItemMigrationTest`(기존 주문을 주문 항목으로 백필하는 V5 적용), `DeliveredAtMigrationTest`(배달완료 시각을 백필하는 V6 적용), `StoreOrderIntegrationTest`(매장 → 메뉴 → 주문 흐름, 여러 메뉴 주문, 매장별 조회·소유권, 목록 페이지 순서·겹침 없음, 주문 목록 쿼리 3번(N+1 없음), keyset 페이징 OFFSET과 같은 결과·중복·누락 없음·경계·조회 중 새 주문(#54)), `ProdProfileIntegrationTest`(prod 프로필 실제 기동: 서비스 포트 Actuator·Swagger 404, 관리 포트 health·probe·prometheus, 그 밖의 Actuator 비활성·401, #54), `SettlementIntegrationTest`(배달완료 → 정산 조회, 날짜 경계), `SettlementAggregationIntegrationTest`(스케줄러 집계, 반복·동시 실행 시 중복 방지, DB 제약, cron 등록), `AdminSettlementIntegrationTest`(집계 → 확정 → 지급, 잘못된 전이, 동시 지급 시 1번만 성공), `SettlementStatusMigrationTest`(V7 정산 데이터가 있는 DB에 V8 적용), `StoreFeeRateMigrationTest`(V9 데이터가 있는 DB에 V10 적용, CHECK 제약), `SettlementAuditMigrationTest`(V10 데이터가 있는 DB에 V11 적용, 이력·실패 기록 제약), `OrderListIndexMigrationTest`(V11 데이터가 있는 DB에 V12 적용, 주문 목록 인덱스 생성·기존 인덱스 교체·실행 계획), `SettlementAuditRecoveryIntegrationTest`(누락·실패분 재집계와 복구, 중복·동시 재집계와 스케줄러 경합, 기존 정산 재집계 차단, 확정·지급 처리자 이력), `OwnerSettlementIntegrationTest`(일 정산 기록 = 관리자 정산, 늦은 환불의 차감 정산, 이월 연결, 판매 내역 합계), `StoreFeeRateIntegrationTest`(매장 수수료율 결제 스냅샷, 수수료율 혼합 정산, 확정·지급 정산 불변, 환불 차감 기준) | Testcontainers PostgreSQL |
+| 통합 테스트 | `ObservabilityDefaultExposureIntegrationTest`(기본 설정: health만 공개·prometheus/Swagger 비노출·기타 Actuator ADMIN), `ObservabilityEnabledIntegrationTest`(local·dev 설정: prometheus 수집, metrics ADMIN, OpenAPI 명세·Swagger UI), `SpringDeliveryMiniApplicationTests`, `PaymentConcurrencyIntegrationTest`(동시 결제 시 1건만 저장), `PaymentQueryIntegrationTest`(결제 단건 조회: 본인 결제·환불 후 현재 상태, 다른 고객 403, 없음 404, OWNER 403 / 내 결제 목록(#62): 본인 결제만 id 오름차순·페이지·`X-Has-Next`, size 400, OWNER·DB 역할 OWNER 403), `OrderQueryIntegrationTest`(주문 단건 조회 #62: 본인 주문·본인 매장 주문, 결제 정보·결제 전 null, 다른 고객·다른 매장·ADMIN 403, 없음 404, DB 역할 기준, 쿼리 3번), `UserMeIntegrationTest`(내 정보 #62: DB 기준 역할, 본인 매장 id만 오름차순, 삭제된 회원 401), `TimeZoneIntegrationTest`, `AmountMigrationTest`(기존 데이터가 있는 DB에 V3 적용), `StoreMigrationTest`(기존 메뉴·주문을 매장으로 백필하는 V4 적용), `OrderItemMigrationTest`(기존 주문을 주문 항목으로 백필하는 V5 적용), `DeliveredAtMigrationTest`(배달완료 시각을 백필하는 V6 적용), `StoreOrderIntegrationTest`(매장 → 메뉴 → 주문 흐름, 여러 메뉴 주문, 매장별 조회·소유권, 목록 페이지 순서·겹침 없음, 주문 목록 쿼리 3번(N+1 없음), keyset 페이징 OFFSET과 같은 결과·중복·누락 없음·경계·조회 중 새 주문(#54)), `ProdProfileIntegrationTest`(prod 프로필 실제 기동: 서비스 포트 Actuator·Swagger 404, 관리 포트 health·probe·prometheus, 그 밖의 Actuator 비활성·401, #54), `SettlementIntegrationTest`(배달완료 → 정산 조회, 날짜 경계), `SettlementAggregationIntegrationTest`(스케줄러 집계, 반복·동시 실행 시 중복 방지, DB 제약, cron 등록), `AdminSettlementIntegrationTest`(집계 → 확정 → 지급, 잘못된 전이, 동시 지급 시 1번만 성공), `SettlementStatusMigrationTest`(V7 정산 데이터가 있는 DB에 V8 적용), `StoreFeeRateMigrationTest`(V9 데이터가 있는 DB에 V10 적용, CHECK 제약), `SettlementAuditMigrationTest`(V10 데이터가 있는 DB에 V11 적용, 이력·실패 기록 제약), `OrderListIndexMigrationTest`(V11 데이터가 있는 DB에 V12 적용, 주문 목록 인덱스 생성·기존 인덱스 교체·실행 계획), `SettlementAuditRecoveryIntegrationTest`(누락·실패분 재집계와 복구, 중복·동시 재집계와 스케줄러 경합, 기존 정산 재집계 차단, 확정·지급 처리자 이력), `OwnerSettlementIntegrationTest`(일 정산 기록 = 관리자 정산, 늦은 환불의 차감 정산, 이월 연결, 판매 내역 합계), `StoreFeeRateIntegrationTest`(매장 수수료율 결제 스냅샷, 수수료율 혼합 정산, 확정·지급 정산 불변, 환불 차감 기준) | Testcontainers PostgreSQL |
 
 - 통합 테스트는 `@Import(TestcontainersConfiguration.class)`를 붙이면 PostgreSQL 18·Redis 컨테이너가 뜨고 `@ServiceConnection`으로 자동 연결됨
 - Redis 테스트 (#41): `PaymentIdempotencyIntegrationTest`(같은 키 재전송·동시 요청 1건 처리·다른 요청 422·키 없는 기존 동작·실패 후 재시도·사용자별 분리·키 형식·TTL), `PaymentIdempotencyRedisFailureTest`(연결 실패·타임아웃 503, 결제 후 Redis 실패에도 응답 유지·재실행 없음), `RedisDistributedLockTest`(획득·해제·예외·최소/최대 유지 시간·만료 후 남의 락 보호·동시 경합·장애), `SettlementSchedulerLockTest`(여러 인스턴스 동시 실행 시 1번만 집계, 늦게 깨어난 인스턴스, 실패 후 해제, Redis 장애 시 미실행)
@@ -484,5 +728,7 @@ sequenceDiagram
 - 후속 개선 테스트 (V14): `OutboxFollowUpMigrationTest`(V13 데이터 위에 V14 적용 — 기존 알림 `SKIPPED`, 새 제약·인덱스), `OutboxFollowUpIntegrationTest`(같은 주문 발행 순서, FAILED 단건·일괄 재발행과 409·403, 알림 발송·재시도·FAILED·SKIPPED, 내 알림 목록, 보관 기간 정리, Outbox 게이지·발송 카운터), `NotificationTest`(발송 상태 전이), `AdminOutboxSecurityTest`(관리자 Outbox API·내 알림 API 권한), `PaymentIdempotencyIntegrationTest`·`PaymentIdempotencyRedisFailureTest`에 DB 기록 재전송(Redis 기록 유실·Redis 장애) 추가
   - test 프로필은 알림 발송·보관 기간 정리의 주기 실행을 끄고(`application-test.yml`) 테스트가 직접 호출
   - Kafka 컨테이너는 `KafkaTestcontainersConfiguration`을 함께 `@Import`한 클래스에서만 뜸. test 프로필은 토픽 생성·Consumer·주기 발행을 끄고(`application-test.yml`), Kafka 테스트 클래스가 속성으로 다시 켬. 발행은 `publishPending()`을 직접 호출해 시점을 고정
+- 알림 읽음·Refresh Token 테스트 (V15·V16): `RefreshTokenFamilyExpiryMigrationTest`(V15 토큰 위에 V16 적용 — 계열 절대 만료 백필·앞당기지 않음, NOT NULL·`expires_at <= family_expires_at`, 정리 인덱스), `NotificationReadRefreshTokenMigrationTest`(V14 데이터 위에 V15 적용 — 기존 알림 안 읽음·다른 값 유지, 부분 인덱스, `refresh_tokens` UNIQUE·CHECK·FK), `RefreshTokenTest`(발급·재발급 같은 계열·폐기 1회·만료 경계·절대 만료로 잘림), `NotificationReadIntegrationTest`(본인 알림 읽음 204, 다른 사람 403·없음 404·토큰 없음 401, 멱등 — 처음 읽은 시각 유지, 목록 `read`·`readAt`, 안 읽은 개수는 본인 것만, 발송 상태 변경과 서로 덮어쓰지 않음), `AuthTokenIntegrationTest`(로그인 쿠키 속성·본문에 Refresh 없음·DB 해시만, 재발급 rotation·DB 역할 반영, 재사용 시 계열 전체 폐기·다른 계열 유지, 만료·폐기·모르는 값 401 `code`, 동시 재발급 5건 중 1건만 성공, 계속 재발급해도 로그인 후 30일에 만료, 만료 후 7일 지난 행만 정리, 로그아웃 계열 폐기·멱등, 허용하지 않은 출처 403(CSRF), Access 만료 `TOKEN_EXPIRED`·위조 `TOKEN_INVALID`·없음 `code` 없음)
+- 실시간 주문 알림 테스트 (#76): `OwnerOrderStreamRegistryTest`(받는 사장님·매장 범위, 연결 상한 시 오래된 연결 종료, 전송·하트비트 실패 연결 정리), `OwnerOrderStreamIntegrationTest`(실제 서버 임의 포트 + HttpClient 스트림: 알림 저장 커밋 후 해당 사장님에게만 `order` 이벤트, 매장 지정 구독, 연결 유지 중 DB 커넥션 0, 401·403(토큰·DB 역할·다른 매장)·404 — `Accept: text/event-stream`에서도 원래 상태 코드)
 - 스키마는 Flyway가 생성하므로 마이그레이션 SQL과 `ddl-auto: validate`도 함께 검증됨
 - 같은 설정을 쓰는 테스트 클래스끼리는 컨테이너 1개를 공유하고, 테스트가 끝나면 컨테이너는 자동 삭제됨

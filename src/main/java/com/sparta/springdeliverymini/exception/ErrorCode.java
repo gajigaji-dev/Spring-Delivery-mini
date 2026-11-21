@@ -1,0 +1,72 @@
+package com.sparta.springdeliverymini.exception;
+
+// 클라이언트가 오류마다 다르게 대응해야 할 때 쓰는 구분 값 — ApiErrorResponse.code
+// 문구(message)는 바뀔 수 있으니 분기는 code로만. code가 없는(null) 오류는 상태 코드·message로 처리
+// 전체 표·화면 문구는 docs/api.md "오류 코드" 절, 프론트 매핑은 frontend/src/api/errorMessages.ts
+//
+// 401 대응 (docs/api.md 인증 장)
+// - TOKEN_EXPIRED            : Access Token 만료 → POST /api/users/refresh로 재발급 후 재시도
+// - TOKEN_INVALID            : Access Token 서명·형식 오류(위조 등) → 재발급하지 말고 다시 로그인
+// - REFRESH_TOKEN_INVALID    : Refresh Token 없음·알 수 없음 → 다시 로그인
+// - REFRESH_TOKEN_EXPIRED    : Refresh Token 만료 → 다시 로그인
+// - REFRESH_TOKEN_REVOKED    : 로그아웃 등으로 폐기된 Refresh Token → 다시 로그인
+// - REFRESH_TOKEN_REUSED     : 이미 재발급에 쓴 Refresh Token이 다시 옴(탈취 의심) → 계열 전체 폐기됨, 다시 로그인
+//
+// 주문·결제 (#77) — 상태 코드는 원인별로 고정: 입력 400 / 없음 404 / 현재 상태와 충돌·중복 요청 409 / 같은 키 다른 요청 422 / 일시 장애 503
+public enum ErrorCode {
+    TOKEN_EXPIRED,
+    TOKEN_INVALID,
+    REFRESH_TOKEN_INVALID,
+    REFRESH_TOKEN_EXPIRED,
+    REFRESH_TOKEN_REVOKED,
+    REFRESH_TOKEN_REUSED,
+
+    // 400 — 다시 입력하면 해결
+    INVALID_ADDRESS,             // 우편번호·도로명·상세 주소 형식 위반 (DeliveryAddress)
+    INVALID_DELIVERY_REQUEST,    // 배달 요청사항 100자 초과·제어 문자 (Order)
+    DUPLICATE_ORDER_ITEM,        // 같은 메뉴가 여러 항목으로 나뉨 → 수량으로 합쳐서 요청
+    MIXED_STORE_ORDER,           // 한 주문에 여러 매장 메뉴
+    ORDER_AMOUNT_TOO_LARGE,      // 총액이 long 범위를 넘음
+    UNSUPPORTED_PAYMENT_METHOD,  // CARD 외 결제 수단
+    INVALID_IDEMPOTENCY_KEY,     // Idempotency-Key 형식 오류
+    PAYMENT_AMOUNT_MISMATCH,     // 토스 승인 요청 금액 ≠ 주문 총액 → 승인하지 않음 (V20)
+    INVALID_PG_ORDER_ID,         // 토스 주문번호가 이 주문에 발급한 형식이 아님 → 결제를 다시 시작
+    PG_PAYMENT_REJECTED,         // 토스가 승인을 거절(카드 거절·결제 시간 만료 등) → 결제창을 다시 열어 결제
+    INVALID_REFUND_AMOUNT,       // 부분 환불 금액이 남은 결제 금액을 넘음 (V21)
+
+    // 404
+    ORDER_NOT_FOUND,
+    MENU_NOT_FOUND,              // 없거나 삭제된 메뉴 (장바구니에 담은 뒤 삭제된 경우)
+    PAYMENT_NOT_FOUND,
+
+    // 409 — 현재 상태와 맞지 않음 (주문을 다시 불러와 최신 상태를 보여주면 됨)
+    ORDER_ALREADY_PAID,          // 결제완료 이후 주문에 다시 결제 (중복 결제 요청 포함)
+    ORDER_ALREADY_CANCELLED,     // 취소된 주문에 결제·취소
+    ORDER_NOT_CANCELLABLE,       // 주문수락 이후 취소
+    INVALID_ORDER_STATUS,        // 그 밖의 허용되지 않는 주문 상태 변경 (사장님 수락·배달완료)
+    PAYMENT_ALREADY_CANCELLED,   // 취소된 결제에 취소·환불
+    PAYMENT_ALREADY_REFUNDED,    // 환불된 결제에 취소·환불
+    PAYMENT_NOT_REFUNDABLE,      // 배달 전 결제 환불 → 주문 취소를 이용
+    INVALID_PAYMENT_STATUS,      // 그 밖의 결제 상태 규칙 위반
+    PAYMENT_IN_PROGRESS,         // 같은 Idempotency-Key 결제가 처리 중 → 잠시 후 같은 키로 재시도
+
+    // 422
+    IDEMPOTENCY_KEY_REUSED,      // 같은 Idempotency-Key로 다른 결제 요청 → 새 키로 요청
+
+    // 503 — 요청은 반영되지 않음, 같은 Idempotency-Key로 재시도
+    PAYMENT_UNAVAILABLE,         // 멱등성 저장소(Redis) 장애
+    PG_NOT_CONFIGURED,           // 토스 키가 없거나 거부됨 → 토스 결제를 쓸 수 없음 (결제되지 않음)
+    PG_RESULT_UNKNOWN,           // 토스 승인 결과를 확인하지 못함(시간 초과 등) → 결제창을 다시 열지 말고 같은 승인 요청을 재시도
+
+    // 소셜 로그인 (V22) — API 응답 code, 그리고 OAuth2 콜백이 프론트로 돌려보내는 ?error= 값 (docs/api.md 소셜 로그인 장)
+    SOCIAL_PROVIDER_NOT_SUPPORTED, // 404 지원하지 않거나 키가 설정되지 않은 공급자
+    SOCIAL_LINK_FORBIDDEN,         // 403 관리자 계정은 소셜 연결 불가 (관리자 권한이 소셜 계정 보안에 의존하지 않도록)
+    SOCIAL_ACCOUNT_ALREADY_LINKED, // 409 그 소셜 계정이 이미 다른 회원에 연결됨
+    SOCIAL_PROVIDER_ALREADY_LINKED,// 409 이 회원에 같은 공급자의 다른 소셜 계정이 이미 연결됨 → 해제 후 연결
+    SOCIAL_LAST_LOGIN_METHOD,      // 409 비밀번호가 없는 회원의 마지막 소셜 계정은 해제 불가 (로그인할 방법이 없어짐)
+    // 콜백 리다이렉트 전용
+    OAUTH2_CANCELLED,              // 사용자가 동의 화면에서 취소 (error=access_denied)
+    OAUTH2_REQUEST_EXPIRED,        // 로그인 시작 기록(쿠키)이 없거나 만료·다른 탭에서 덮어씀 → 처음부터 다시
+    SOCIAL_LINK_EXPIRED,           // 연결 요청(쿠키)이 만료·변조·다른 공급자 → 연결 버튼부터 다시
+    OAUTH2_FAILED                  // 그 밖의 실패(공급자 오류·토큰 교환 실패 등) → 다시 시도
+}

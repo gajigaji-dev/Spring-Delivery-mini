@@ -77,7 +77,7 @@ class StoreOrderIntegrationTest {
         MenuResponse menu = menuService.createMenu(
                 new MenuCreateRequest(store.id(), menuName, 10000L, null), ownerName);
         return orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1");
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
     }
 
     @Test
@@ -89,7 +89,7 @@ class StoreOrderIntegrationTest {
 
         OrderResponse created = orderService.createOrder(new OrderCreateRequest(List.of(
                 new OrderItemRequest(chicken.id(), 2),
-                new OrderItemRequest(coke.id(), 3)), "서울시"), "customer1");
+                new OrderItemRequest(coke.id(), 3)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
 
         // 주문 후 메뉴 이름·가격 변경, 메뉴 삭제
         menuService.putMenu(chicken.id(), new MenuUpdateRequest("크리스피 치킨", 20000L, null), "owner1");
@@ -115,7 +115,7 @@ class StoreOrderIntegrationTest {
 
         assertThatThrownBy(() -> orderService.createOrder(new OrderCreateRequest(List.of(
                 new OrderItemRequest(chicken.id(), 1),
-                new OrderItemRequest(pizza.id(), 1)), "서울시"), "customer1"))
+                new OrderItemRequest(pizza.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1"))
                 .isInstanceOf(ApiException.class)
                 .extracting("status").isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(orderRepository.count()).isZero();

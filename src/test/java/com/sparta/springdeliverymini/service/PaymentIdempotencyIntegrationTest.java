@@ -1,5 +1,7 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.TestcontainersConfiguration;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.entity.*;
@@ -8,6 +10,7 @@ import com.sparta.springdeliverymini.jwt.JwtProvider;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
 import com.sparta.springdeliverymini.repository.PaymentIdempotencyKeyRepository;
+import com.sparta.springdeliverymini.repository.PaymentRefundRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
@@ -59,6 +62,7 @@ class PaymentIdempotencyIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
 
     private Store store;
     private Menu menu;
@@ -67,6 +71,7 @@ class PaymentIdempotencyIntegrationTest {
     void tearDown() {
         // FK 순서대로 삭제: payments → orders(order_items는 ON DELETE CASCADE로 함께 삭제) → menus → stores → users
         idempotencyKeyRepository.deleteAllInBatch(); // payments·users를 참조하므로 먼저 삭제
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -197,7 +202,7 @@ class PaymentIdempotencyIntegrationTest {
         for (int i = 0; i < 2; i++) {
             pay(customer, order.getId(), "key-1")
                     .andExpect(status().isConflict())
-                    .andExpect(jsonPath("$.message").value("주문요청 상태의 주문만 결제할 수 있습니다."));
+                    .andExpect(jsonPath("$.code").value("ORDER_ALREADY_CANCELLED"));
         }
         assertThat(redisTemplate.keys(PaymentIdempotencyService.KEY_PREFIX + "*")).isEmpty();
         assertThat(paymentRepository.count()).isZero();
@@ -309,7 +314,7 @@ class PaymentIdempotencyIntegrationTest {
             store = storeRepository.save(new Store("치킨집", owner));
             menu = menuRepository.save(new Menu("후라이드 치킨", 18000, "바삭한 치킨", store));
         }
-        Order newOrder = new Order(customer, store, "서울시", OrderStatus.ORDER_REQUEST);
+        Order newOrder = new Order(customer, store, TestAddresses.seoul(), OrderStatus.ORDER_REQUEST);
         newOrder.addItem(menu, 2);
         return orderRepository.save(newOrder);
     }

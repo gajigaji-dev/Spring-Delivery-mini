@@ -1,4 +1,4 @@
-# 운영 프로필 (#54)
+# 운영 프로필 (#54) · CORS (#61)
 
 [← README](../README.md)
 
@@ -20,7 +20,9 @@
 | 항목 | 설정 | 이유 |
 |---|---|---|
 | 접속 정보 | `DB_URL`, `REDIS_HOST`, `KAFKA_BOOTSTRAP_SERVERS` 환경변수 (기본값 없음) | 개발용 기본값(localhost)으로 조용히 뜨지 않도록 |
-| 필수 값 점검 | `config.ProdProfileGuard` — `DB_URL`·`DB_USERNAME`·`DB_PASSWORD`·`JWT_SECRET`·`REDIS_HOST`·`KAFKA_BOOTSTRAP_SERVERS` 중 비어 있는 것이 있으면 기동 실패 | Redis·Kafka는 처음 쓸 때 접속하므로 배포 시점에 드러나지 않음. 메시지에는 변수 이름만 넣고 값은 넣지 않음 |
+| 필수 값 점검 | `config.ProdProfileGuard` — `DB_URL`·`DB_USERNAME`·`DB_PASSWORD`·`JWT_SECRET`·`REDIS_HOST`·`KAFKA_BOOTSTRAP_SERVERS`·`CORS_ALLOWED_ORIGINS`(#61) 중 비어 있는 것이 있으면 기동 실패 | Redis·Kafka는 처음 쓸 때 접속하고, CORS 출처가 비어도 서버는 정상 기동(브라우저 요청만 403)하므로 배포 시점에 드러나지 않음. 메시지에는 변수 이름만 넣고 값은 넣지 않음. 빈이 아닌 `EnvironmentPostProcessor`로 등록해 빈 생성 전에 검사 → `DB_URL`이 없어도 DataSource 오류보다 먼저 빠진 변수 목록이 나옴(#61) |
+| CORS 허용 출처 | `CORS_ALLOWED_ORIGINS` 환경변수 (기본값 없음, 7장) | 운영 프론트엔드 주소만 명시적으로 허용 |
+| 알림 발송 채널 (#69) | `NOTIFICATION_SENDER`(`log` 기본 / `slack`), `SLACK_WEBHOOK_URL`(기본값 없음). `slack`인데 URL이 비어 있으면 `ProdProfileGuard`가 기동 실패. 시간 초과는 `NOTIFICATION_SLACK_CONNECT_TIMEOUT`(2s)·`NOTIFICATION_SLACK_READ_TIMEOUT`(3s) | URL이 곧 발송 권한이라 설정 파일·저장소·로그에 두지 않음(오류 메시지·`toString`에서도 가림). `log`는 URL이 필요 없어 조건부로만 검사. Slack은 운영 채널 1곳으로 보내는 데모 기능 — 동작·한계는 `architecture.md` Kafka 장 "Slack 발송" |
 | 그 밖의 비밀 값 | Redis 비밀번호·TLS 등은 Spring Boot 표준 환경변수(`SPRING_DATA_REDIS_PASSWORD` 등) | 설정 파일·저장소에 비밀 값을 두지 않음. `.env` 파일도 읽지 않음(local 전용) |
 | Swagger | `springdoc.api-docs.enabled`·`swagger-ui.enabled: false` 명시 + 켜져 있으면 `ProdProfileGuard`가 기동 실패 | 환경변수로 잘못 켜도 API 구조가 공개되지 않도록 |
 | Actuator 포트 | 관리 포트 `MANAGEMENT_PORT`(기본 8081) — 서비스 포트(8080)에는 `/actuator`가 없음 | 관리 포트는 외부에 공개하지 않고 내부 헬스체크·Prometheus만 접근 (dev와 같은 구조) |
@@ -40,6 +42,7 @@ docker run -p 8080:8080 \
   -e SPRING_PROFILES_ACTIVE=prod \
   -e DB_URL=jdbc:postgresql://db.internal:5432/delivery -e DB_USERNAME=... -e DB_PASSWORD=... \
   -e JWT_SECRET=... -e REDIS_HOST=redis.internal -e KAFKA_BOOTSTRAP_SERVERS=kafka.internal:9092 \
+  -e CORS_ALLOWED_ORIGINS=https://app.example.com \
   delivery
 # 관리 포트 8081은 -p로 열지 않음 → 같은 네트워크의 Prometheus·헬스체크만 접근
 ```
@@ -60,8 +63,12 @@ docker run -p 8080:8080 \
 
 | 테스트 | 확인한 내용 |
 |---|---|
-| `ProdProfileIntegrationTest` (5건) | `test,prod` 프로필로 실제 기동(임의 서비스·관리 포트) 후 HTTP 요청: 서비스 포트에 Actuator 없음(404)·API 정상, Swagger UI·명세 404, 관리 포트 health는 `UP`만(상세 없음)·liveness·readiness 200, prometheus 200, env·info·metrics·heapdump·loggers·beans·configprops는 ADMIN 토큰이어도 404·토큰 없으면 401 |
-| `ProdProfileGuardTest` (4건) | 필수 환경변수가 모두 있으면 통과, 없거나 공백이면 이름만 담아 실패(값은 메시지에 없음), Swagger가 켜져 있으면 실패, Flyway 자동 baseline이 켜져 있으면 실패 |
+| `ProdProfileIntegrationTest` (6건) | `test,prod` 프로필로 실제 기동(임의 서비스·관리 포트) 후 HTTP 요청: 서비스 포트에 Actuator 없음(404)·API 정상, Swagger UI·명세 404, 관리 포트 health는 `UP`만(상세 없음)·liveness·readiness 200, prometheus 200, env·info·metrics·heapdump·loggers·beans·configprops는 ADMIN 토큰이어도 404·토큰 없으면 401, CORS는 `CORS_ALLOWED_ORIGINS` 출처만 허용(local 기본값 403) |
+| `ProdProfileGuardStartupTest` (2건, #61) | `DB_URL`·`KAFKA_BOOTSTRAP_SERVERS`가 비어 있으면 DB 없이 `SpringApplication.run`해도 가드 메시지로 실패(DataSource보다 먼저), prod가 아닌 프로필은 검사하지 않음 |
+| `ProdProfileGuardTest` (5건) | 필수 환경변수가 모두 있으면 통과, 없거나 공백이면 이름만 담아 실패(값은 메시지에 없음), `CORS_ALLOWED_ORIGINS`가 비어 있으면 실패, Swagger가 켜져 있으면 실패, Flyway 자동 baseline이 켜져 있으면 실패 |
+| `CorsSecurityTest` (7건)·`CorsPropertiesTest` (4건) | 7장 |
+
+- 수동 확인(로컬에서 직접 실행한 결과)은 [로컬 확인 가이드](local-verification.md) 3-2·3-3·4장 "검증 결과"에 따로 기록
 | `DatabaseTimeoutIntegrationTest` (4건) | 풀의 커넥션에 `lock_timeout=5s`·`statement_timeout=30s` 적용, 풀 크기 10·커넥션 대기 10초, 다른 트랜잭션이 잡은 행 잠금 대기 초과 → `PessimisticLockingFailureException`, 문장 실행 초과 → `QueryTimeoutException` |
 | `ErrorResponseFormatTest` (503 1건) | 위 예외와 커넥션 획득 실패가 503 공통 형식으로 응답, DB 오류 메시지는 응답에 없음 |
 
@@ -94,3 +101,39 @@ docker run -p 8080:8080 \
 - 정상 상황에서 5초 넘게 잠금을 쥐는 트랜잭션은 없음: 가장 긴 것은 매장 1곳의 정산 집계(매장 행 잠금)이고 이때 같은 매장의 수수료율 변경·재집계가 기다림. 매장 하루치 결제가 매우 많아져 집계가 5초를 넘기면 기다리던 쪽이 503 → 그때는 값 조정
 - `idle_in_transaction_session_timeout`은 적용하지 않음: Outbox 발행이 Kafka 응답을 기다리는 동안(최대 약 15초) 트랜잭션을 열어 두므로, 값을 잘못 잡으면 발행 중인 커넥션이 끊김
 - 풀 크기 10은 인스턴스 1대 기준 출발점. 동시 요청이 풀보다 많으면 커넥션을 기다리다 10초 뒤 503
+
+## 7. CORS (#61)
+
+브라우저 프론트엔드가 다른 출처(도메인·포트)에서 API를 호출하기 위한 설정. `SecurityConfig.corsConfigurationSource()` + `config.CorsProperties`
+
+| 항목 | 설정 | 이유 |
+|---|---|---|
+| 허용 출처 | `cors.allowed-origins` ← `CORS_ALLOWED_ORIGINS`(쉼표 구분). 기본(application.yml) 빈 목록, local·dev 기본 `http://localhost:5173,http://localhost:3000`, prod는 기본값 없이 필수 | 출처를 코드가 아닌 배포 설정으로 관리. prod에서 빠뜨리면 `ProdProfileGuard`가 기동을 막음 |
+| 출처 형식 검사 | `scheme://host[:port]`만 허용, 와일드카드(`*`)·경로·끝 슬래시는 바인딩 단계에서 기동 실패 | 와일드카드는 어느 사이트든 사용자의 브라우저로 API를 호출하게 함. 끝 슬래시는 브라우저 `Origin` 헤더와 절대 일치하지 않아 조용히 모두 막히므로 기동 시점에 드러나게 함 |
+| 자격 증명 | `allowCredentials: true` (V15, #61에서는 `false`) | Refresh Token을 HttpOnly 쿠키로 주고받기 위해. API 인증은 여전히 `Authorization` 헤더(JWT)이고 쿠키는 `refresh_token`(`Path=/api/users`) 하나뿐. 허용 출처 목록이 곧 재발급·로그아웃 CSRF 방어의 한 축이 됨 ([프로젝트 구조 · 인증](architecture.md#인증-access--refresh-token-v15)) |
+| 허용 메서드 | `GET, POST, PUT, PATCH, DELETE, OPTIONS` | 컨트롤러에서 쓰는 메서드 전체 (권한은 기존 URL 규칙이 그대로 판단) |
+| 허용 요청 헤더 | `Authorization`, `Content-Type`, `Idempotency-Key`, `X-Trace-Id` | JWT, JSON 본문, 결제 멱등성 키(#41), 클라이언트가 정하는 추적 id(#38). 목록에 없는 헤더는 Preflight 403 |
+| 노출 응답 헤더 | `X-Has-Next`, `X-Next-After-Id`, `X-Page`, `X-Size`, `X-Trace-Id`, `Idempotent-Replayed` | 브라우저 JS는 기본 헤더 외에는 노출 목록에 있는 것만 읽을 수 있음 (목록 페이징·오류 추적·멱등 재전송 여부) |
+| Preflight 캐시 | `maxAge` 1시간 | 요청마다 OPTIONS가 한 번 더 가지 않도록 |
+| Preflight 인증 | Spring Security `CorsFilter`가 인증·권한 검사 앞에서 처리 → 허용 출처의 Preflight는 토큰 없이 200 | 브라우저는 Preflight에 토큰을 붙이지 않음. `OPTIONS /**`를 permitAll로 열지 않는 이유: CORS가 아닌 OPTIONS까지 인증 없이 컨트롤러 쪽으로 넘기지 않기 위해 |
+
+동작
+- 허용하지 않은 출처: Preflight·실제 요청 모두 `CorsFilter`가 403(`Invalid CORS request`)으로 끝냄 → 토큰이 있어도 컨트롤러에 닿지 않음
+- `Origin` 헤더가 없는 요청(curl·서버 간 호출·헬스체크)과 같은 출처 요청은 CORS 대상이 아니라 기존 동작 그대로 — CORS는 브라우저 보호 장치이지 API 접근 제어가 아님 (접근 제어는 JWT·URL 규칙)
+- 관리 포트(8081)에도 같은 필터 체인이 적용되지만 브라우저에서 호출할 일이 없음
+
+Refresh Token 쿠키 (V15) — `auth.refresh-token.*` (`config.RefreshTokenProperties`)
+
+| 환경변수 | 기본 | 설명 |
+|---|---|---|
+| `REFRESH_TOKEN_COOKIE_SECURE` | `true` | HTTPS에서만 전송. Chrome·Firefox는 `http://localhost`도 보안 출처로 취급해 로컬 개발에서도 그대로 동작 (Safari 등에서 로컬 쿠키가 저장되지 않으면 local에서만 `false`) |
+| `REFRESH_TOKEN_COOKIE_SAME_SITE` | `Strict` | 프론트·API가 같은 사이트(등록 도메인 같음, 포트 무관 — `localhost:5173` ↔ `localhost:8090`, `app.example.com` ↔ `api.example.com`)면 `Strict`. 다른 사이트면 `None`(+ `Secure` 필수, 아니면 기동 실패) — 이때 CSRF 방어는 CORS 허용 출처 검사에만 의존 |
+- 수명(`ttl` 14일, 로그인 후 절대 만료 `absolute-ttl` 30일 — V16)과 Access 수명(`jwt.expiration-ms` 15분)은 application.yml 값. 프론트엔드 배포 구조가 정해지면 `SameSite` 값을 확정
+
+변경 방법
+- 출처 추가: 배포 환경의 `CORS_ALLOWED_ORIGINS`에 쉼표로 추가 후 재시작 (예: `https://app.example.com,https://admin.example.com`)
+- compose(dev) 앱은 이 변수를 넘기지 않으므로 dev 기본값 사용. 다른 주소가 필요하면 compose `app.environment`에 추가
+
+한계 · 후속
+- 거부 응답 본문은 Spring 기본 문자열이라 공통 오류 형식(`ApiErrorResponse`)이 아님 — 브라우저 JS는 읽을 수 없어 영향 없음
+- 실제 브라우저 확인은 프론트엔드 연동 때 (이번 수동 확인은 curl로 헤더를 흉내 냄 — [로컬 확인 가이드](local-verification.md) 4장)

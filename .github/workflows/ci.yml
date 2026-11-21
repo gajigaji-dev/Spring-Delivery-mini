@@ -1,12 +1,30 @@
-# 빌드·테스트 자동화 — main 대상 PR과 main push에서 실행
+# 백엔드 빌드·테스트 자동화 — main 대상 PR과 main push에서 실행
 # 통합 테스트는 Testcontainers로 PostgreSQL을 띄우므로 Docker가 있는 ubuntu 러너 사용 (별도 DB 서비스 불필요)
+# 백엔드에 영향을 주는 경로가 바뀔 때만 실행 — 프론트엔드(frontend/**)는 frontend.yml
+# 주의: 브랜치 보호에서 이 체크를 "필수"로 두면, 프론트만 바뀐 PR은 이 워크플로가 실행되지 않아 대기 상태로 남음
 name: CI
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'Dockerfile'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'Dockerfile'
+      - '.github/workflows/ci.yml'
 
 permissions:
   contents: read

@@ -1,7 +1,12 @@
 package com.sparta.springdeliverymini.controller;
 
 import lombok.RequiredArgsConstructor;
+import com.sparta.springdeliverymini.dto.PartialRefundRequest;
+import com.sparta.springdeliverymini.dto.PaymentRefundResponse;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
+import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import com.sparta.springdeliverymini.service.AdminPaymentService;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -14,10 +19,20 @@ public class AdminPaymentController {
 
     private final AdminPaymentService adminPaymentService;
 
-    // 배달완료 주문 전액 환불 — COMPLETED → REFUNDED (요청 본문 없음, 환불 시각은 서버 시각)
+    // 배달완료 주문 전액 환불 — 남은 금액 전부 → REFUNDED (요청 본문 없음, 환불 시각은 서버 시각)
     // 배달 전 주문은 고객이 주문 취소(PATCH /api/orders/{id}/cancel)로 처리
     @PatchMapping("/{id}/refund")
     public PaymentResponse refund(@PathVariable Long id, Authentication authentication) {
         return adminPaymentService.refund(id, authentication.getName());
+    }
+
+    // 부분 환불 (V21) — 금액 지정, 남은 금액 안에서 여러 번. 환불 1건마다 201 + 환불 내역
+    // 남은 금액 전부를 지정하면 전액 환불과 같은 결과(REFUNDED)
+    @PostMapping("/{id}/refunds")
+    public ResponseEntity<PaymentRefundResponse> partialRefund(@PathVariable Long id,
+                                                               @Valid @RequestBody PartialRefundRequest request,
+                                                               Authentication authentication) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(adminPaymentService.partialRefund(
+                id, request.amount(), request.reason(), authentication.getName()));
     }
 }

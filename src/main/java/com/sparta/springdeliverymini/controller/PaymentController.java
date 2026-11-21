@@ -1,6 +1,7 @@
 package com.sparta.springdeliverymini.controller;
 
 import lombok.RequiredArgsConstructor;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.dto.PaymentRequest;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.service.PaymentIdempotencyService;
@@ -16,7 +17,10 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 // @Controller는 반환값을 뷰 이름으로 해석하므로 JSON 응답을 위해 @RestController 사용
 @RestController
@@ -35,6 +39,16 @@ public class PaymentController {
     @GetMapping("/payments/{id}")
     public PaymentResponse getPayment(@PathVariable Long id, Authentication authentication) {
         return paymentService.getPayment(id, authentication.getName());
+    }
+
+    // 내 결제 목록 (#62) — CUSTOMER만(SecurityConfig), 본인 결제만 id 오름차순 페이지 (?page=0&size=20, size 최대 100)
+    // 본문은 배열, 페이지 정보는 응답 헤더(X-Page·X-Size·X-Has-Next) — 다른 목록 API와 같은 방식 (#40)
+    @GetMapping("/payments")
+    public ResponseEntity<List<PaymentResponse>> getMyPayments(
+            @RequestParam(defaultValue = PageQuery.DEFAULT_PAGE_PARAM) int page,
+            @RequestParam(defaultValue = PageQuery.DEFAULT_SIZE_PARAM) int size,
+            Authentication authentication) {
+        return SliceResponse.of(paymentService.getMyPayments(authentication.getName(), PageQuery.of(page, size)));
     }
 
     // CUSTOMER만 결제 가능

@@ -1,6 +1,7 @@
 package com.sparta.springdeliverymini.repository;
 
 import com.sparta.springdeliverymini.entity.Order;
+import com.sparta.springdeliverymini.entity.OrderStatus;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
@@ -10,6 +11,7 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.Optional;
 
 public interface OrderRepository extends JpaRepository<Order, Long> {
@@ -40,10 +42,21 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     // 매장은 소유권 검증 때 이미 조회되어 있으므로 함께 조회하지 않음 — 인덱스 idx_orders_store_id_id (V12)
     Slice<Order> findAllByStoreId(Long storeId, Pageable pageable);
 
+    // 주문 단건 조회용 (#62) — 매장·주문 항목을 한 쿼리로 함께 조회(fetch join)
+    // 단건이라 컬렉션 fetch join의 메모리 페이징 문제가 없음 → 항목을 @BatchSize로 따로 읽지 않고 쿼리 1번
+    // 소유권 확인(order.user.id, store.owner.id)은 FK 값이라 추가 쿼리 없음
+    @Query("SELECT o FROM Order o JOIN FETCH o.store LEFT JOIN FETCH o.orderItems WHERE o.id = :id")
+    Optional<Order> findDetailById(@Param("id") Long id);
+
     // 상태 변경용 조회 — 주문 행 잠금(SELECT ... FOR UPDATE)
     // 결제·취소·수락·배달완료가 같은 주문에 동시에 들어와도 한 번에 하나씩 처리
     //   → 예) 고객 취소와 사장님 수락이 함께 결제완료 상태를 읽고 둘 다 성공하는 일을 막음
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT o FROM Order o WHERE o.id = :id")
     Optional<Order> findByIdForUpdate(@Param("id") Long id);
+
+    // 사장님 전환 신청·승인 전 확인 (V17) — 진행 중인 주문이 남은 고객은 전환하지 않음
+    // 전환 뒤에는 고객 API(취소·결제 조회)가 DB 역할 기준 403이 되어 그 주문을 다룰 수 없게 되므로
+    // 인덱스 idx_orders_user_id_id (V12)의 user_id 범위에서 상태만 확인
+    boolean existsByUserIdAndStatusIn(Long userId, Collection<OrderStatus> statuses);
 }

@@ -1,10 +1,13 @@
 package com.sparta.springdeliverymini.service;
 
+
+import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.config.TimeConfig;
 import com.sparta.springdeliverymini.dto.SettlementItemResponse;
 import com.sparta.springdeliverymini.dto.StoreSettlementResponse;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.repository.PaymentRefundRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +41,9 @@ class SettlementServiceTest {
     private PaymentRepository paymentRepository;
 
     @Mock
+    private PaymentRefundRepository paymentRefundRepository; // 환불 1건 (V21)
+
+    @Mock
     private UserRepository userRepository;
 
     @Mock
@@ -59,7 +65,8 @@ class SettlementServiceTest {
     // Clock은 Mock이 아니라 고정 값이므로 @InjectMocks 대신 직접 생성
     @BeforeEach
     void setUp() {
-        settlementService = new SettlementService(paymentRepository, userRepository, storeService, fixedClock);
+        settlementService = new SettlementService(paymentRepository, paymentRefundRepository, userRepository, storeService,
+                fixedClock);
     }
 
     private static User user(Long id, String username, Role role) {
@@ -76,7 +83,7 @@ class SettlementServiceTest {
 
     // 배달완료된 주문의 결제 (수수료율 5%)
     private Payment deliveredPayment(Long id, long amount, LocalDateTime deliveredAt) {
-        Order order = new Order(customer, store, "서울시", OrderStatus.ORDER_ACCEPTED);
+        Order order = new Order(customer, store, TestAddresses.seoul(), OrderStatus.ORDER_ACCEPTED);
         order.addItem(new Menu("치킨", amount, null, store), 1);
         order.complete(deliveredAt);
         ReflectionTestUtils.setField(order, "id", id);

@@ -29,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "JWT_SECRET=guard-check-only",
         "REDIS_HOST=localhost",
         "KAFKA_BOOTSTRAP_SERVERS=localhost:9094",
+        "CORS_ALLOWED_ORIGINS=https://app.example.com",
         "MANAGEMENT_PORT=0"
 })
 @ActiveProfiles({"test", "prod"})
@@ -96,5 +97,30 @@ class ProdProfileIntegrationTest {
             // 관리 포트에도 SecurityConfig가 적용됨 — health·prometheus 외 Actuator는 토큰 없으면 401
             assertThat(get(managementPort, path, null).statusCode()).as(path).isEqualTo(401);
         }
+    }
+
+    // prod에서는 환경변수(CORS_ALLOWED_ORIGINS)로 지정한 출처만 허용 (#61)
+    @Test
+    void CORS는_환경변수로_지정한_출처만_허용한다() throws Exception {
+        HttpResponse<String> allowed = preflight("https://app.example.com");
+        assertThat(allowed.statusCode()).isEqualTo(200);
+        assertThat(allowed.headers().firstValue("Access-Control-Allow-Origin")).hasValue("https://app.example.com");
+        // Refresh Token 쿠키(HttpOnly) 때문에 자격 증명 허용 — 허용 출처에만 (V15)
+        assertThat(allowed.headers().firstValue("Access-Control-Allow-Credentials")).hasValue("true");
+
+        // local 기본값(localhost:5173)은 prod에 적용되지 않음
+        HttpResponse<String> denied = preflight("http://localhost:5173");
+        assertThat(denied.statusCode()).isEqualTo(403);
+        assertThat(denied.headers().firstValue("Access-Control-Allow-Origin")).isEmpty();
+    }
+
+    private HttpResponse<String> preflight(String origin) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + serverPort + "/api/orders"))
+                .method("OPTIONS", HttpRequest.BodyPublishers.noBody())
+                .header("Origin", origin)
+                .header("Access-Control-Request-Method", "GET")
+                .header("Access-Control-Request-Headers", "authorization")
+                .build();
+        return client.send(request, HttpResponse.BodyHandlers.ofString());
     }
 }

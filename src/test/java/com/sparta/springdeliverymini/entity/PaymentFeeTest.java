@@ -108,4 +108,34 @@ class PaymentFeeTest {
 
         assertThat(fee.feeAmount()).isEqualTo(1234);
     }
+
+    // ===== 부분 환불 수수료 (V21) =====
+
+    @Test
+    void 부분_환불_수수료는_누적_환불액_수수료의_차이다() {
+        // 결제 10,001원 5% → 수수료 500(500.05). 1원씩 나눠 환불하면 건별 반올림은 0원씩이지만 누적 기준이면 합계 500
+        BigDecimal rate = new BigDecimal("0.05");
+        long feeSum = 0;
+        for (long refunded = 0; refunded < 10001; refunded += 1) {
+            feeSum += PaymentFee.refundPortion(10001, rate, refunded, 1).feeAmount();
+        }
+
+        assertThat(feeSum).isEqualTo(PaymentFee.calculate(10001, rate).feeAmount());
+    }
+
+    @Test
+    void 부분_환불_수수료는_0_이상이고_환불액을_넘지_않는다() {
+        PaymentFee portion = PaymentFee.refundPortion(18009, new BigDecimal("1.0000"), 3, 7);
+
+        assertThat(portion.feeAmount()).isEqualTo(7);
+        assertThat(portion.settlementAmount()).isZero();
+    }
+
+    @Test
+    void 남은_금액을_넘는_부분_환불은_계산하지_않는다() {
+        assertThatThrownBy(() -> PaymentFee.refundPortion(10000, new BigDecimal("0.05"), 9000, 1001))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> PaymentFee.refundPortion(10000, new BigDecimal("0.05"), 0, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

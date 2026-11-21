@@ -2,6 +2,7 @@ package com.sparta.springdeliverymini.service;
 
 import com.sparta.springdeliverymini.dto.OwnerSettlementDetailResponse;
 import com.sparta.springdeliverymini.dto.OwnerSettlementListResponse;
+import com.sparta.springdeliverymini.dto.PageQuery;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.exception.ApiException;
 import com.sparta.springdeliverymini.repository.*;
@@ -36,6 +37,7 @@ class OwnerSettlementServiceTest {
     @Mock private SettlementCarryoverRepository settlementCarryoverRepository;
     @Mock private PaymentRepository paymentRepository;
     @Mock private UserRepository userRepository;
+    @Mock private StoreRepository storeRepository;
     @Mock private StoreService storeService;
 
     private static final LocalDate FROM = LocalDate.of(2026, 11, 1);
@@ -48,7 +50,7 @@ class OwnerSettlementServiceTest {
     @BeforeEach
     void setUp() {
         service = new OwnerSettlementService(settlementRepository, settlementRefundRepository,
-                settlementCarryoverRepository, paymentRepository, userRepository, storeService);
+                settlementCarryoverRepository, paymentRepository, userRepository, storeRepository, storeService);
         ReflectionTestUtils.setField(owner, "id", 1L);
         store = new Store("치킨집", owner);
         ReflectionTestUtils.setField(store, "id", 20L);
@@ -147,5 +149,51 @@ class OwnerSettlementServiceTest {
         // 판매 조회는 정산일 하루 구간
         verify(paymentRepository).findSettlementTargets(20L,
                 LocalDate.of(2026, 11, 5).atStartOfDay(), LocalDate.of(2026, 11, 6).atStartOfDay());
+    }
+
+    // ===== 내 정산 내역 =====
+
+    @Test
+    void 내_정산_내역에서_매장을_지정하면_소유권을_확인하고_점주_매장_전체는_조회하지_않는다() {
+        givenOwner();
+        given(settlementRepository.findBy(any(org.springframework.data.jpa.domain.Specification.class), any()))
+                .willReturn(new org.springframework.data.domain.SliceImpl<>(List.of(settlementWithCarryOut())));
+
+        var result = service.getMySettlements("owner1", 20L, null, null, null, PageQuery.of(0, 20));
+
+        assertThat(result.getContent()).singleElement().satisfies(s -> {
+            assertThat(s.storeId()).isEqualTo(20L);
+            assertThat(s.storeName()).isEqualTo("치킨집");
+            assertThat(s.carriedOutAmount()).isEqualTo(2000);
+        });
+        verify(storeService).getOwnedStore(20L, owner);
+        verify(storeRepository, never()).findAllByOwnerId(anyLong());
+    }
+
+    @Test
+    void 내_정산_내역에서_매장이_없는_점주는_정산을_조회하지_않고_빈_목록() {
+        given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
+        given(storeRepository.findAllByOwnerId(1L)).willReturn(List.of());
+
+        var result = service.getMySettlements("owner1", null, null, null, null, PageQuery.of(0, 20));
+
+        assertThat(result.getContent()).isEmpty();
+        assertThat(result.hasNext()).isFalse();
+        verifyNoInteractions(settlementRepository);
+    }
+
+    @Test
+    void 내_정산_내역은_OWNER가_아니면_403_기간이_뒤집히면_400이고_조회하지_않는다() {
+        User customer = new User("customer1", "pw", Role.CUSTOMER);
+        given(userRepository.findByUsername("customer1")).willReturn(Optional.of(customer));
+        given(userRepository.findByUsername("owner1")).willReturn(Optional.of(owner));
+
+        assertThatThrownBy(() -> service.getMySettlements("customer1", null, null, null, null, PageQuery.of(0, 20)))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.FORBIDDEN);
+        assertThatThrownBy(() -> service.getMySettlements("owner1", null, null, TO, FROM, PageQuery.of(0, 20)))
+                .isInstanceOf(ApiException.class)
+                .extracting("status").isEqualTo(HttpStatus.BAD_REQUEST);
+        verifyNoInteractions(settlementRepository, storeRepository, storeService);
     }
 }

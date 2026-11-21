@@ -98,6 +98,7 @@ class OutboxFollowUpIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
     @Autowired private PaymentIdempotencyKeyRepository idempotencyKeyRepository;
     @Autowired private OutboxEventRepository outboxEventRepository;
     @Autowired private ConsumedEventRepository consumedEventRepository;
@@ -127,6 +128,7 @@ class OutboxFollowUpIntegrationTest {
         consumedEventRepository.deleteAllInBatch();
         outboxEventRepository.deleteAllInBatch();
         idempotencyKeyRepository.deleteAllInBatch();
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
@@ -412,7 +414,7 @@ class OutboxFollowUpIntegrationTest {
         assertThat(outboxEventRepository.findAll()).extracting(OutboxEvent::getId)
                 .containsExactlyInAnyOrder(recentPublished, oldPending, oldFailed);
         // 다시 실행해도 더 지우지 않음
-        assertThat(retentionCleaner.cleanUp()).isEqualTo(new CleanupResult(0, 0, 0));
+        assertThat(retentionCleaner.cleanUp()).isEqualTo(new CleanupResult(0, 0, 0, 0));
     }
 
     @Test
@@ -420,14 +422,14 @@ class OutboxFollowUpIntegrationTest {
         // 31일 전: 키 있는 결제 + 그 이벤트 처리 (consumed-events·payment-idempotency-keys 30d)
         clock.set(NOW.minusDays(31));
         OrderResponse oldOrder = orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1");
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
         paymentService.pay(new PaymentRequest(oldOrder.id(), "CARD"), "customer1", "old-key", "fp");
         notificationService.handle(message(OutboxEventType.PAYMENT_COMPLETED));
 
         // 29일 전: 아직 보관 기간 안
         clock.set(NOW.minusDays(29));
         OrderResponse recentOrder = orderService.createOrder(
-                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "서울시"), "customer1");
+                new OrderCreateRequest(List.of(new OrderItemRequest(menu.id(), 1)), "06236", "서울 강남구 테헤란로 152", "101호"), "customer1");
         paymentService.pay(new PaymentRequest(recentOrder.id(), "CARD"), "customer1", "recent-key", "fp");
         notificationService.handle(message(OutboxEventType.DELIVERY_COMPLETED));
 
