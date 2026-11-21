@@ -86,6 +86,20 @@ class ProdProfileGuardTest {
     }
 
     @Test
+    void 소셜_로그인_키가_있는데_프론트_콜백_주소가_없으면_기동을_막고_키가_없으면_필요없다() {
+        MockEnvironment kakao = completeEnvironment();
+        kakao.setProperty("KAKAO_CLIENT_ID", "kakao-id");
+        assertThatThrownBy(() -> ProdProfileGuard.check(kakao))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("필수 환경변수가 없습니다: SOCIAL_FRONTEND_CALLBACK_URL");
+
+        kakao.setProperty("SOCIAL_FRONTEND_CALLBACK_URL", "https://delivery.example.com/oauth/callback");
+        assertThatCode(() -> ProdProfileGuard.check(kakao)).doesNotThrowAnyException();
+
+        assertThatCode(() -> ProdProfileGuard.check(completeEnvironment())).doesNotThrowAnyException();
+    }
+
+    @Test
     void 알림_발송기가_slack이고_웹훅_URL이_있으면_통과하고_log면_URL이_없어도_통과한다() {
         MockEnvironment slack = completeEnvironment();
         slack.setProperty("notification.sender", "slack");

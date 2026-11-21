@@ -98,7 +98,8 @@ public class UserService {
 
         // 2. 비밀번호 확인
         // 저장된 해시를 복호화하는 게 아니라, 입력한 비밀번호를 같은 salt로 해시해서 비교 → 틀리면 401
-        if (!passwordEncoder.matches(request.password(), user.getPassword())) {
+        // 소셜 전용 회원(비밀번호 없음, V22)도 같은 401 — 소셜 가입 여부를 알려주지 않음
+        if (!user.hasPassword() || !passwordEncoder.matches(request.password(), user.getPassword())) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "아이디 또는 비밀번호가 올바르지 않습니다.");
         }
 

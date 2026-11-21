@@ -40,7 +40,23 @@ const CODE_MESSAGES: Record<string, string> = {
   PG_NOT_CONFIGURED: '지금은 토스 결제를 사용할 수 없습니다. (결제되지 않았습니다)',
   INVALID_REFUND_AMOUNT: '환불 금액이 남은 결제 금액보다 큽니다.',
   PG_RESULT_UNKNOWN: '결제 결과를 확인하고 있습니다. 결제창을 다시 열지 말고 잠시 후 다시 확인해 주세요.',
+
+  // 소셜 로그인 (V22) — API 오류 code와 /oauth/callback?error= 값이 같음
+  SOCIAL_PROVIDER_NOT_SUPPORTED: '지금은 이 소셜 로그인을 사용할 수 없습니다.',
+  SOCIAL_LINK_FORBIDDEN: '관리자 계정은 소셜 계정을 연결할 수 없습니다.',
+  SOCIAL_ACCOUNT_ALREADY_LINKED: '이 소셜 계정은 이미 다른 회원이 사용 중입니다. 그 계정으로 로그인해 주세요.',
+  SOCIAL_PROVIDER_ALREADY_LINKED: '이미 같은 서비스의 소셜 계정이 연결되어 있습니다. 해제한 뒤 다시 연결해 주세요.',
+  SOCIAL_LAST_LOGIN_METHOD: '비밀번호가 없는 계정이라 마지막 소셜 계정은 해제할 수 없습니다.',
+  OAUTH2_CANCELLED: '소셜 로그인을 취소했습니다.',
+  OAUTH2_REQUEST_EXPIRED: '로그인 시간이 지났습니다. 처음부터 다시 시도해 주세요.',
+  SOCIAL_LINK_EXPIRED: '연결 요청 시간이 지났습니다. 내 정보에서 다시 연결해 주세요.',
+  OAUTH2_FAILED: '소셜 로그인에 실패했습니다. 잠시 후 다시 시도해 주세요.',
 };
+
+/** 코드별 안내 문구 (OAuth2 콜백의 ?error= 처럼 ApiError가 아닌 곳에서 사용) */
+export function messageForCode(code: string): string {
+  return CODE_MESSAGES[code] ?? CODE_MESSAGES.OAUTH2_FAILED;
+}
 
 const STATUS_MESSAGES: Record<number, string> = {
   503: '잠시 후 다시 시도해 주세요. (요청은 반영되지 않았습니다)',

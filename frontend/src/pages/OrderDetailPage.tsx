@@ -113,7 +113,9 @@ export default function OrderDetailPage() {
         합계 <strong><Money value={order.totalPrice} /></strong>
       </p>
       <p className="muted">
-        주문 {formatDateTime(order.createdAt)} · 배달완료 {formatDateTime(order.deliveredAt)}
+        {/* 배달 전에는 '배달완료 -'가 완료된 것처럼 읽혀 시각이 있을 때만 표시 */}
+        주문 {formatDateTime(order.createdAt)}
+        {order.deliveredAt && <> · 배달완료 {formatDateTime(order.deliveredAt)}</>}
       </p>
 
       <h2>결제</h2>

@@ -7,6 +7,7 @@ import { BootScreen } from '../components/BootScreen';
 import { ErrorMessage } from '../components/ErrorMessage';
 import { ROLE_HOME } from '../components/Layout';
 import { PrefetchLink } from '../components/PrefetchLink';
+import { SocialLoginButtons } from '../components/SocialLoginButtons';
 
 export default function LoginPage() {
   const { status, me, login } = useAuth();
@@ -84,6 +85,7 @@ export default function LoginPage() {
           {submitting ? '확인 중…' : '로그인'}
         </button>
       </form>
+      <SocialLoginButtons />
       {demoAccounts.length > 0 && (
         <div style={{ marginTop: 28, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div className="divider-label">테스트 계정으로 채우기</div>

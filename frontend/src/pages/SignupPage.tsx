@@ -4,6 +4,7 @@ import { authApi } from '../api/endpoints';
 import { AuthShell } from '../components/AuthShell';
 import { ErrorMessage } from '../components/ErrorMessage';
 import { PrefetchLink } from '../components/PrefetchLink';
+import { SocialLoginButtons } from '../components/SocialLoginButtons';
 import { useToast } from '../components/Toast';
 
 export default function SignupPage() {
@@ -75,6 +76,7 @@ export default function SignupPage() {
           {submitting ? '가입 중…' : '가입'}
         </button>
       </form>
+      <SocialLoginButtons variant="signup" />
     </AuthShell>
   );
 }

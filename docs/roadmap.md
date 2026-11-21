@@ -92,7 +92,7 @@
 | 1 | ~~#76~~ 완료 (PR #80) | 사장님 실시간 주문 알림 (SSE) | 1.5 ~ 2일 | 실제 1일 이내 |
 | 2 | ~~#77~~ 완료 (PR #81) | 주소·결제 예외 처리 (우편번호·도로명·상세 분리 V18, 결제 오류 코드·화면 문구) | 1 ~ 1.5일 | 머지 완료 |
 | 3 | #78 | 토스페이먼츠 테스트 모드 (공식 공개 테스트 키, 승인 금액 대조, 결제 키 저장 V20, 취소 연동) | 2 ~ 3일 | 구현·자동 테스트 완료 (2026-11-21), 실제 결제창 확인 대기 |
-| 4 | 미정 | 소셜 로그인 (카카오 + 구글, 소셜 계정 연결 V21, 성공 시 기존 Refresh 쿠키) | 2.5 ~ 4일 | |
+| 4 | 브랜치 `feat/79-social-login` | 소셜 로그인 (카카오 + 구글, 소셜 계정 연결 V22, 성공 시 기존 Refresh 쿠키) | 2.5 ~ 4일 | 구현·자동 테스트 완료 (2026-11-21), 실제 공급자 로그인 확인 대기 |
 
 ### #76 결과
 - 산출물: `GET /api/owner/order-events`, `event.OwnerOrderStreamRegistry`, `config.OpenEntityManagerInViewConfig`, 프론트 `api/orderStream.ts`·`owner/orderStreamController.ts`
@@ -117,3 +117,17 @@
 - 가짜 PG 모드(`TOSS_MODE=fake`): 토스에 접속하지 않는 시연·장애 재현용, prod 기동 불가
 - compose Redis 장애 시 503 5초 원인(Netty DNS 조회 약 4초) 확인·조치 → 약 1초 (`docs/architecture.md` Redis 장)
 - 남은 것: 관리자 부분 환불 화면(지금은 API만), 가짜 결제창 브라우저 확인
+
+### 소셜 로그인 결과 (2026-11-21, 브랜치 `feat/79-social-login`)
+- 산출물: V22(`social_accounts`, `users.password` NULL 허용), `social` 패키지(공급자 확장 지점 `SocialProvider` + 카카오·구글), `SocialAccountService`, `SocialAccountController`, 프론트 `/oauth/callback`·로그인 버튼·내 정보 연결
+- 이슈 본문의 "V20"은 토스(V20)·부분 환불(V21)이 먼저 써서 V22
+- 사용자 결정: 기존 회원은 로그인 후 직접 연결(이메일 자동 매칭 없음) / 결과는 Refresh 쿠키 + 프론트 refresh(URL에 토큰 없음)
+- 설계 판단: 세션 대신 서명 쿠키(시작 기록·연결 요청), 관리자 연결 불가, 공급자 Access Token 미보관 (`docs/architecture.md` 소셜 로그인 장)
+- 남은 것: 실제 카카오·구글 로그인 확인(`docs/local-verification.md` 9장 — 콘솔 키 필요), 소셜 전용 회원 비밀번호 설정, 회원 합치기(필요 시)
+
+## 다음 후보 — 배포 (2026-11-22 사용자 결정: Vercel, 별도 작업)
+- Vercel은 프론트엔드(Vite 정적 빌드)만 올림 → 백엔드(Spring Boot·PostgreSQL·Redis·Kafka)는 컨테이너를 돌릴 곳이 따로 필요
+- 프론트와 API 도메인이 다르면: Refresh 쿠키 `SameSite=None` + `Secure`(HTTPS 필수, `auth.refresh-token.*`), `CORS_ALLOWED_ORIGINS`에 Vercel 주소, `VITE_API_BASE_URL`
+- 소셜 로그인: `SOCIAL_FRONTEND_CALLBACK_URL`을 Vercel 주소로, 카카오·구글 콘솔에 배포 API 주소의 Redirect URI 추가
+- SPA 새로고침(`/owner/orders` 등 직접 접속) → `vercel.json` rewrite로 `index.html`
+- 공개 데모는 `TOSS_MODE=fake`(prod 프로필 기동 불가 → 데모 전용 프로필 결정 필요) 또는 토스 테스트 키

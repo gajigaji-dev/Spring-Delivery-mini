@@ -10,6 +10,7 @@ const loaders = {
   storeDetail: () => import('../pages/StoreDetailPage'),
   login: () => import('../pages/LoginPage'),
   signup: () => import('../pages/SignupPage'),
+  oauthCallback: () => import('../pages/OAuthCallbackPage'),
   cart: () => import('../pages/CartPage'),
   orders: () => import('../pages/OrdersPage'),
   orderDetail: () => import('../pages/OrderDetailPage'),

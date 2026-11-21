@@ -90,6 +90,8 @@
   | 503 | `PG_NOT_CONFIGURED` | 토스 키 없음·시크릿 키 거부 — 결제하지 않음 (V20) | 모의 결제 또는 나중에 |
   | 503 | `PG_RESULT_UNKNOWN` | 토스 승인 결과를 확인하지 못함 (V20) | **결제창을 다시 열지 말고** 같은 승인 요청 재시도 |
 
+  소셜 로그인 코드(`SOCIAL_*`·`OAUTH2_*`, V22)는 [소셜 로그인](#소셜-로그인-v22-카카오구글) 절
+
 - 운영 엔드포인트 (Actuator)
 
   | 경로 | 노출 | 권한 |
@@ -107,6 +109,12 @@
 | Access Token 재발급 | POST | `/api/users/refresh` | 쿠키 | Refresh Token 쿠키 | 200 |
 | 로그아웃 | POST | `/api/users/logout` | 쿠키 | Refresh Token 쿠키 (없어도 204) | 204 |
 | 내 정보 조회 | GET | `/api/users/me` | O | 로그인 사용자 | 200 |
+| 소셜 로그인 시작 (브라우저 이동) | GET | `/oauth2/authorization/{provider}[?mode=link]` | X | - | 302 |
+| 소셜 로그인 콜백 (공급자 → 서버) | GET | `/login/oauth2/code/{provider}` | X | 시작 기록 쿠키 | 302 |
+| 사용 가능한 소셜 공급자 | GET | `/api/users/social/providers` | X | - | 200 |
+| 내 소셜 계정 | GET | `/api/users/me/social-accounts` | O | 로그인 사용자 | 200 |
+| 소셜 계정 연결 시작 | POST | `/api/users/me/social-accounts/{provider}/link` | O | CUSTOMER·OWNER | 204 |
+| 소셜 계정 연결 해제 | DELETE | `/api/users/me/social-accounts/{provider}` | O | 로그인 사용자 | 204 |
 | 사장님 전환 신청 | POST | `/api/owner-applications` | O | CUSTOMER | 201 |
 | 내 사장님 전환 신청 | GET | `/api/owner-applications/me` | O | 로그인 사용자 | 200 |
 | 매장 생성 | POST | `/api/stores` | O | OWNER | 201 |
@@ -326,6 +334,55 @@ Request `{ "businessName": "치킨집" }` (필수, 50자 이하) → `201 Create
 **토큰**: 승인 뒤에도 이미 발급된 Access Token(최대 15분)은 `role=CUSTOMER` → 사장님 API 403. `POST /api/users/refresh`가 DB 역할로 새 토큰을 주므로 재발급 후부터 OWNER (프론트는 "사장님 화면으로 전환" 버튼에서 재발급 → `/me` 다시 조회)
 
 후속 후보: 승인·거절 결과 알림(Outbox 이벤트) — 지금은 신청자가 `/me`로 확인
+
+### 소셜 로그인 (V22, 카카오·구글)
+
+OAuth2 Authorization Code 흐름. 구조·설계 근거는 [프로젝트 구조 · 소셜 로그인](architecture.md#소셜-로그인-v22), 로컬 확인은 [로컬 확인 9장](local-verification.md)
+
+| 단계 | 요청 | 설명 |
+|---|---|---|
+| 1. 시작 | 브라우저 이동 `GET /oauth2/authorization/{kakao\|google}` | 서버가 공급자 동의 화면으로 302. 시작 기록(state·nonce)은 서명된 HttpOnly 쿠키 `oauth2_auth_request`(Path=/login/oauth2/code, SameSite=Lax, 10분). 키가 없는(꺼진) 공급자는 404 |
+| 2. 콜백 | 공급자 → `GET /login/oauth2/code/{provider}?code=&state=` | 공급자 콘솔에 등록하는 Redirect URI. state 확인 → 코드 교환 → 회원 처리 |
+| 3. 결과 | 서버 → 302 `{social.frontend-callback-url}?result=login` | 로그인 성공: 기존 로그인과 같은 **Refresh Token 쿠키만** 발급(토큰은 URL에 없음) → 프론트가 `POST /api/users/refresh`로 Access 받음 |
+| | `?result=linked&provider=kakao` | 계정 연결 성공 (쿠키 변화 없음) |
+| | `?error={code}` | 아래 표 |
+
+- **처음 로그인**: CUSTOMER로 자동 가입. 아이디는 `{공급자}_` + 소문자·숫자 10자(예: `kakao_3k9x0a1b2c`), 비밀번호 없음 → 아이디·비밀번호 로그인은 401
+- **중복 가입 없음**: `social_accounts (provider, provider_user_id)` UNIQUE. 같은 계정으로 동시에 처음 로그인해도 1명만 생기고 나머지는 그 회원으로 로그인
+- **저장하는 값**: 공급자 회원 식별자(카카오 회원번호, 구글 `sub`)만. 이메일·닉네임은 요청하지도 저장하지도 않음 (카카오 동의 항목 없음, 구글 scope `openid`)
+- 이후 인증은 기존과 같음 (Access 15분 + Refresh 쿠키, `/api/users/refresh`·`/logout` 그대로)
+
+#### 사용 가능한 공급자 `GET /api/users/social/providers` (토큰 없음)
+Response `200 OK` — `["google", "kakao"]` (키가 설정된 것만, 이름순. 비어 있으면 버튼 숨김)
+
+#### 기존 회원에 연결
+로그인한 상태에서만, 회원이 직접 시작 (이메일 자동 매칭 없음)
+1. `POST /api/users/me/social-accounts/{provider}/link` (Bearer, **`credentials: 'include'`**) → `204` + HttpOnly 쿠키 `social_link`(서명, 회원 id·공급자, 5분, Path=/oauth2/authorization)
+2. 브라우저 이동 `GET /oauth2/authorization/{provider}?mode=link` → 쿠키를 시작 기록으로 옮기고 지움 → 동의 → 콜백 → `?result=linked`
+- `mode=link`인데 쿠키가 없거나 만료·변조면 새 회원을 만들지 않고 `?error=SOCIAL_LINK_EXPIRED`
+
+| 상태 | code | 상황 |
+|---|---|---|
+| 403 | `SOCIAL_LINK_FORBIDDEN` | 관리자 계정 (관리자 권한이 소셜 계정 보안에 의존하지 않도록) |
+| 404 | `SOCIAL_PROVIDER_NOT_SUPPORTED` | 없는·꺼진 공급자 |
+| 409 | `SOCIAL_PROVIDER_ALREADY_LINKED` | 이 회원에 같은 공급자가 이미 연결됨 → 해제 후 연결 |
+
+#### 내 소셜 계정 `GET /api/users/me/social-accounts`
+```json
+{ "hasPassword": true, "accounts": [ { "provider": "kakao", "linkedAt": "2026-11-21T12:00:00" } ] }
+```
+#### 연결 해제 `DELETE /api/users/me/social-accounts/{provider}` → `204`
+- 404: 연결되지 않은 공급자 / 409 `SOCIAL_LAST_LOGIN_METHOD`: 비밀번호 없는 회원의 마지막 소셜 계정 (로그인할 방법이 없어짐)
+
+#### 콜백 `?error=` 값
+| code | 상황 | 화면 |
+|---|---|---|
+| `OAUTH2_CANCELLED` | 동의 화면에서 취소 (`error=access_denied`) | 취소 안내 |
+| `OAUTH2_REQUEST_EXPIRED` | 시작 기록 쿠키 없음·10분 초과·다른 탭이 덮어씀 | 처음부터 다시 |
+| `SOCIAL_LINK_EXPIRED` | 연결 요청 쿠키 없음·5분 초과·변조 | 내 정보에서 다시 연결 |
+| `SOCIAL_ACCOUNT_ALREADY_LINKED` | 연결하려는 소셜 계정을 이미 다른 회원이 사용 (회원 합치기는 하지 않음) | 그 계정으로 로그인 |
+| `SOCIAL_PROVIDER_ALREADY_LINKED` · `SOCIAL_LINK_FORBIDDEN` | 연결 API와 같음 (시작 후 상태가 바뀐 경우) | |
+| `OAUTH2_FAILED` | state 불일치·코드 교환 실패·공급자 장애·ID 토큰 검증 실패 (원인은 서버 로그) | 다시 시도 |
 
 ---
 

@@ -97,6 +97,8 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── OpenEntityManagerInViewConfig.java # open-in-view를 직접 등록하고 SSE 경로만 제외 — 긴 응답이 DB 커넥션을 잡지 않도록 (#76)
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing, 생성·수정 시각을 Clock 기준으로 기록
 │   ├── OpenApiConfig.java               # springdoc 문서 정보, JWT(Bearer) 인증 방식
+│   ├── SocialLoginProperties.java       # 소셜 로그인 키·프론트 콜백 주소(social.*) 바인딩·검증 (V22)
+│   ├── SocialLoginConfig.java           # 공급자 등록·oauth2Login 구성 (SecurityConfig가 있을 때만 적용) (V22)
 │   └── ProdProfileGuard.java            # prod 프로필 기동 점검: 필수 환경변수 누락·Swagger 활성 시 기동 실패 (#54), EnvironmentPostProcessor로 빈 생성 전 실행 (#61)
 ├── logging
 │   └── TraceIdFilter.java               # 요청별 traceId 생성·전달(MDC, X-Trace-Id 헤더), 요청 결과 로그
@@ -106,6 +108,7 @@ src/main/java/com/sparta/springdeliverymini
 ├── controller
 │   ├── UserController.java              # 회원가입, 로그인, Access 재발급·로그아웃(Refresh Token 쿠키) (V15)
 │   ├── RefreshTokenCookies.java         # Refresh Token HttpOnly 쿠키 생성·삭제 (V15)
+│   ├── SocialAccountController.java     # 소셜 공급자 목록, 내 소셜 계정·연결 시작·해제 (V22)
 │   ├── StoreController.java             # 매장 생성·조회, 매장별 주문 조회, 매장별 정산 조회, 일 정산 기록 조회
 │   ├── AdminSettlementController.java   # 관리자 정산 조회·확정·지급·이력·재집계·실패 기록 (/api/admin/settlements)
 │   ├── AdminStoreController.java        # 관리자 매장 수수료율 설정·해제 (/api/admin/stores/{id}/fee-rate)
@@ -119,6 +122,7 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── PaymentController.java           # 결제 (선택 헤더 Idempotency-Key, 재전송 시 Idempotent-Replayed), 결제 단건 조회 (#53)
 │   └── SliceResponse.java               # 목록 페이지 응답: 본문은 배열, 페이지 정보는 X-Page·X-Size·X-Has-Next 헤더 (#40), 주문 목록은 X-Next-After-Id (#54)
 ├── service
+│   ├── SocialAccountService.java        # 소셜 로그인(없으면 CUSTOMER 가입)·연결·해제 (V22)
 │   ├── UserService.java                 # 회원가입(CUSTOMER만, V17)·로그인·내 정보
 │   ├── OwnerApplicationService.java     # 사장님 전환 신청·승인·거절 (DB 역할 확인, 진행 중 주문 409, 행 잠금, 승인 시 OWNER 전환) (V17)
 │   ├── AuthTokenService.java            # Access·Refresh Token 발급, 재발급(rotation)·재사용 감지·로그아웃 — DB 기준 (V15)
@@ -159,6 +163,17 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── FakeTossPaymentsClient.java      # fake: 토스에 접속하지 않는 가짜 PG (메모리, 장애 시나리오, prod 불가) (V21)
 │   ├── TossPayment.java                 # 토스 Payment 응답 중 쓰는 값만 (상태·금액·승인 시각)
 │   └── TossApiException.java / TossUnknownResultException.java # 토스가 거절(4xx) / 처리 여부 모름(시간 초과·5xx·처리 중)
+├── social                               # 소셜 로그인 (V22) — 공급자 인증 뒤 기존 인증으로 연결
+│   ├── SocialProvider.java              # 공급자 확장 지점 (registrationId·엔드포인트·식별자 속성)
+│   ├── KakaoSocialProvider.java / GoogleSocialProvider.java # 카카오(OAuth2, id) / 구글(OIDC, sub)
+│   ├── SocialClientRegistrations.java   # 키가 설정된 공급자만 담는 ClientRegistrationRepository
+│   ├── SocialAuthorizationRequestResolver.java # 꺼진 공급자 404, mode=link면 연결할 회원 id를 시작 기록에
+│   ├── CookieAuthorizationRequestRepository.java # 시작 기록(state·nonce)을 세션 대신 서명 쿠키에
+│   ├── SocialCookieSigner.java          # 쿠키 HMAC 서명 (jwt.secret에서 용도별 파생 키)
+│   ├── SocialLinkCookies.java           # 기존 회원 연결 요청 쿠키 (5분)
+│   ├── SocialLoginSuccessHandler.java / SocialLoginFailureHandler.java # 로그인·연결 처리 → 프론트로 302 (?result / ?error)
+│   ├── SocialLoginRedirects.java        # 프론트 콜백 주소(설정값)에 결과 쿼리
+│   └── NoOpAuthorizedClientRepository.java # 공급자 Access Token 보관 안 함
 ├── maintenance
 │   └── RetentionCleaner.java            # 보관 기간이 지난 발행 완료 이벤트·처리 기록·멱등성 기록 삭제 (V14), 만료된 Refresh Token (V16)
 ├── lock
@@ -594,6 +609,45 @@ Refresh Token이 쿠키라 다른 사이트가 재발급·로그아웃을 위조
   `/api/users/refresh`가 DB 역할로 새 Access를 주므로 프론트는 승인 확인 후 재발급 → `/me` 재조회
 - 진행 중 주문이 있으면 신청·승인 409 (전환 후 고객 API가 403이 되어 그 주문을 다룰 수 없으므로). 승인 직전 1번만 검사 — 같은 순간 들어온 새 주문은 막지 못함
 - 상세 API·오류는 [API 명세 — 사장님 전환 신청](api.md#사장님-전환-신청-v17), 테이블은 [데이터베이스](database.md#owner_applications--사장님-전환-신청-v17)
+
+## 소셜 로그인 (V22)
+
+카카오(OAuth2)·구글(OIDC) 로그인. 공급자 인증만 Spring Security `oauth2Login`에 맡기고, 그 뒤는 기존 인증(Access + Refresh 쿠키)을 그대로 씀. API·오류 코드는 [API 명세 · 소셜 로그인](api.md#소셜-로그인-v22-카카오구글)
+
+| 결정 | 선택 | 근거 · 대안 |
+|---|---|---|
+| 결과 전달 | **Refresh 쿠키만** 심고 프론트로 302 → 프론트가 `/api/users/refresh` | URL에 토큰이 남지 않음(기록·Referer·로그). 새로고침 복구와 같은 경로라 프론트 추가 로직이 거의 없음. 대안(1회용 코드 교환)은 테이블·API가 하나 더 필요 — 프론트·API가 다른 사이트에 배포돼 쿠키를 못 쓸 때 검토 (사용자 결정 2026-11-21) |
+| 기존 회원 연결 | **로그인한 회원이 직접 연결** | `users`에 이메일이 없고, 이메일 자동 매칭은 공급자의 이메일 확인 여부에 계정 보안을 맡김(확인 안 된 이메일로 남의 계정 탈취). 카카오 이메일 필수 동의는 비즈 앱 심사도 필요 (사용자 결정 2026-11-21) |
+| 시작 기록 저장 | **서명된 HttpOnly 쿠키** (`CookieAuthorizationRequestRepository`) | 기본은 HttpSession → STATELESS 서버에 세션이 생기고 다중 인스턴스에서 고정 세션 필요. 값은 JSON + HMAC(Java 직렬화는 클라이언트 값 역직렬화 위험). 콜백은 공급자 사이트에서 오는 이동이라 `SameSite=Lax` |
+| 연결 의사 전달 | 연결 API(Bearer)가 HttpOnly 쿠키 `social_link`(서명·5분) 발급 → `?mode=link`로 이동 | 페이지 이동에는 Authorization 헤더를 못 실음. URL에 티켓을 넣으면 그 티켓을 얻은 사람이 **자기 소셜 계정을 남의 회원에 연결**(이후 그 소셜 계정으로 로그인) 가능 → 연결을 시작한 브라우저에만 있는 쿠키로 묶음 |
+| 서명 키 | `jwt.secret`에서 용도별 파생 (HMAC(jwt.secret, "social-login-cookie")) | 운영 필수 환경변수를 늘리지 않음. 같은 키를 그대로 쓰지 않아 쿠키 값이 Access 서명으로 통하지 않음 |
+| 공급자 설정 | 자체 `social.providers.*` → `SocialClientRegistrations` | Boot 기본(`spring.security.oauth2.client.registration`)은 키가 비면 기동 실패 → 키 없이 뜨는 로컬·CI·테스트에서 끌 수 없음(토스와 같은 방식). id·secret 중 하나만 있으면 기동 실패 |
+| 저장 개인정보 | 공급자 회원 식별자만 | 로그인에 이메일·닉네임이 필요 없음. 카카오는 동의 항목 없이, 구글은 `openid`만 요청 |
+| 공급자 Access Token | 저장 안 함 (`NoOpAuthorizedClientRepository`) | 이후 공급자 API를 부르지 않음. 기본(메모리 저장소)은 로그인마다 비밀 값이 쌓임 |
+
+### 흐름
+1. `GET /oauth2/authorization/{provider}` → `SocialAuthorizationRequestResolver`(꺼진 공급자 null → 404, `mode=link`면 연결 쿠키의 회원 id를 시작 기록 속성에) → 시작 기록 쿠키 저장·연결 쿠키 삭제 → 공급자로 302
+2. 콜백 `/login/oauth2/code/{provider}` → 시작 기록 쿠키 확인(서명·10분·state) → 코드 교환·사용자 정보(구글은 ID 토큰 서명·nonce 검증) → `SocialLoginSuccessHandler`
+3. 성공 처리: 공급자별 식별자 추출(`SocialProvider.providerUserId`) →
+   - 일반: `SocialAccountService.login` — 연결된 회원 또는 CUSTOMER 가입 → `AuthTokenService.issue`(새 Refresh 계열) → 쿠키 → `?result=login`
+   - 연결: `SocialAccountService.link` → `?result=linked`
+   - 업무 오류(`ApiException`)는 `?error=code`, 공급자 단계 실패는 `SocialLoginFailureHandler`가 `?error=code`
+4. Spring Security 인증 결과는 저장하지 않음(STATELESS의 `RequestAttributeSecurityContextRepository`) — 이후 요청은 우리 JWT
+
+### 확장 — 공급자 추가
+`social.SocialProvider` 구현 1개(@Component: registrationId, 엔드포인트, 식별자 속성) + `social.providers.{id}` 키. 흐름·연결·토큰·쿠키·DB는 그대로(`provider`가 문자열 컬럼이라 마이그레이션 없음). 프론트는 `/api/users/social/providers`로 버튼을 그리고 `socialLabel`에 이름만 추가
+
+### 동시성 · 중복
+- 같은 소셜 계정으로 동시에 첫 로그인: 한쪽이 `uk_social_accounts_provider_user` 위반 → 그 트랜잭션은 롤백되므로 `TransactionTemplate`으로 **새 트랜잭션에서 다시 조회**(최대 3번, 자동 생성 아이디 충돌도 같은 경로) → 회원 1명 (`SocialLoginIntegrationTest` 5개 동시 요청)
+- 연결 해제: 회원 행 `FOR UPDATE` 후 "비밀번호 없음 + 마지막 1개" 검사 → 두 계정을 동시에 해제해 로그인 수단이 0이 되는 일 없음
+- 같은 브라우저 두 탭에서 동시에 시작하면 나중 시작 기록이 덮어써 먼저 탭은 state 불일치(`OAUTH2_FAILED`)·쿠키 없음 → 다시 시도
+
+### 한계 · 후속
+- 소셜로 먼저 가입한 회원과 기존 아이디 회원은 합치지 않음 → 기존 회원에 연결하려 하면 `SOCIAL_ACCOUNT_ALREADY_LINKED`
+- 소셜 전용 회원은 비밀번호 설정 기능이 없음 (마지막 소셜 계정 해제 불가로 잠금만 막음)
+- `{baseUrl}` 콜백 주소는 요청 Host 기준 → 프록시 뒤 배포 시 `server.forward-headers-strategy` 필요
+- 프론트·API가 다른 사이트면 Refresh 쿠키 `SameSite=None` 필요(인증 장과 같음), 연결 쿠키도 같은 설정을 따름
+- 공급자 장애 시 소셜 로그인만 실패(`OAUTH2_FAILED`), 아이디 로그인·재발급은 영향 없음
 
 ## 토스페이먼츠 결제 (테스트 모드, V20)
 

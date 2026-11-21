@@ -20,7 +20,8 @@ public class User extends BaseEntity {
     @Column(unique = true, nullable = false, length = 20)
     private String username;
 
-    @Column(nullable = false)
+    // BCrypt 해시. 소셜 전용 회원은 null (V22) — 아이디·비밀번호 로그인 불가
+    @Column
     private String password;
 
     @Enumerated(EnumType.STRING)
@@ -31,6 +32,15 @@ public class User extends BaseEntity {
         this.username = username;
         this.password = password;
         this.role = role;
+    }
+
+    // 소셜 로그인 첫 가입 (V22) — 가입 경로와 같이 항상 CUSTOMER, 비밀번호 없음
+    public static User socialCustomer(String username) {
+        return new User(username, null, Role.CUSTOMER);
+    }
+
+    public boolean hasPassword() {
+        return password != null;
     }
 
     // 사장님 전환 — 관리자 승인(OwnerApplication.approve)에서만 호출 (V17 승인제)
