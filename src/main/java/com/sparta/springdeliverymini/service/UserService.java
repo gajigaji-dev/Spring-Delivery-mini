@@ -31,10 +31,13 @@ public class UserService {
     @Transactional
     public UserResponse signup(SignupRequest request) {
 
-        // 0. 관리자 계정은 가입으로 만들 수 없음 → 400 (관리자는 운영자가 DB에서 직접 지정)
-        //    막지 않으면 누구나 role: ADMIN으로 가입해 정산 확정·지급 권한을 얻게 됨
-        if (request.role() == Role.ADMIN) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "role은 CUSTOMER 또는 OWNER만 가입할 수 있습니다.");
+        // 0. 가입은 고객(CUSTOMER)만 → 그 밖의 role은 400 (V17 승인제)
+        //    - ADMIN: 막지 않으면 누구나 정산 확정·지급 권한을 얻음 (관리자는 운영자가 DB에서 직접 지정)
+        //    - OWNER: 확인 없이 매장·메뉴를 만들 수 있었음 → 가입 후 사장님 전환 신청 + 관리자 승인 (OwnerApplicationService)
+        //    role을 생략하면 CUSTOMER (기존 클라이언트가 role: CUSTOMER를 보내도 그대로 동작)
+        if (request.role() != null && request.role() != Role.CUSTOMER) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "회원가입은 고객(CUSTOMER)만 가능합니다. 사장님은 가입 후 사장님 전환을 신청해주세요.");
         }
 
         // 1. 아이디 중복 확인
@@ -49,8 +52,8 @@ public class UserService {
         String encodedPassword = passwordEncoder.encode(request.password());
 
         // 3. 회원 생성
-        // role(CUSTOMER/OWNER)은 가입 시 요청으로 받은 값 사용
-        User user = new User(request.username(), encodedPassword, request.role());
+        // 가입 회원은 항상 CUSTOMER (위에서 다른 값은 거절)
+        User user = new User(request.username(), encodedPassword, Role.CUSTOMER);
 
         // 4. DB에 저장
         // 동시에 같은 아이디로 가입하면 1번 검사를 둘 다 통과할 수 있음

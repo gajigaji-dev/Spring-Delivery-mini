@@ -8,3 +8,4 @@ docs
 *.md
 .env
 .env.*
+frontend

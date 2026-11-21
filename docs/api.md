@@ -76,6 +76,8 @@
 | Access Token 재발급 | POST | `/api/users/refresh` | 쿠키 | Refresh Token 쿠키 | 200 |
 | 로그아웃 | POST | `/api/users/logout` | 쿠키 | Refresh Token 쿠키 (없어도 204) | 204 |
 | 내 정보 조회 | GET | `/api/users/me` | O | 로그인 사용자 | 200 |
+| 사장님 전환 신청 | POST | `/api/owner-applications` | O | CUSTOMER | 201 |
+| 내 사장님 전환 신청 | GET | `/api/owner-applications/me` | O | 로그인 사용자 | 200 |
 | 매장 생성 | POST | `/api/stores` | O | OWNER | 201 |
 | 매장 목록 조회 | GET | `/api/stores?page=&size=` | X | - | 200 |
 | 매장 단건 조회 | GET | `/api/stores/{id}` | X | - | 200 |
@@ -110,6 +112,9 @@
 | Outbox 이벤트 목록 (관리자) | GET | `/api/admin/outbox-events?status=&page=&size=` | O | ADMIN | 200 |
 | Outbox 이벤트 재발행 (관리자) | POST | `/api/admin/outbox-events/{id}/republish` | O | ADMIN | 200 |
 | Outbox FAILED 일괄 재발행 (관리자) | POST | `/api/admin/outbox-events/republish?limit=` | O | ADMIN | 200 |
+| 사장님 전환 신청 목록 (관리자) | GET | `/api/admin/owner-applications?status=&page=&size=` | O | ADMIN | 200 |
+| 사장님 전환 승인 (관리자) | PATCH | `/api/admin/owner-applications/{id}/approve` | O | ADMIN | 200 |
+| 사장님 전환 거절 (관리자) | PATCH | `/api/admin/owner-applications/{id}/reject` | O | ADMIN | 200 |
 | 매장 수수료율 설정 (관리자) | PUT | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
 | 매장 수수료율 해제 (관리자) | DELETE | `/api/admin/stores/{id}/fee-rate` | O | ADMIN | 200 |
 
@@ -139,11 +144,13 @@ ORDER_REQUEST(주문요청) ──결제──▶ PAYMENT_COMPLETED(결제완료
 ### 회원가입 `POST /api/users/signup`
 Request
 ```json
-{ "username": "user1", "password": "password123", "role": "CUSTOMER" }
+{ "username": "user1", "password": "password123" }
 ```
 - `username`: 4~20자
 - `password`: 8~72자 (BCrypt로 암호화해 저장)
-- `role`: `CUSTOMER` 또는 `OWNER` (`ADMIN`은 가입 불가 → 400, 관리자는 DB에서 직접 지정)
+- `role`: 선택, 생략하거나 `CUSTOMER`만 (V17 승인제). **가입 회원은 항상 CUSTOMER**
+  - `OWNER` → 400: 사장님은 가입 후 [사장님 전환 신청](#사장님-전환-신청-v17) → 관리자 승인 (이전에는 `role: OWNER`만으로 확인 없이 매장·메뉴를 만들 수 있었음)
+  - `ADMIN` → 400: 관리자는 DB에서 직접 지정
 
 Response `201 Created`
 ```json
@@ -152,7 +159,7 @@ Response `201 Created`
 
 | 코드 | 상황 |
 |---|---|
-| 400 | 입력 값 검증 실패, role이 CUSTOMER/OWNER가 아님 (`ADMIN` 포함) |
+| 400 | 입력 값 검증 실패, role이 CUSTOMER가 아님 (`OWNER`·`ADMIN`) |
 | 409 | 이미 사용 중인 아이디 |
 
 ### 로그인 `POST /api/users/login`
@@ -236,6 +243,53 @@ Response `200 OK` (`MyInfoResponse`, #62)
 | 코드 | 상황 |
 |---|---|
 | 401 | 토큰 없음·만료·위조, 회원이 삭제됨 |
+
+### 사장님 전환 신청 (V17)
+가입은 모두 고객(CUSTOMER) → 사장님 전환 신청 → 관리자 승인 시 OWNER. 기존 OWNER 계정은 그대로 (사용자 결정 2026-11-21)
+
+```
+REQUESTED(승인 대기) ── 관리자 승인 ──▶ APPROVED (신청자 role → OWNER)
+        └────────────── 관리자 거절 ──▶ REJECTED (사유 기록, 다시 신청 가능)
+```
+
+공통 응답 (`OwnerApplicationResponse`)
+```json
+{ "id": 3, "userId": 12, "username": "cus1", "businessName": "치킨집", "status": "APPROVED",
+  "rejectReason": null, "requestedAt": "2026-11-21T10:00:00", "decidedAt": "2026-11-21T11:00:00", "decidedBy": "admin1" }
+```
+
+#### 신청 `POST /api/owner-applications` (CUSTOMER)
+Request `{ "businessName": "치킨집" }` (필수, 50자 이하) → `201 Created`
+
+| 코드 | 상황 |
+|---|---|
+| 400 | 상호 누락·50자 초과 |
+| 403 | 고객이 아님 (OWNER·ADMIN, DB 역할 기준) |
+| 409 | 이미 승인 대기 중인 신청이 있음(동시 신청도 1건만 — 부분 유니크 인덱스), **진행 중인 주문이 있음**(주문요청·결제완료·주문수락) |
+
+- 진행 중 주문을 막는 이유: 전환 뒤에는 고객 API(취소·결제 조회)가 DB 역할 기준 403 → 그 주문을 다룰 수 없게 됨. 지난 주문·결제 기록은 DB에 남지만 전환 후 고객 화면에서는 볼 수 없음
+
+#### 내 신청 `GET /api/owner-applications/me` (로그인 사용자)
+가장 최근 신청 1건 → `200`, 없으면 `404`. 승인 후 OWNER가 돼도 결과 확인 가능
+
+#### 관리자 목록 `GET /api/admin/owner-applications?status=REQUESTED&page=0&size=20`
+`status` 기본 `REQUESTED`, id 오름차순(오래된 신청부터), 본문 배열 + `X-Page`·`X-Size`·`X-Has-Next`
+
+#### 승인 `PATCH /api/admin/owner-applications/{id}/approve` · 거절 `PATCH .../{id}/reject`
+- 승인: 요청 본문 없음. 신청자 역할을 같은 트랜잭션에서 OWNER로 변경, 승인 시점에 진행 중 주문을 다시 확인
+- 거절: `{ "reason": "상호 확인 불가" }` (필수, 255자 이하, 신청자에게 그대로 보임)
+- 처리자는 토큰의 인증 정보(관리자)로 기록. 신청 행을 잠가 같은 신청에 승인·거절이 동시에 와도 1건만 성공
+
+| 코드 | 상황 |
+|---|---|
+| 400 | 거절 사유 누락 |
+| 403 | ADMIN이 아님 |
+| 404 | 신청 없음 |
+| 409 | 대기 중이 아닌 신청(이미 승인·거절됨), 신청자가 고객이 아님, 진행 중인 주문이 있음(승인) |
+
+**토큰**: 승인 뒤에도 이미 발급된 Access Token(최대 15분)은 `role=CUSTOMER` → 사장님 API 403. `POST /api/users/refresh`가 DB 역할로 새 토큰을 주므로 재발급 후부터 OWNER (프론트는 "사장님 화면으로 전환" 버튼에서 재발급 → `/me` 다시 조회)
+
+후속 후보: 승인·거절 결과 알림(Outbox 이벤트) — 지금은 신청자가 `/me`로 확인
 
 ---
 

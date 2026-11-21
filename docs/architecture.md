@@ -104,13 +104,16 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── AdminSettlementController.java   # 관리자 정산 조회·확정·지급·이력·재집계·실패 기록 (/api/admin/settlements)
 │   ├── AdminStoreController.java        # 관리자 매장 수수료율 설정·해제 (/api/admin/stores/{id}/fee-rate)
 │   ├── AdminOutboxController.java       # 관리자 Outbox 이벤트 조회·FAILED 재발행 (/api/admin/outbox-events) (V14)
+│   ├── OwnerApplicationController.java  # 사장님 전환 신청·내 신청 조회 (/api/owner-applications) (V17)
+│   ├── AdminOwnerApplicationController.java # 관리자 사장님 전환 신청 목록·승인·거절 (/api/admin/owner-applications) (V17)
 │   ├── NotificationController.java      # 내 알림 목록 (/api/notifications) (V14), 안 읽은 개수·읽음 처리 (V15)
 │   ├── MenuController.java              # 메뉴 등록·조회·수정·삭제
 │   ├── OrderController.java             # 주문 생성·조회·취소·상태 변경
 │   ├── PaymentController.java           # 결제 (선택 헤더 Idempotency-Key, 재전송 시 Idempotent-Replayed), 결제 단건 조회 (#53)
 │   └── SliceResponse.java               # 목록 페이지 응답: 본문은 배열, 페이지 정보는 X-Page·X-Size·X-Has-Next 헤더 (#40), 주문 목록은 X-Next-After-Id (#54)
 ├── service
-│   ├── UserService.java
+│   ├── UserService.java                 # 회원가입(CUSTOMER만, V17)·로그인·내 정보
+│   ├── OwnerApplicationService.java     # 사장님 전환 신청·승인·거절 (DB 역할 확인, 진행 중 주문 409, 행 잠금, 승인 시 OWNER 전환) (V17)
 │   ├── AuthTokenService.java            # Access·Refresh Token 발급, 재발급(rotation)·재사용 감지·로그아웃 — DB 기준 (V15)
 │   ├── StoreService.java                # 매장 생성·조회, 매장 소유권 검증(getOwnedStore)
 │   ├── MenuService.java
@@ -158,10 +161,12 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── OutboxEventRepository.java       # 발행 대상 조회 (FOR UPDATE SKIP LOCKED) (#42)
 │   ├── ConsumedEventRepository.java     # 처리 기록 INSERT ... ON CONFLICT DO NOTHING (#42)
 │   ├── NotificationRepository.java      # 알림 기록 (#42), 읽음 처리 조건부 UPDATE (V15)
-│   └── RefreshTokenRepository.java      # Refresh Token — 해시로 행 잠금 조회(FOR UPDATE), 계열 전체 폐기 (V15)
+│   ├── RefreshTokenRepository.java      # Refresh Token — 해시로 행 잠금 조회(FOR UPDATE), 계열 전체 폐기 (V15)
+│   └── OwnerApplicationRepository.java  # 사장님 전환 신청 — 상태별 목록, 내 최근 신청, 승인·거절용 행 잠금 (V17)
 ├── entity
 │   ├── BaseEntity.java                  # 생성·수정 시각 자동 기록 (@MappedSuperclass)
-│   ├── User.java / Role.java            # 회원, 역할(CUSTOMER / OWNER / ADMIN)
+│   ├── User.java / Role.java            # 회원, 역할(CUSTOMER / OWNER / ADMIN), 사장님 전환 promoteToOwner (V17)
+│   ├── OwnerApplication.java / OwnerApplicationStatus.java # 사장님 전환 신청, 상태(REQUESTED → APPROVED / REJECTED) (V17)
 │   ├── Store.java                       # 매장 (OWNER 1 : N, 소유권 판단 isOwnedBy)
 │   ├── Menu.java                        # 메뉴 (매장에 속함, Soft Delete)
 │   ├── Order.java / OrderStatus.java    # 주문, 주문 상태 (항목 추가·총액 계산은 addItem, 배달완료 시각 deliveredAt)
@@ -185,6 +190,7 @@ src/main/java/com/sparta/springdeliverymini
     ├── InvalidOrderStatusException.java # 허용되지 않는 주문 상태 전이 (Order 엔티티가 던짐 → 409)
     ├── InvalidSettlementStatusException.java # 허용되지 않는 정산 상태 전이 (Settlement 엔티티가 던짐 → 409)
     ├── InvalidOutboxEventStatusException.java # 허용되지 않는 Outbox 상태 전이 (FAILED가 아닌 이벤트 재발행 → 409)
+    ├── InvalidOwnerApplicationStatusException.java # 사장님 전환 신청 상태 전이 위반 (처리된 신청 재처리, 고객 아닌 회원 전환 → 409) (V17)
     ├── ApiErrorResponse.java            # 공통 에러 응답 {status, error, code, message, path, traceId} (code는 V15)
     └── GlobalExceptionHandler.java      # 예외를 ApiErrorResponse로 변환, 4xx WARN / 5xx ERROR(스택 트레이스) 로그
 
@@ -513,6 +519,15 @@ Refresh Token이 쿠키라 다른 사이트가 재발급·로그아웃을 위조
   - V16 이전 계열은 첫 발급 + 30일로 백필하되, 이미 더 늦게 만료되는 토큰이 있으면 그 시각까지 (발급된 토큰을 앞당겨 끊지 않음)
   - 쿠키 `Max-Age`는 계속 14일 — 절대 만료에 가까우면 쿠키가 서버 기록보다 늦게 사라지지만, 서버가 `REFRESH_TOKEN_EXPIRED`로 거부하며 쿠키를 지움
 - **다른 사이트 배포**: 프론트·API의 등록 도메인이 다르면 `SameSite=None` 필요 → CSRF 방어가 CORS(Origin 검사)에만 의존하게 됨
+
+### 역할 부여 — 사장님 승인제 (V17)
+- 가입은 `CUSTOMER`만 (`role` 선택값, `OWNER`·`ADMIN` 400). `OWNER`는 신청(`owner_applications`) → 관리자 승인으로만, `ADMIN`은 DB에서 직접 지정
+  - 이전에는 가입 요청의 `role: OWNER`만으로 확인 없이 매장·메뉴를 만들 수 있었음 (사용자 결정 2026-11-21, 기존 OWNER 계정은 유지)
+- 승인은 신청 행 `FOR UPDATE` + 같은 트랜잭션에서 `User.promoteToOwner()` → 신청 상태와 역할이 어긋나지 않음
+- 역할이 바뀌어도 이미 발급된 Access(최대 15분)의 `role`은 그대로 → URL 규칙(`SecurityConfig`)은 재발급 전까지 CUSTOMER로 판단, Service는 DB 역할로 재확인.
+  `/api/users/refresh`가 DB 역할로 새 Access를 주므로 프론트는 승인 확인 후 재발급 → `/me` 재조회
+- 진행 중 주문이 있으면 신청·승인 409 (전환 후 고객 API가 403이 되어 그 주문을 다룰 수 없으므로). 승인 직전 1번만 검사 — 같은 순간 들어온 새 주문은 막지 못함
+- 상세 API·오류는 [API 명세 — 사장님 전환 신청](api.md#사장님-전환-신청-v17), 테이블은 [데이터베이스](database.md#owner_applications--사장님-전환-신청-v17)
 
 ## 요청 처리 흐름
 

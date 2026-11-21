@@ -25,6 +25,7 @@
 | `V14__add_idempotency_keys_and_notification_dispatch.sql` | Redis·Kafka 후속 개선: `payment_idempotency_keys`(DB 결제 멱등성 기록, `(user_id, idempotency_key)`·`payment_id` UNIQUE) 추가, `notifications`에 발송 상태 컬럼 추가(기존 알림은 `SKIPPED` — 뒤늦게 발송되지 않음), Outbox FAILED·순서 확인·정리용 인덱스와 `consumed_events`·알림 조회 인덱스 추가. 기존 결제·정산 행 변경 없음 |
 | `V15__add_notification_read_at_and_refresh_tokens.sql` | 알림 읽음·Refresh Token: `notifications.read_at`(NULL 허용, 기존 알림은 안 읽음) + 안 읽은 알림 부분 인덱스, `refresh_tokens`(해시 `token_hash` UNIQUE, FK → users, 폐기 시각 ⇔ 사유 CHECK, 유효 행 계열 부분 인덱스) 추가. 기존 행 변경 없음 |
 | `V16__add_refresh_token_family_expiry.sql` | Refresh Token 후속: `refresh_tokens.family_expires_at`(계열 절대 만료, NOT NULL, `expires_at <= family_expires_at` CHECK) 추가 — 기존 계열은 첫 발급 + 30일로 백필하되 이미 더 늦게 만료되는 토큰이 있으면 그 시각까지. 정리용 `idx_refresh_tokens_expires_at (expires_at)` 추가 |
+| `V17__add_owner_applications.sql` | 사장님 승인제(#70): `owner_applications`(신청자·처리자 FK → users, 상태 CHECK, 처리 시각·처리자 ⇔ 상태 CHECK, 거절 사유 ⇔ REJECTED CHECK) + 대기 중 신청 부분 유니크 `(user_id) WHERE status='REQUESTED'`, 목록용 `(status, id)`, 내 신청용 `(user_id, id)` 인덱스. 기존 OWNER 계정·행 변경 없음 |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
 - **Flyway 도입 전부터 쓰던 DB**: `baseline-on-migrate: true`로 V1을 "이미 적용됨"으로 기록하고 V2부터 실행 → 기존 데이터 유지
@@ -32,7 +33,7 @@
 - **타임아웃**: 마이그레이션도 애플리케이션과 같은 커넥션 풀로 실행되어 `lock_timeout`(5초)·`statement_timeout`(30초)이 적용됨
   - 큰 테이블의 인덱스 생성·백필처럼 오래 걸리는 파일은 맨 위에 `SET LOCAL statement_timeout = 0;` (그 마이그레이션 트랜잭션에만 적용)
 - 적용 이력은 `flyway_schema_history` 테이블에 기록됨
-- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V17__설명.sql`)을 함께 추가
+- **스키마 변경 방법**: 엔티티를 수정하면 다음 번호의 SQL 파일(`V18__설명.sql`)을 함께 추가
   - 이미 적용된 파일은 수정하지 않음 (체크섬이 달라져 기동 실패) → 수정이 필요하면 새 버전 파일로 추가
   - 제약조건 이름은 V1에서 Hibernate 자동 생성 이름을 그대로 유지했으므로, 이름으로 지울 때 어느 DB든 같은 이름 사용 (예: `payments.order_id` UNIQUE → `uk8vo36cen604as7etdfwmyjsxt`)
 
@@ -54,7 +55,7 @@
 | id | bigint | PK | |
 | username | varchar(20) | NOT NULL, UNIQUE | 로그인 아이디 |
 | password | varchar(255) | NOT NULL | BCrypt 해시값 |
-| role | varchar(255) | NOT NULL | `CUSTOMER` / `OWNER` / `ADMIN` (`ADMIN`은 가입 불가, DB에서 직접 지정) |
+| role | varchar(255) | NOT NULL | `CUSTOMER` / `OWNER` / `ADMIN`. 가입은 `CUSTOMER`만(V17), `OWNER`는 사장님 전환 승인으로만(`owner_applications`), `ADMIN`은 DB에서 직접 지정 |
 | created_at | timestamp | | 가입 시각 (BaseEntity, 이후 변경 불가) |
 | updated_at | timestamp | | 마지막 정보 수정 시각 (BaseEntity) |
 
@@ -301,6 +302,22 @@
 > 인덱스: `token_hash` UNIQUE(조회), `idx_refresh_tokens_family_active (family_id) WHERE revoked_at IS NULL`(계열 폐기 대상), `idx_refresh_tokens_expires_at (expires_at)`(보관 정리, V16). 재발급 동시성은 `token_hash`로 `SELECT ... FOR UPDATE` → 같은 토큰의 요청은 한 줄로 처리
 > Redis가 아니라 DB에 둔 이유·동작은 [프로젝트 구조 · 인증](architecture.md#인증-access--refresh-token-v15)
 > 보관 정리(V16): `RetentionCleaner`가 만료 후 7일 지난 행 삭제 (`retention.refresh-tokens`). 만료 전 행은 폐기됐어도 남김 — 재사용 감지 근거
+
+### owner_applications — 사장님 전환 신청 (V17)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| user_id | bigint | NOT NULL, FK → users | 신청자 (신청 당시 CUSTOMER) |
+| business_name | varchar(50) | NOT NULL | 상호 — 관리자 판단 근거 |
+| status | varchar(20) | NOT NULL, CHECK | `REQUESTED` → `APPROVED` / `REJECTED` (한 번만, 엔티티에서 판단) |
+| reject_reason | varchar(255) | `REJECTED`일 때만 NOT NULL (CHECK) | 신청자에게 보이는 거절 사유 |
+| requested_at | timestamp(6) | NOT NULL | 신청 시각 (`Clock`) |
+| decided_at · decided_by | timestamp(6) · bigint FK → users | 처리됐으면 둘 다 NOT NULL, 대기면 둘 다 NULL (CHECK) | 처리 시각·관리자 |
+| created_at · updated_at | timestamp(6) | | BaseEntity |
+
+> 인덱스: `uk_owner_applications_user_requested (user_id) WHERE status='REQUESTED'`(대기 중 신청 1건 — 동시 신청의 최종 근거), `idx_owner_applications_status_id`(관리자 목록), `idx_owner_applications_user_id_id`(내 최근 신청)
+>
+> 승인은 같은 트랜잭션에서 `users.role`을 `OWNER`로 바꿈. 신청 행을 `FOR UPDATE`로 잠가 같은 신청의 승인·거절이 동시에 와도 1건만 성공. users 행은 함께 잠그지 않음 — 승인과 거의 같은 순간에 들어온 새 주문은 막지 못함(진행 중 주문 검사는 승인 직전 1번)
 
 ## 결제 연관관계: `@OneToOne` vs `@ManyToOne`
 

@@ -12,6 +12,7 @@
 | 관측성 · 문서 | Spring Boot Actuator · Micrometer Prometheus · Grafana · springdoc-openapi (Swagger UI) |
 | 테스트 | JUnit 5 · Mockito · Awaitility · Testcontainers (PostgreSQL 18 · Redis · Kafka) |
 | 빌드 · 도구 | Gradle · Postman |
+| 프론트엔드 (#70, 골격) | React 19 · TypeScript · Vite 7 · React Router 7 · Vitest — 디자인 미확정 ([frontend/README.md](frontend/README.md)) |
 
 ## 아키텍처
 
@@ -33,7 +34,7 @@ flowchart LR
 ## 주요 기능
 | 영역 | 내용 |
 |---|---|
-| 회원 | 회원가입·로그인, BCrypt, JWT 인증(Access 15분) + Refresh Token(HttpOnly 쿠키, DB에 해시만, 재발급마다 교체·재사용 감지 시 로그인 전체 폐기, 로그인 후 30일 절대 만료, 로그아웃), 401 만료·위조 구분(`code`), CUSTOMER / OWNER / ADMIN 역할 (ADMIN은 DB에서만 지정), 내 정보 조회(DB 기준 역할, OWNER는 본인 매장 id 목록), 브라우저 호출용 CORS(허용 출처는 `CORS_ALLOWED_ORIGINS`, 자격 증명은 Refresh Token 쿠키용) |
+| 회원 | 회원가입·로그인, BCrypt, JWT 인증(Access 15분) + Refresh Token(HttpOnly 쿠키, DB에 해시만, 재발급마다 교체·재사용 감지 시 로그인 전체 폐기, 로그인 후 30일 절대 만료, 로그아웃), 401 만료·위조 구분(`code`), CUSTOMER / OWNER / ADMIN 역할 (가입은 CUSTOMER만, OWNER는 사장님 전환 신청 → 관리자 승인, ADMIN은 DB에서만 지정 — V17), 내 정보 조회(DB 기준 역할, OWNER는 본인 매장 id 목록), 브라우저 호출용 CORS(허용 출처는 `CORS_ALLOWED_ORIGINS`, 자격 증명은 Refresh Token 쿠키용) |
 | 매장 · 메뉴 | OWNER의 매장 생성(여러 개 가능), 메뉴 등록·수정·삭제(Soft Delete), 소유권은 `Store.isOwnedBy` 한곳에서 판단 |
 | 주문 | 같은 매장의 메뉴 여러 개를 한 주문에 담음, 총액은 서버 계산, 주문 당시 메뉴 이름·단가 스냅샷, 상태 전이(결제 → 수락 → 배달완료), 목록은 페이지 단위(`?page=`) + 주문 목록 keyset(`?afterId=`, 뒤쪽 페이지도 응답 시간 일정 — 점주 마지막 페이지 426ms → 17.6ms), 주문 단건 조회(결제 정보 포함, 고객 본인·점주 본인 매장) |
 | 결제 | 서버가 정한 금액으로 결제, 중복 결제 방지(DB UNIQUE), `Idempotency-Key`로 재시도 시 처음 응답 재전송(Redis + 결제와 같은 트랜잭션의 DB 기록 — Redis 기록이 사라지거나 장애여도 재전송, 같은 키 다른 요청 422·새 결제는 Redis 장애 시 503), 수수료(기본 5%, 매장별 설정 가능) 스냅샷 저장, 수락 전 취소·배달 후 관리자 환불, 본인 결제 단건 조회(현재 상태)·내 결제 목록(페이지 단위) |
@@ -161,6 +162,9 @@ docker compose up -d kafka   # 이벤트 발행·알림용 Kafka (127.0.0.1:9094
 
 # 테스트 — Docker 실행 중이어야 함 (로컬 DB·환경변수 불필요)
 ./gradlew test
+
+# 3) 프론트엔드 — http://localhost:5173 (백엔드 CORS 기본 허용 출처), API 주소는 frontend/.env의 VITE_API_BASE_URL
+cd frontend && npm install && npm run dev
 ```
 - compose의 DB는 `127.0.0.1:5432`(`DB_PORT`)로만 열림 — local 실행이 접속하는 주소이고, 같은 네트워크의 다른 기기에서는 접속할 수 없음
 - compose의 DB 계정은 `db-data` 볼륨이 처음 생성될 때만 만들어짐 → `.env`의 DB 계정을 바꿨다면 `docker compose down -v`로 볼륨을 지우고 다시 실행
@@ -169,7 +173,7 @@ docker compose up -d kafka   # 이벤트 발행·알림용 Kafka (127.0.0.1:9094
 - 운영 배포는 `SPRING_PROFILES_ACTIVE=prod` — 필수 환경변수·노출 정책은 [운영 프로필](docs/operations.md)
 - 헬스체크 `GET /actuator/health`, 메트릭 `GET /actuator/prometheus`(local은 8080, dev는 호스트에 열지 않는 8081 관리 포트)
 - 모든 응답에 `X-Trace-Id` 헤더가 붙고, 같은 값이 서버 로그 각 줄(`[traceId]`)과 에러 응답 `traceId`에 들어감
-- CI: GitHub Actions(`.github/workflows/ci.yml`)가 main 대상 PR·push마다 `./gradlew build`(전체 테스트 포함) 실행
+- CI: GitHub Actions가 main 대상 PR·push에서 경로별로 실행 — 백엔드(`src/**`·gradle 파일)는 `ci.yml`의 `./gradlew build`(전체 테스트 포함), 프론트엔드(`frontend/**`)는 `frontend.yml`의 `npm ci`·`npm test`·`npm run build`
 
 ## 후속 개선 사항
 배경과 상세는 [프로젝트 구조](docs/architecture.md)의 Redis·Kafka 장 "후속 개선" 참고
