@@ -8,7 +8,7 @@ import { IconRefresh } from '../../components/Icons';
 import { useToast } from '../../components/Toast';
 import { itemsLabel, orderTimeLabel, seoulDate } from '../../owner/derive';
 import { useOwner } from '../../owner/OwnerContext';
-import { NoStore, TruncatedNotice } from './OwnerCommon';
+import { LiveStatus, NoStore, TruncatedNotice } from './OwnerCommon';
 
 type Filter = 'ALL' | 'PAYMENT_COMPLETED' | 'ORDER_ACCEPTED' | 'DELIVERY_COMPLETED' | 'ORDER_CANCELLED';
 
@@ -67,10 +67,13 @@ export default function OwnerOrdersPage() {
           </span>
           <h1>주문 관리</h1>
         </div>
-        <button type="button" className="btn btn--ghost" onClick={onRefresh} disabled={loading}>
-          <IconRefresh />
-          {loading ? '불러오는 중…' : '새로고침'}
-        </button>
+        <div className="ph__actions">
+          <LiveStatus />
+          <button type="button" className="btn btn--ghost" onClick={onRefresh} disabled={loading}>
+            <IconRefresh />
+            {loading ? '불러오는 중…' : '새로고침'}
+          </button>
+        </div>
       </div>
 
       <ErrorMessage error={error} />

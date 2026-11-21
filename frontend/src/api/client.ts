@@ -40,7 +40,7 @@ export interface PageResult<T> {
   nextAfterId: number | null;
 }
 
-function buildUrl(path: string, query?: RequestOptions['query']): string {
+export function buildUrl(path: string, query?: RequestOptions['query']): string {
   const url = new URL(BASE_URL + path);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
@@ -51,7 +51,7 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
   return url.toString();
 }
 
-async function toApiError(res: Response): Promise<ApiError> {
+export async function toApiError(res: Response): Promise<ApiError> {
   let body: Partial<ApiErrorBody> = {};
   try {
     body = await res.json();

@@ -1,8 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { orderApi, storeApi } from '../api/endpoints';
-import type { Order, Store } from '../api/types';
+import type { Order, OwnerOrderEvent, Store } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { won } from '../components/format';
 import { useToast } from '../components/Toast';
+import type { StreamStatus } from './orderStreamController';
+import { disableSound, enableSound, playNewOrderSound, soundSupported } from './sound';
+import { useOrderStream } from './useOrderStream';
 
 /*
  * 사장님 화면 공통 상태: 내 매장 목록·선택 매장·주문 목록·주문 상태 변경
@@ -14,6 +18,8 @@ import { useToast } from '../components/Toast';
 const PAGE_SIZE = 100;
 const MAX_PAGES = 50;
 const STORE_KEY = 'owner:selectedStoreId';
+// 실시간 알림이 짧은 간격으로 여러 건 오면 목록 조회(전체 keyset)를 한 번으로 모음
+const REFRESH_COALESCE_MS = 400;
 
 type Transition = 'ORDER_ACCEPTED' | 'DELIVERY_COMPLETED';
 
@@ -32,6 +38,12 @@ interface OwnerValue {
   busyId: number | null;
   changeStatus: (order: Order, next: Transition) => Promise<void>;
   waitCount: number;
+  /** 실시간 주문 알림 연결 상태 (#76) — 사장님이 아니면 null */
+  streamStatus: StreamStatus | null;
+  soundOn: boolean;
+  /** 클릭 핸들러에서만 호출 (브라우저 자동 재생 정책) */
+  toggleSound: () => Promise<void>;
+  soundAvailable: boolean;
 }
 
 const OwnerContext = createContext<OwnerValue | null>(null);
@@ -113,6 +125,46 @@ export function OwnerProvider({ children }: { children: ReactNode }) {
     void reload();
   }, [isOwner, reload]);
 
+  // ---- 실시간 주문 알림 (#76) ----
+  // 화면 데이터는 항상 목록 API 결과 — 이벤트는 "다시 받을 때"라는 신호와 토스트 문구로만 씀
+  const refreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const scheduleRefresh = useCallback(() => {
+    clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => void reload(), REFRESH_COALESCE_MS);
+  }, [reload]);
+  useEffect(() => () => clearTimeout(refreshTimer.current), []);
+
+  const storesRef = useRef(stores);
+  storesRef.current = stores;
+  const onStreamEvent = useCallback(
+    (e: OwnerOrderEvent) => {
+      scheduleRefresh();
+      const storeName = storesRef.current.find((s) => s.id === e.storeId)?.name;
+      const where = storeName ? ` · ${storeName}` : '';
+      if (e.type === 'PAYMENT_COMPLETED') {
+        notify(`새 주문 #${e.orderId}${where} · ${won(e.amount)}`);
+        playNewOrderSound();
+      } else {
+        notify(`주문 #${e.orderId}${where} 고객 취소 · ${won(e.amount)} 환불`);
+      }
+    },
+    [scheduleRefresh, notify],
+  );
+  const streamStatus = useOrderStream(isOwner ? me.id : null, { onEvent: onStreamEvent, onRefresh: scheduleRefresh });
+
+  const [soundOn, setSoundOn] = useState(false);
+  const toggleSound = useCallback(async () => {
+    if (soundOn) {
+      disableSound();
+      setSoundOn(false);
+      return;
+    }
+    const ok = await enableSound();
+    setSoundOn(ok);
+    notify(ok ? '새 주문이 오면 소리로 알려 드려요' : '브라우저가 소리를 막았어요. 사이트 소리 설정을 확인해 주세요', ok ? 'ok' : 'error');
+  }, [soundOn, notify]);
+  const soundAvailable = useMemo(soundSupported, []);
+
   const store = stores.find((s) => s.id === selectedId) ?? stores[0] ?? null;
 
   const selectStore = useCallback(
@@ -164,8 +216,29 @@ export function OwnerProvider({ children }: { children: ReactNode }) {
       busyId,
       changeStatus,
       waitCount,
+      streamStatus,
+      soundOn,
+      toggleSound,
+      soundAvailable,
     }),
-    [stores, store, selectStore, orders, loading, error, truncated, loadedAt, reload, busyId, changeStatus, waitCount],
+    [
+      stores,
+      store,
+      selectStore,
+      orders,
+      loading,
+      error,
+      truncated,
+      loadedAt,
+      reload,
+      busyId,
+      changeStatus,
+      waitCount,
+      streamStatus,
+      soundOn,
+      toggleSound,
+      soundAvailable,
+    ],
   );
   return <OwnerContext.Provider value={value}>{children}</OwnerContext.Provider>;
 }

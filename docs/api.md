@@ -102,6 +102,7 @@
 | 내 알림 목록 | GET | `/api/notifications?page=&size=` | O | 로그인 사용자 | 200 |
 | 안 읽은 알림 개수 | GET | `/api/notifications/unread-count` | O | 로그인 사용자 | 200 |
 | 알림 읽음 처리 | PATCH | `/api/notifications/{id}/read` | O | 로그인 사용자 (본인 알림) | 204 |
+| 사장님 실시간 주문 알림 (SSE) | GET | `/api/owner/order-events?storeId=` | O | OWNER (본인 매장) | 200 `text/event-stream` |
 | 정산 목록 조회 (관리자) | GET | `/api/admin/settlements?date=&status=` | O | ADMIN | 200 |
 | 정산 확정 (관리자) | PATCH | `/api/admin/settlements/{id}/confirm` | O | ADMIN | 200 |
 | 정산 지급 (관리자) | PATCH | `/api/admin/settlements/{id}/pay` | O | ADMIN | 200 |
@@ -1005,6 +1006,36 @@ Response `204 No Content` — 요청 본문 없음
 | 401 | 토큰 없음, 삭제된 회원 |
 | 403 | 다른 사람의 알림 |
 | 404 | 알림이 없음 |
+
+### 사장님 실시간 주문 알림 `GET /api/owner/order-events` (#76)
+접속 중인 사장님 화면에 새 주문(결제 완료)·고객 취소(환불)를 바로 알리는 SSE(Server-Sent Events) 연결. 응답 `text/event-stream`
+- `storeId`(선택): 없으면 본인의 모든 매장, 있으면 그 매장만
+- 요청 헤더: `Authorization: Bearer <Access>` + `Accept: text/event-stream` — 브라우저는 `EventSource` 대신 fetch 스트림 사용(토큰을 URL에 넣지 않기 위해, `frontend/README.md`)
+- 전달 시점: 사장님 알림 기록(`notifications`)을 저장한 트랜잭션이 **커밋된 뒤** — 결제 직후가 아니라 Kafka를 거쳐 알림이 저장된 뒤
+- 연결은 최대 10분(`owner-stream.timeout`) 후 서버가 정상 종료 → 클라이언트가 새 토큰으로 다시 연결 (그때 DB 기준 역할·매장 소유권을 다시 확인)
+- **보장하지 않음**: 연결이 끊긴 동안의 이벤트는 다시 보내지 않음(`Last-Event-ID` 미지원). 클라이언트는 재연결 후 주문 목록을 다시 받아 맞춤. 알림 기록 자체는 `GET /api/notifications`에 남음
+
+이벤트
+```
+event:connected        ← 연결 직후 1번 (구독 성공 확인용)
+data:ok
+
+:ping                  ← 25초마다 주석(하트비트) — 프록시 유휴 끊김 방지, 끊긴 연결 정리
+
+event:order
+id:42                  ← 알림 id
+data:{"notificationId":42,"type":"PAYMENT_COMPLETED","orderId":77,"storeId":4,"amount":15000,
+      "message":"새 주문 #77의 결제가 완료되었습니다. (15,000원)","occurredAt":"2026-11-21T12:00:00"}
+```
+- `type`: `PAYMENT_COMPLETED`(새 주문) / `PAYMENT_REFUNDED`(고객 취소 → 환불). 배달 완료는 사장님이 직접 바꾼 상태라 보내지 않음
+- 본문은 토스트 문구용. 화면의 주문 목록은 이 값이 아니라 목록 API를 다시 받아 그림 (빠지거나 순서가 바뀐 이벤트에 영향받지 않도록)
+
+| 코드 | 상황 |
+|---|---|
+| 401 | 토큰 없음·만료(`code`로 구분, 공통 사항), 삭제된 회원 |
+| 403 | OWNER가 아님(토큰 또는 DB 역할 기준), 다른 사장님의 매장(`storeId`) |
+| 404 | `storeId` 매장이 없음 |
+- 오류 본문은 `Accept: text/event-stream`이어도 공통 JSON 형식 (Content-Type 고정 — 고정 전에는 협상 실패로 500이 됨)
 
 ---
 

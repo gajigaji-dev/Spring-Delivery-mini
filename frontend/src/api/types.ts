@@ -167,3 +167,14 @@ export interface ApiErrorBody {
   path: string;
   traceId: string;
 }
+
+/** 사장님 실시간 주문 알림 (SSE `order` 이벤트, #76) — 토스트용. 목록은 API로 다시 받음 */
+export interface OwnerOrderEvent {
+  notificationId: number;
+  type: 'PAYMENT_COMPLETED' | 'PAYMENT_REFUNDED';
+  orderId: number;
+  storeId: number;
+  amount: number;
+  message: string;
+  occurredAt: string;
+}

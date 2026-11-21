@@ -1,7 +1,10 @@
 package com.sparta.springdeliverymini.service;
 
 import com.sparta.springdeliverymini.entity.Notification;
+import com.sparta.springdeliverymini.dto.OwnerOrderEventResponse;
+import com.sparta.springdeliverymini.entity.OutboxEventType;
 import com.sparta.springdeliverymini.event.DeliveryEventMessage;
+import com.sparta.springdeliverymini.event.OwnerOrderNotified;
 import com.sparta.springdeliverymini.repository.ConsumedEventRepository;
 import com.sparta.springdeliverymini.repository.NotificationRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
@@ -12,6 +15,7 @@ import com.sparta.springdeliverymini.exception.ApiException;
 import org.springframework.data.domain.Slice;
 import org.springframework.http.HttpStatus;
 import lombok.RequiredArgsConstructor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +36,7 @@ public class NotificationService {
     private final NotificationRepository notificationRepository;
     private final UserRepository userRepository;
     private final Clock clock;
+    private final ApplicationEventPublisher eventPublisher;
 
     // 내 알림 목록 — 받는 사람이 로그인한 사용자인 기록만 (id 오름차순 페이징, idx_notifications_recipient)
     @Transactional(readOnly = true)
@@ -73,8 +78,24 @@ public class NotificationService {
         if (consumedEventRepository.insertIfAbsent(event.eventId(), event.eventType().name(), now) == 0) {
             return false;
         }
-        notificationRepository.saveAll(notificationsOf(event, now));
+        List<Notification> saved = notificationRepository.saveAll(notificationsOf(event, now));
+        publishOwnerOrderNotified(event, saved);
         return true;
+    }
+
+    // 사장님 실시간 주문 알림(#76) — 새 주문(결제 완료)·환불 알림을 저장했으면 SSE 전송 대상으로 알림
+    // 실제 전송은 OwnerOrderStreamRegistry가 이 트랜잭션 커밋 후에 함 → 롤백된 알림(재시도 대상)은 화면에 가지 않음
+    // 배달 완료는 사장님이 직접 바꾼 상태라 실시간으로 알릴 필요가 없음
+    private void publishOwnerOrderNotified(DeliveryEventMessage e, List<Notification> saved) {
+        if (e.eventType() != OutboxEventType.PAYMENT_COMPLETED && e.eventType() != OutboxEventType.PAYMENT_REFUNDED) {
+            return;
+        }
+        saved.stream()
+                .filter(n -> n.isRecipient(e.ownerId()))
+                .findFirst()
+                .ifPresent(n -> eventPublisher.publishEvent(new OwnerOrderNotified(e.ownerId(),
+                        new OwnerOrderEventResponse(n.getId(), e.eventType(), e.orderId(), e.storeId(), e.amount(),
+                                n.getMessage(), e.occurredAt()))));
     }
 
     // 이벤트 종류별 받는 사람·문구
