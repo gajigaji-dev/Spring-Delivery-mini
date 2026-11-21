@@ -1,0 +1,64 @@
+/*
+ * 디자인 토큰 — 디자인 확정 전 임시 값(무채색 + 강조색 1개).
+ * 화면 CSS는 색·간격·글꼴을 직접 쓰지 않고 이 변수만 참조 → 디자인이 정해지면 이 파일만 바꾸면 됨
+ */
+:root {
+  color-scheme: light dark;
+
+  /* 색 */
+  --color-bg: #ffffff;
+  --color-surface: #f6f7f9;
+  --color-border: #e2e5ea;
+  --color-text: #1b1f24;
+  --color-text-muted: #5f6873;
+  --color-primary: #2f6fed;
+  --color-primary-text: #ffffff;
+  --color-ok: #1f8a4c;
+  --color-warn: #b26a00;
+  --color-danger: #c62828;
+
+  /* 글꼴 — 웹폰트 도입 시 사용 굵기만 직접 호스팅 + preload (외부 CSS·전체 굵기 요청 금지) */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 1.5rem;
+  --font-weight-regular: 400;
+  --font-weight-bold: 700;
+
+  /* 간격·모양 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius: 8px;
+  --content-max: 1080px;
+  --gutter: 16px;
+
+  /* 움직임 — transform·opacity만 움직여 레이아웃 재계산을 피함 */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --color-bg: #111418;
+    --color-surface: #1a1e24;
+    --color-border: #2c323a;
+    --color-text: #e8eaed;
+    --color-text-muted: #9aa3ad;
+    --color-primary: #6b9bff;
+    --color-primary-text: #0b1220;
+  }
+}
+
+/* 움직임 줄이기 설정을 존중 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+  }
+}
