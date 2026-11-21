@@ -1,0 +1,13 @@
+# 쓰기 경로 부하 테스트(#68)용 compose 덮어쓰기 — 앱만 측정 전용 DB(delivery_perf)에 붙임
+# 사용: docker compose -f docker-compose.yml -f perf/compose.perf.yml --profile monitoring up -d app
+# 되돌리기: docker compose --profile monitoring up -d app (원래 DB_URL로 재생성)
+#
+# 같은 PostgreSQL 컨테이너 안의 다른 데이터베이스를 쓰는 이유
+#   - 측정 중 생기는 주문·결제 수천 건이 개발 DB(delivery)의 검증 데이터·정산 집계에 섞이지 않도록
+#   - Redis·Kafka·Prometheus·Grafana는 그대로 공유 → #67에서 확인한 대시보드로 측정 중 지표를 봄
+#     (Redis 멱등성 키는 사용자별로 나뉘고, k6가 실행마다 새 계정을 만들어 섞이지 않음)
+# delivery_perf는 미리 만들어 둠: docker compose exec db psql -U $DB_USERNAME -d delivery -c "CREATE DATABASE delivery_perf"
+services:
+  app:
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/delivery_perf

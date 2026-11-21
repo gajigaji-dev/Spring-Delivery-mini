@@ -86,9 +86,9 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── SchedulingConfig.java            # @EnableScheduling (settlement.scheduler.enabled로 켜고 끔)
 │   ├── OutboxProperties.java            # Outbox 발행·Consumer 재시도 설정(outbox.*) 바인딩·검증, 백오프 계산 (#42)
 │   ├── KafkaConfig.java                 # 토픽·DLT 생성, Consumer 오류 처리(재시도 후 DLT, 형식 오류는 즉시 DLT) (#42)
-│   ├── NotificationProperties.java      # 알림 발송 설정(notification.dispatcher.*) 바인딩·검증 (V14)
+│   ├── NotificationProperties.java      # 알림 발송 설정(notification.dispatcher.*·sender·slack.*) 바인딩·검증 (V14, #69)
 │   ├── RetentionProperties.java         # 보관 기간 정리 설정(retention.*) 바인딩·검증 (V14)
-│   ├── BackgroundTaskConfig.java        # 알림 발송·보관 기간 정리 주기 작업 등록, 기본 발송기(로그) 빈 (V14)
+│   ├── BackgroundTaskConfig.java        # 알림 발송·보관 기간 정리 주기 작업 등록, 발송기 선택(log·slack) 빈 (V14, #69)
 │   ├── JpaAuditingConfig.java           # @EnableJpaAuditing, 생성·수정 시각을 Clock 기준으로 기록
 │   ├── OpenApiConfig.java               # springdoc 문서 정보, JWT(Bearer) 인증 방식
 │   └── ProdProfileGuard.java            # prod 프로필 기동 점검: 필수 환경변수 누락·Swagger 활성 시 기동 실패 (#54), EnvironmentPostProcessor로 빈 생성 전 실행 (#61)
@@ -134,6 +134,7 @@ src/main/java/com/sparta/springdeliverymini
 │   ├── OutboxMetrics.java               # 발행 대기·FAILED 건수, 가장 오래된 대기 시간 게이지 (V14)
 │   ├── NotificationDispatcher.java      # 알림 기록 → 발송 (SKIP LOCKED, 실패 시 재시도, 한도 초과 FAILED) (V14)
 │   ├── NotificationSender.java / LoggingNotificationSender.java # 발송 채널 인터페이스 / 기본 구현(로그 출력) (V14)
+│   ├── SlackNotificationSender.java     # Slack Incoming Webhook 발송기 — 운영 채널 1곳, notification.sender=slack (#69)
 │   ├── NotificationEventListener.java   # Kafka Consumer — 메시지 해석·검증 후 NotificationService 호출
 │   ├── DltReprocessor.java              # DLT → 원래 토픽 재발행 (kafka_dlt-* 헤더 제거, 그룹 오프셋으로 진행 위치 기록) (#52)
 │   ├── DltReprocessRunner.java          # DLT 재처리 CLI (dlt-reprocess 프로필, --all / --partition·--offset, 분산 락) (#52)
@@ -225,6 +226,7 @@ src/main/resources
   - 엔티티 상태 변경 직후(커밋 전) 기록 → 커밋이 실패하면 같은 traceId의 500 에러 로그가 이어서 남음
 - DB 제약 위반 로그는 제약 조건 이름만 기록 (PostgreSQL 에러 상세에 입력값이 들어 있어서)
 - 메트릭: Actuator + Micrometer Prometheus. `docker compose --profile monitoring up`이면 Prometheus가 `app:8081`을 수집하고 Grafana가 데이터 소스·대시보드(`monitoring/grafana`)를 자동 등록
+  - 대시보드 `Delivery App` 4개 행: 알림 규칙 상태(`ALERTS` 표) / HTTP·DB(요청·5xx·응답 시간·힙·HikariCP·503) / Outbox·Kafka(대기·실패·최고 대기 시간·DLT·발행·소비·lag·처리 시간) / 알림 발송·Redis·정산 스케줄러. 규칙 임계값은 빨간 점선, 패널 설명에 대응 규칙·조치 (#67)
 - 노출 정책: 기본 설정은 health만·Swagger 비활성(운영 기준), local·dev 프로필에서만 prometheus·Swagger UI를 켬
 - 운영 프로필(#54): `prod` — Swagger 비활성(켜면 기동 실패), Actuator는 비공개 관리 포트(8081)에서 health·prometheus만 켜고 나머지 엔드포인트는 비활성, 접속 정보·비밀 값은 환경변수 필수(`config.ProdProfileGuard`), Flyway 자동 baseline 끔. 상세는 [운영 프로필](operations.md)
 - 커넥션 풀·DB 타임아웃(모든 프로필): 풀 10·커넥션 대기 10초, `lock_timeout` 5초·`statement_timeout` 30초 → 넘으면 503 ([운영 프로필 6장](operations.md))
@@ -298,12 +300,13 @@ Redis 헬스체크를 꺼 두었으므로 장애는 메트릭으로 알아챔. �
 | `settlement.scheduler.last.duration.seconds`, `settlement.scheduler.lock.at.most.seconds` | 마지막 집계 소요 시간과 락 TTL | 소요 시간 > TTL의 50% |
 | `distributed.lock.overrun{lock}` | 락 TTL보다 오래 실행된 횟수 | 1건 이상 |
 
-- 카운터는 기동 시 0으로 등록 → 첫 실패부터 `increase()`로 잡힘
+- 카운터는 기동 시 0으로 등록 → 첫 실패부터 `increase()`로 잡힘 (처음 증가할 때 생기는 카운터는 직전 값이 없어 첫 증가를 놓침)
+  - `distributed.lock.overrun`은 락 이름이 태그라 락을 쓰는 쪽이 등록: `SettlementScheduler`가 `settlement-daily-aggregation`을 0으로 등록(#67 점검에서 누락 발견). DLT 재처리 CLI는 수집 대상이 아니라 등록하지 않음
 - 락 TTL(30분)은 위 게이지로 실측해 조정: 소요 시간이 절반을 넘으면 TTL을 늘리거나 집계를 나눔
 
 ### 후속 개선
 - **Redis 고가용성·장애 복구**: 단일 노드 기준 → 복제·Sentinel(또는 클러스터) 구성과 장애 조치 중 기록 유실 시 동작, 복구 절차 검토
-- **알림 전달**: 규칙만 정의됨 → Alertmanager 연동(메신저·메일), Lettuce 명령 지연 메트릭 대시보드
+- **알림 전달**: 규칙만 정의됨 → Alertmanager 연동(메신저·메일), Lettuce 명령 지연 메트릭 대시보드 (Redis 실패·스케줄러 패널은 #67에서 추가)
 - ~~**결제 단건 조회 API**: 재전송 본문은 결제 직후 값이라, 현재 결제 상태는 주문 조회로만 확인 가능~~ → `GET /api/payments/{id}` (#53, 본인 결제의 현재 상태)
 
 ## Kafka · Transactional Outbox (#42)
@@ -377,8 +380,26 @@ sequenceDiagram
 - Consumer는 알림을 `PENDING`으로 저장만 하고, 발송은 별도 주기 작업(5초)이 담당 → 채널이 느리거나 실패해도 Kafka 오프셋 진행을 막지 않고 발송 실패가 DLT로 가지 않음
 - `FOR UPDATE SKIP LOCKED`로 가져와 결과를 같은 트랜잭션에 기록(Outbox 발행과 같은 방식) → 여러 인스턴스가 함께 돌아도 한 알림은 한 인스턴스만 발송. 최소 한 번 발송(발송 후 기록 전 종료 시 재발송)
 - 실패는 1분 뒤 재시도, 5번 실패하면 `FAILED`(자동 발송 중단). V14 이전에 저장된 알림은 `SKIPPED` — 뒤늦게 발송하지 않음
-- 기본 발송기는 `LoggingNotificationSender`(로그 출력). 실제 채널은 `NotificationSender` 빈을 등록하면 대체됨
+- 발송기는 `notification.sender`로 선택 — `log`(기본, `LoggingNotificationSender`) / `slack`(`SlackNotificationSender`, 아래 #69). 다른 `NotificationSender` 빈을 등록하면 설정과 관계없이 그 빈이 쓰임(테스트의 가짜 발송기)
 - 받는 사람은 `GET /api/notifications`로 본인 알림과 발송 상태를 조회
+
+**Slack 발송 (#69)** — `event.SlackNotificationSender`, Incoming Webhook
+- **데모 기능**: 받는 사람별 채널이 아니라 **운영 채널 1곳**으로 보냄(웹훅 URL 하나 = 채널 하나). 고객·가맹점에게 직접 가는 알림이 아님
+- 문구: `[배달 알림] 결제 완료 알림이 생성되었습니다. (notificationId=123)` — notification id·이벤트 종류만. 주문 번호·금액·user id는 넣지 않음(채널 참가자 모두가 보는 외부 서비스). 자세한 내용은 id로 DB에서 확인. 최소 한 번 발송이라 같은 id가 두 번 올 수 있음
+- 전송: JDK `HttpClient`, `POST {"text": ...}`, 리다이렉트 따라가지 않음. 연결 2초(`connect-timeout`)·응답 3초(`read-timeout`, 요청 후 응답 헤더까지)
+
+| 결과 | 처리 |
+|---|---|
+| 2xx | `SENT` |
+| 비 2xx (4xx·5xx) | `SlackSendException("Slack 비정상 응답 status=..., body=앞 200자")` → 기존 재시도(1분 뒤)·5번 실패 시 `FAILED` |
+| 429 | 같은 실패 처리, `Retry-After`는 기록만 하고 따르지 않음 — 재시도 간격(1분)이 Slack 대기 시간보다 길어 별도 처리 불필요 |
+| 연결·응답 시간 초과, 연결 거부 | `Slack 연결 시간 초과` / `Slack 응답 시간 초과` / `Slack 요청 실패 (예외 종류)` → 같은 실패 처리 |
+
+- 4xx(잘못된 URL·삭제된 웹훅 등)도 재시도함: 일시 장애와 구분하는 분기를 두지 않고 기존 경로를 재사용. 최대 5번이라 비용이 작고, `FAILED`·`notification.send{result=failed}` 알림으로 드러남
+- **웹훅 URL 보호**: URL 자체가 발송 권한이라 기본값 없이 `SLACK_WEBHOOK_URL` 환경변수로만 주입. 예외 메시지(`last_send_error` 컬럼·로그)에 URL을 넣지 않고 원인 예외도 붙이지 않음(JDK 예외 메시지에 주소가 들어갈 수 있어서), 설정 객체 `toString`은 `******`, 설정 오류 메시지에도 값을 출력하지 않음
+- 기동 검사: `sender=slack`인데 URL이 없거나 http(s) 주소가 아니면 모든 프로필에서 기동 실패(`NotificationProperties`), prod는 `ProdProfileGuard`가 빈 생성 전에 `SLACK_WEBHOOK_URL` 이름으로 알려 줌. 알 수 없는 `sender` 값도 기동 실패
+- 실제 Slack 확인(2026-11-20): 결제·배달 완료 알림 채널 수신, 잘못된 토큰 → `403 invalid_token` → 재시도 → `FAILED`(URL은 DB·로그에 없음), URL 없이 기동 실패 — `local-verification.md` 2-6 검증 결과
+- **한계**: 발송은 알림 행을 잠근 트랜잭션 안에서 함(기존 구조) → Slack이 응답하지 않으면 건당 최대 약 5초 × batch 100 = 최대 약 8분 동안 행 잠금·DB 커넥션 1개를 잡음(다른 인스턴스는 SKIP LOCKED라 막히지 않음). 또 Incoming Webhook은 초당 약 1건 한도라 알림이 몰리면 429 → 재시도. 데모 규모에서는 문제없고, 운영에서 쓰면 `NOTIFICATION_DISPATCHER_BATCH_SIZE`를 10 정도로 낮추거나 발송을 트랜잭션 밖으로 빼는 구조 변경이 필요(이번 범위 밖)
 
 **보관 기간 정리** — `RetentionCleaner` (1시간마다)
 
@@ -400,7 +421,7 @@ sequenceDiagram
 | `outbox.events{status=pending\|failed}` | 발행 대기·발행 포기 건수 (수집 때마다 DB에서 셈, 부분 인덱스) | `failed` > 0 |
 | `outbox.oldest.pending.age.seconds` | 가장 오래된 발행 대기 이벤트의 대기 시간 | 5분 초과 |
 | `outbox.dlt.records` | Consumer가 DLT로 보낸 메시지 수 (DLT 전송 성공 후에만 증가 — 전송 실패 재시도는 세지 않음, #52) | 10분간 1건 이상 |
-| `kafka.consumer.fetch.manager.records.lag.max` | Consumer lag (Kafka 클라이언트 메트릭, Boot 자동 등록) | 1,000건 초과 5분 |
+| `kafka.consumer.fetch.manager.records.lag{topic,partition}` | 파티션별 현재 Consumer lag (Kafka 클라이언트 메트릭, Boot 자동 등록). `records.lag.max`는 최근 샘플 구간의 최대값이라 메시지가 없으면 NaN → #67에서 현재 값으로 변경 | 1,000건 초과 5분 |
 | `notification.send{result}` | 발송 결과 — `sent` / `retry` / `failed` | `failed` 발생 |
 | `retention.deleted{table}` | 정리한 행 수 | - |
 
@@ -439,9 +460,9 @@ docker compose run --rm app --spring.profiles.active=dev,dlt-reprocess --all
 - 재처리 대상(파티션·오프셋·`kafka_dlt-*` 헤더) 확인과 로컬 수동 시나리오는 [로컬 확인 가이드 2-4](local-verification.md#2-4-kafka--dlt-재처리-52)
 
 ### 후속 개선
-- **실제 발송 채널**: 이메일·SMS·푸시 연동, 발송 `FAILED` 알림의 재발송 API
+- **실제 발송 채널**: 운영 채널 Slack은 #69에서 연결. 받는 사람별 이메일·SMS·푸시 연동, 발송 `FAILED` 알림의 재발송 API, 발송을 행 잠금 트랜잭션 밖으로 분리(위 Slack 한계)
 - **대용량 정리**: 행 수가 크게 늘면 주기 삭제 대신 테이블 파티셔닝(파티션 DROP)
-- **알림 전달**: Alertmanager 연동, Outbox·알림 대시보드 패널
+- **알림 전달**: Alertmanager 연동 (~~Outbox·알림 대시보드 패널~~ #67에서 추가)
 
 ## 인증 (Access · Refresh Token, V15)
 

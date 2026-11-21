@@ -94,6 +94,9 @@ services:
       DB_USERNAME: ${DB_USERNAME}
       DB_PASSWORD: ${DB_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET을 .env에 지정하세요}
+      # 알림 발송 채널 (#69) — 기본 log. slack으로 바꾸려면 .env에 NOTIFICATION_SENDER=slack, SLACK_WEBHOOK_URL=... (URL은 .env에만)
+      NOTIFICATION_SENDER: ${NOTIFICATION_SENDER:-log}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
     ports:
       - "${APP_PORT:-8080}:8080"
     # Actuator 관리 포트(8081, application-dev.yml)는 ports에 넣지 않음 → 호스트·외부에서 접근 불가,

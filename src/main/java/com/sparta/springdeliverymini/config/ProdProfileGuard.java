@@ -17,6 +17,7 @@ import java.util.List;
 //   배포 후 프론트엔드에서야 드러나므로 (와일드카드·형식 오류는 CorsProperties 바인딩에서 막음)
 // - API 문서(springdoc)가 켜져 있으면 기동 실패: 환경변수(SPRINGDOC_*)로 잘못 켜도 운영에 API 구조가 공개되지 않도록
 // - Flyway 자동 baseline이 켜져 있으면 기동 실패 (application-prod.yml)
+// - 알림 발송 채널이 slack(notification.sender)인데 SLACK_WEBHOOK_URL이 비어 있으면 기동 실패 (#69)
 // 오류 메시지에는 변수 이름만 넣고 값은 넣지 않음 (로그에 비밀 값이 남지 않도록)
 // 빈이 아니라 EnvironmentPostProcessor(META-INF/spring.factories 등록)로 검사 (#61):
 // 빈으로 두면 생성 순서가 보장되지 않아 DB_URL이 없을 때 DataSource가 먼저 실패하고 빠진 변수 목록이 나오지 않음
@@ -28,6 +29,8 @@ ProdProfileGuard implements EnvironmentPostProcessor, Ordered {
     static final List<String> REQUIRED_ENV = List.of(
             "DB_URL", "DB_USERNAME", "DB_PASSWORD", "JWT_SECRET", "REDIS_HOST", "KAFKA_BOOTSTRAP_SERVERS",
             "CORS_ALLOWED_ORIGINS");
+
+    static final String SLACK_WEBHOOK_URL = "SLACK_WEBHOOK_URL";
 
     // spring.flyway.baseline-on-migrate: 잘못된 DB(이력 테이블 없이 테이블만 있는 DB)에 붙었을 때 V1을 적용 완료로 기록하고 진행하지 않도록
     static final List<String> MUST_BE_DISABLED = List.of(
@@ -49,9 +52,13 @@ ProdProfileGuard implements EnvironmentPostProcessor, Ordered {
     static void check(Environment environment) {
         List<String> problems = new ArrayList<>();
 
-        List<String> missing = REQUIRED_ENV.stream()
+        List<String> missing = new ArrayList<>(REQUIRED_ENV.stream()
                 .filter(name -> !StringUtils.hasText(environment.getProperty(name)))
-                .toList();
+                .toList());
+        // Slack 발송을 고른 경우에만 웹훅 URL 필수 (#69) — log 발송기는 URL이 필요 없음
+        if (usesSlackSender(environment) && !StringUtils.hasText(environment.getProperty(SLACK_WEBHOOK_URL))) {
+            missing.add(SLACK_WEBHOOK_URL);
+        }
         if (!missing.isEmpty()) {
             problems.add("필수 환경변수가 없습니다: " + String.join(", ", missing));
         }
@@ -66,5 +73,10 @@ ProdProfileGuard implements EnvironmentPostProcessor, Ordered {
         if (!problems.isEmpty()) {
             throw new IllegalStateException("prod 프로필 설정 오류 — " + String.join(" / ", problems));
         }
+    }
+
+    // notification.sender는 enum 바인딩(대소문자 무시) 전이라 문자열로 비교
+    private static boolean usesSlackSender(Environment environment) {
+        return "slack".equalsIgnoreCase(environment.getProperty("notification.sender", "log").trim());
     }
 }
