@@ -7,6 +7,7 @@ import com.sparta.springdeliverymini.dto.SettlementItemResponse;
 import com.sparta.springdeliverymini.dto.StoreSettlementResponse;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.repository.PaymentRefundRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,6 +41,9 @@ class SettlementServiceTest {
     private PaymentRepository paymentRepository;
 
     @Mock
+    private PaymentRefundRepository paymentRefundRepository; // 환불 1건 (V21)
+
+    @Mock
     private UserRepository userRepository;
 
     @Mock
@@ -61,7 +65,8 @@ class SettlementServiceTest {
     // Clock은 Mock이 아니라 고정 값이므로 @InjectMocks 대신 직접 생성
     @BeforeEach
     void setUp() {
-        settlementService = new SettlementService(paymentRepository, userRepository, storeService, fixedClock);
+        settlementService = new SettlementService(paymentRepository, paymentRefundRepository, userRepository, storeService,
+                fixedClock);
     }
 
     private static User user(Long id, String username, Role role) {

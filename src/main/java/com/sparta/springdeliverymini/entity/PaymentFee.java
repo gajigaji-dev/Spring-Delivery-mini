@@ -33,6 +33,24 @@ public record PaymentFee(BigDecimal rate, long feeAmount, long settlementAmount)
         return new PaymentFee(rate.setScale(RATE_SCALE), feeAmount, amount - feeAmount);
     }
 
+    // 부분 환불 1건의 수수료·정산액 (V21, docs/money-policy.md 부분 환불)
+    // 이번 환불 수수료 = 누적 환불액(이번 포함)의 수수료 − 이전 누적 환불액의 수수료 (각각 calculate로 반올림)
+    // → 환불마다 따로 반올림하면 생기는 1원 오차가 쌓이지 않음. 결제액 전부를 환불하면 수수료 합계 = 결제 수수료와 정확히 같음
+    // → 수수료율이 1 이하이고 반올림이 단조 증가라 0 ≤ 이번 수수료 ≤ 이번 환불액 (정산액도 0 이상)
+    public static PaymentFee refundPortion(long paymentAmount, BigDecimal rate, long refundedBefore, long refundAmount) {
+        if (refundAmount <= 0) {
+            throw new IllegalArgumentException("환불 금액은 0보다 커야 합니다: " + refundAmount);
+        }
+        if (refundedBefore < 0 || refundAmount > paymentAmount - refundedBefore) {
+            throw new IllegalArgumentException("환불 금액이 남은 결제 금액을 넘습니다: 결제 " + paymentAmount
+                    + ", 이미 환불 " + refundedBefore + ", 요청 " + refundAmount);
+        }
+        long feeBefore = calculate(refundedBefore, rate).feeAmount();
+        long feeAfter = calculate(refundedBefore + refundAmount, rate).feeAmount();
+        long feeAmount = feeAfter - feeBefore;
+        return new PaymentFee(rate.setScale(RATE_SCALE), feeAmount, refundAmount - feeAmount);
+    }
+
     // 수수료율 검증 — 설정값(PaymentFeeProperties) 바인딩 시에도 호출해 잘못된 설정이면 기동 실패
     public static void validateRate(BigDecimal rate) {
         if (rate == null) {

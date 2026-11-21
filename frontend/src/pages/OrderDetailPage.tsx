@@ -1,12 +1,13 @@
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { orderApi, paymentApi } from '../api/endpoints';
+import { useNavigate, useParams } from 'react-router-dom';
+import { orderApi, paymentApi, tossApi } from '../api/endpoints';
 import { isStaleOrderState } from '../api/errorMessages';
 import { useAuth } from '../auth/AuthContext';
 import { DelayedSpinner } from '../components/DelayedSpinner';
 import { ErrorMessage } from '../components/ErrorMessage';
 import { formatDateTime, Money, orderStatusLabel, paymentStatusLabel, StatusBadge } from '../components/format';
 import { useAsync } from '../hooks/useAsync';
+import { fakeTossCheckoutPath, openTossCardPayment } from '../payments/tossSdk';
 
 // 결제 응답을 못 받은 채(타임아웃·새로고침) 다시 누르면 같은 키로 보내야 이중 결제가 안 됨
 // → 주문별로 키를 sessionStorage에 두고, 결제가 끝나면 지움 (docs/api.md 멱등성 키)
@@ -34,7 +35,16 @@ function forgetIdempotencyKey(orderId: number): void {
 export default function OrderDetailPage() {
   const orderId = Number(useParams().id);
   const { me } = useAuth();
+  const navigate = useNavigate();
   const { data: order, error, loading, reload } = useAsync(() => orderApi.get(orderId), [orderId]);
+  // 토스 결제 사용 여부 (V20) — 키가 없거나 조회에 실패하면 모의 결제 버튼
+  const isCustomer = me?.role === 'CUSTOMER';
+  const { data: tossConfig, error: tossConfigError } = useAsync(
+    () => (isCustomer ? tossApi.config() : Promise.resolve(null)),
+    [isCustomer],
+  );
+  const tossEnabled = tossConfig?.enabled === true;
+  const mockPaymentEnabled = !tossEnabled && (tossConfig != null || tossConfigError != null);
   const [actionError, setActionError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
 
@@ -61,7 +71,6 @@ export default function OrderDetailPage() {
   if (loading && !order) return <DelayedSpinner />;
   if (!order) return <ErrorMessage error={error} />;
 
-  const isCustomer = me?.role === 'CUSTOMER';
   const isOwner = me?.role === 'OWNER';
 
   return (
@@ -112,6 +121,11 @@ export default function OrderDetailPage() {
         <p>
           <StatusBadge label={paymentStatusLabel[order.payment.status]} /> <Money value={order.payment.amount} /> ·{' '}
           {formatDateTime(order.payment.paidAt)}
+          {order.payment.refundedAmount > 0 && (
+            <>
+              {' '}· 환불 <Money value={order.payment.refundedAmount} />
+            </>
+          )}
         </p>
       ) : (
         <p className="notice">결제 전입니다.</p>
@@ -119,7 +133,25 @@ export default function OrderDetailPage() {
 
       <ErrorMessage error={actionError} />
       <div className="row">
-        {isCustomer && order.status === 'ORDER_REQUEST' && (
+        {isCustomer && order.status === 'ORDER_REQUEST' && tossEnabled && (
+          // 서버가 정한 금액·주문번호로 결제창을 엶 → 성공하면 /payments/toss/success로 이동해 서버 승인 (V20)
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                const checkout = await tossApi.checkout(order.id);
+                // 가짜 PG 모드(V21)면 토스 SDK 대신 이 앱의 가짜 결제창으로
+                if (tossConfig?.mode === 'FAKE') navigate(fakeTossCheckoutPath(checkout, order.id));
+                else await openTossCardPayment(checkout, order.id);
+              })
+            }
+          >
+            {tossConfig?.mode === 'FAKE' ? '가짜 결제창으로 결제 (시연)' : '토스페이먼츠로 결제 (테스트)'}
+          </button>
+        )}
+        {isCustomer && order.status === 'ORDER_REQUEST' && mockPaymentEnabled && (
           <button
             type="button"
             className="btn"

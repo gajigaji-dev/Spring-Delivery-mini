@@ -1,18 +1,22 @@
 package com.sparta.springdeliverymini.service;
 
-
 import com.sparta.springdeliverymini.TestAddresses;
 import com.sparta.springdeliverymini.config.TimeConfig;
+import com.sparta.springdeliverymini.dto.PaymentRefundResponse;
 import com.sparta.springdeliverymini.dto.PaymentResponse;
 import com.sparta.springdeliverymini.entity.*;
 import com.sparta.springdeliverymini.event.OutboxEventRecorder;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.exception.ErrorCode;
 import com.sparta.springdeliverymini.exception.InvalidPaymentStatusException;
+import com.sparta.springdeliverymini.repository.PaymentRefundRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -27,8 +31,10 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
@@ -40,6 +46,10 @@ class AdminPaymentServiceTest {
     @Mock private UserRepository userRepository;
     @Mock private OutboxEventRecorder outboxEventRecorder;
 
+    @Mock
+    private PgCancelService pgCancelService; // 토스 결제 취소 요청 (V20)
+    @Mock private PaymentRefundRepository paymentRefundRepository; // 환불 1건 기록 (V21)
+
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 11, 7, 10, 0);
     private static final LocalDateTime DELIVERED_AT = LocalDateTime.of(2026, 11, 5, 12, 0);
 
@@ -48,7 +58,9 @@ class AdminPaymentServiceTest {
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(NOW.atZone(TimeConfig.ZONE).toInstant(), TimeConfig.ZONE);
-        service = new AdminPaymentService(paymentRepository, userRepository, clock, outboxEventRecorder);
+        service = new AdminPaymentService(paymentRepository, userRepository, clock, outboxEventRecorder, pgCancelService,
+                paymentRefundRepository);
+        lenient().when(paymentRefundRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     private static Payment payment(OrderStatus orderStatus) {
@@ -80,7 +92,7 @@ class AdminPaymentServiceTest {
         assertThat(response.amount()).isEqualTo(18009);
         assertThat(response.orderStatus()).isEqualTo(OrderStatus.DELIVERY_COMPLETED); // 주문 상태는 그대로
         assertThat(payment.getStatus()).isEqualTo(PaymentStatus.REFUNDED);
-        verify(outboxEventRecorder).paymentRefunded(payment); // 환불 이벤트를 같은 트랜잭션에 저장 (#42)
+        verify(outboxEventRecorder).paymentRefunded(any(PaymentRefund.class)); // 환불 이벤트를 같은 트랜잭션에 저장 (#42)
     }
 
     @Test
@@ -91,7 +103,8 @@ class AdminPaymentServiceTest {
 
         service.refund(1L, "admin");
 
-        assertThat(output).contains("결제 환불 paymentId=1, orderId=10, amount=18009, status=COMPLETED->REFUNDED");
+        assertThat(output).contains("결제 환불 paymentId=1, orderId=10", "amount=18009, refundedTotal=18009/18009",
+                "status=COMPLETED->REFUNDED");
         // 회원 아이디·배달 주소는 로그에 남기지 않음
         assertThat(output).doesNotContain("customer1").doesNotContain("테헤란로");
     }
@@ -142,6 +155,52 @@ class AdminPaymentServiceTest {
 
         assertThatThrownBy(() -> service.refund(1L, "admin")).isInstanceOf(InvalidPaymentStatusException.class);
         assertThat(payment.getRefundedAt()).isEqualTo(NOW.minusDays(1)); // 처음 환불 시각 유지
-        verify(outboxEventRecorder, never()).paymentRefunded(payment); // 중복 환불 이벤트 없음
+        verify(outboxEventRecorder, never()).paymentRefunded(any()); // 중복 환불 이벤트 없음
+    }
+
+    // ===== 부분 환불 (V21) =====
+
+    @Test
+    void 부분_환불은_환불_1건을_저장하고_이번_환불_금액으로_이벤트를_남긴다() {
+        givenUser("admin", Role.ADMIN);
+        Payment payment = payment(OrderStatus.DELIVERY_COMPLETED);
+        given(paymentRepository.findByIdForUpdate(1L)).willReturn(Optional.of(payment));
+
+        PaymentRefundResponse response = service.partialRefund(1L, 3000, "콜라 누락", "admin");
+
+        assertThat(response.amount()).isEqualTo(3000);
+        assertThat(response.feeAmount()).isEqualTo(150);
+        assertThat(response.paymentStatus()).isEqualTo(PaymentStatus.PARTIALLY_REFUNDED);
+        assertThat(response.refundableAmount()).isEqualTo(15009);
+        ArgumentCaptor<PaymentRefund> saved = ArgumentCaptor.forClass(PaymentRefund.class);
+        verify(paymentRefundRepository).save(saved.capture());
+        verify(outboxEventRecorder).paymentRefunded(saved.getValue());
+        verify(pgCancelService, never()).requestRefundCancel(any()); // 모의 결제는 토스 취소 없음
+    }
+
+    @Test
+    void 남은_금액을_넘는_부분_환불은_400_INVALID_REFUND_AMOUNT이고_아무것도_저장하지_않는다() {
+        givenUser("admin", Role.ADMIN);
+        Payment payment = payment(OrderStatus.DELIVERY_COMPLETED);
+        given(paymentRepository.findByIdForUpdate(1L)).willReturn(Optional.of(payment));
+
+        assertThatThrownBy(() -> service.partialRefund(1L, 18010, "초과", "admin"))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(e.getCode()).isEqualTo(ErrorCode.INVALID_REFUND_AMOUNT);
+                });
+        verify(paymentRefundRepository, never()).save(any());
+        assertThat(payment.getRefundedAmount()).isZero();
+    }
+
+    @Test
+    void 전액_환불된_결제의_부분_환불은_금액과_관계없이_409() {
+        givenUser("admin", Role.ADMIN);
+        Payment payment = payment(OrderStatus.DELIVERY_COMPLETED);
+        payment.refund(NOW.minusDays(1));
+        given(paymentRepository.findByIdForUpdate(1L)).willReturn(Optional.of(payment));
+
+        assertThatThrownBy(() -> service.partialRefund(1L, 100, "추가", "admin"))
+                .isInstanceOf(InvalidPaymentStatusException.class);
     }
 }

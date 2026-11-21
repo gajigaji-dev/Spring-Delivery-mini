@@ -29,6 +29,10 @@ public enum ErrorCode {
     ORDER_AMOUNT_TOO_LARGE,      // 총액이 long 범위를 넘음
     UNSUPPORTED_PAYMENT_METHOD,  // CARD 외 결제 수단
     INVALID_IDEMPOTENCY_KEY,     // Idempotency-Key 형식 오류
+    PAYMENT_AMOUNT_MISMATCH,     // 토스 승인 요청 금액 ≠ 주문 총액 → 승인하지 않음 (V20)
+    INVALID_PG_ORDER_ID,         // 토스 주문번호가 이 주문에 발급한 형식이 아님 → 결제를 다시 시작
+    PG_PAYMENT_REJECTED,
+    INVALID_REFUND_AMOUNT,       // 부분 환불 금액이 남은 결제 금액을 넘음 (V21)         // 토스가 승인을 거절(카드 거절·결제 시간 만료 등) → 결제창을 다시 열어 결제
 
     // 404
     ORDER_NOT_FOUND,
@@ -50,5 +54,7 @@ public enum ErrorCode {
     IDEMPOTENCY_KEY_REUSED,      // 같은 Idempotency-Key로 다른 결제 요청 → 새 키로 요청
 
     // 503 — 요청은 반영되지 않음, 같은 Idempotency-Key로 재시도
-    PAYMENT_UNAVAILABLE          // 멱등성 저장소(Redis) 장애
+    PAYMENT_UNAVAILABLE,         // 멱등성 저장소(Redis) 장애
+    PG_NOT_CONFIGURED,           // 토스 키가 없거나 거부됨 → 토스 결제를 쓸 수 없음 (결제되지 않음)
+    PG_RESULT_UNKNOWN            // 토스 승인 결과를 확인하지 못함(시간 초과 등) → 결제창을 다시 열지 말고 같은 승인 요청을 재시도
 }

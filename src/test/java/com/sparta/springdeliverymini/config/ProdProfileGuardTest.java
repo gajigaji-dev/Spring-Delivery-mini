@@ -96,4 +96,14 @@ class ProdProfileGuardTest {
         log.setProperty("notification.sender", "log");
         assertThatCode(() -> ProdProfileGuard.check(log)).doesNotThrowAnyException();
     }
+
+    @Test
+    void 가짜_PG_모드면_기동을_막는다() {
+        MockEnvironment environment = completeEnvironment();
+        environment.setProperty("toss.payments.mode", "FAKE");
+
+        assertThatThrownBy(() -> ProdProfileGuard.check(environment))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("toss.payments.mode=fake");
+    }
 }

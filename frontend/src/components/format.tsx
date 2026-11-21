@@ -35,6 +35,7 @@ export const orderStatusTone: Record<OrderStatus, Tone> = {
 export const paymentStatusLabel: Record<PaymentStatus, string> = {
   COMPLETED: '결제 완료',
   CANCELLED: '결제 취소',
+  PARTIALLY_REFUNDED: '부분 환불',
   REFUNDED: '환불',
 };
 

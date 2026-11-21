@@ -14,6 +14,15 @@ groups:
           summary: "Redis 명령 실패 ({{ $labels.operation }})"
           description: "최근 5분간 Redis 명령이 실패함. 키 있는 결제는 503(이미 결제된 요청은 DB 기록으로 재전송), 스케줄러는 실행을 건너뜀"
 
+      # 토스 결제 취소가 max-attempts번 실패해 자동 재시도를 멈춤 (V20) — 고객 돈이 돌아가지 않은 상태
+      - alert: PgCancelFailed
+        expr: increase(pg_cancel_attempts_total{result="failed"}[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "토스 결제 취소 최종 실패"
+          description: "pg_cancel_requests에 FAILED 행이 생김. last_error로 원인 확인 후 토스 관리자 화면에서 취소하거나 status를 PENDING으로 되돌려 재시도"
+
       # Redis 장애로 일 정산 자동 집계를 건너뜀 → 다음 실행의 catch-up(최근 7일)으로 보충되는지 확인
       - alert: SettlementSchedulerSkippedByRedis
         expr: increase(settlement_scheduler_runs_total{result="skipped_redis_unavailable"}[1d]) > 0

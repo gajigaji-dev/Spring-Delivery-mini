@@ -247,9 +247,11 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 | 주문요청 (`ORDER_REQUEST`) | 주문만 취소 | CUSTOMER | 없음 |
 | 결제완료 (`PAYMENT_COMPLETED`) | 주문 `ORDER_CANCELLED` + 결제 `CANCELLED` (전액 취소) | CUSTOMER | 없음 (배달 전) |
 | 주문수락 (`ORDER_ACCEPTED`) 이후, 배달 전 | **취소 불가** (409) | - | - |
-| 배달완료 (`DELIVERY_COMPLETED`) | 결제 `REFUNDED` (전액 환불), 주문 상태는 그대로 | **ADMIN만** | 다음에 집계되는 정산에서 차감 |
+| 배달완료 (`DELIVERY_COMPLETED`) | 결제 `PARTIALLY_REFUNDED`(부분 환불, V21) / `REFUNDED`(남은 금액 전부), 주문 상태는 그대로 | **ADMIN만** | 환불 1건마다 다음에 집계되는 정산에서 차감 |
 
-- 환불 시 고객 결제액·플랫폼 수수료·매장 정산액을 모두 취소 → 결제에 저장된 `amount`, `fee_amount`, `settlement_amount`를 그대로 차감
+- 환불 시 고객 결제액·플랫폼 수수료·매장 정산액을 취소 → **환불 1건**(`payment_refunds`, V21)에 저장된 금액을 그대로 차감
+  - 전액 환불(부분 환불 없음) = 결제에 저장된 금액과 같음. 부분 환불 수수료 계산은 [금액 처리 정책](money-policy.md) 부분 환불
+  - V21 전에는 차감 단위가 "REFUNDED 결제"(`settlement_refunds.payment_id` UNIQUE). V21에서 기존 전액 환불을 환불 1건씩으로 옮기고 차감 기록을 그 환불에 연결(백필) → 기존 정산 금액은 그대로
 - 상태 전이 규칙은 `Payment.cancel()`, `Payment.refund()`에서만 판단 → 위반 시 `InvalidPaymentStatusException` (409)
 
 ### 정산 1건의 구성
@@ -263,7 +265,7 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 | 구성 | 대상 | 연결 기록 |
 |---|---|---|
 | 판매 | D일에 배달완료된 결제 (나중에 환불돼도 포함 → 이미 조회·집계된 금액이 바뀌지 않음) | - |
-| 환불 | `refunded_at < D+1 00:00`이고 **아직 어떤 정산에서도 차감되지 않은** 환불 | `settlement_refunds` (payment_id UNIQUE) |
+| 환불 | `refunded_at < D+1 00:00`이고 **아직 어떤 정산에서도 차감되지 않은** 환불 1건 (부분 환불 포함) | `settlement_refunds` (payment_refund_id UNIQUE, V21) |
 | 이월 | **D보다 앞 날짜** 정산에서 넘어왔고 아직 차감되지 않은 이월분 | `settlement_carryovers` (from_settlement_id UNIQUE) |
 
 ### 지키는 규칙
@@ -273,7 +275,7 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 | **이미 만들어진 정산은 바뀌지 않음** (PENDING·CONFIRMED·PAID 모두) | 집계는 새 정산과 연결 기록을 INSERT만 함. 기존 정산 행은 UPDATE하지 않음 |
 | **환불일 정산이 이미 있으면 다음 정산에서 차감** | 미차감 환불을 날짜 구간이 아니라 "연결 기록이 없는지"로 찾음 → 늦게 커밋된 환불, catch-up 기간을 넘긴 환불도 누락되지 않음 |
 | 판매가 없어도 차감 | 미차감 환불이 있는 매장은 집계 대상에 포함 → 판매 0건 정산을 만들어 차감 (보통 다음 날 정산) |
-| **중복 차감 없음** | ① 매장 행 잠금으로 같은 매장 집계를 직렬화 ② `settlement_refunds.payment_id`, `settlement_carryovers.from_settlement_id` UNIQUE → 잠금이 빠져도 DB가 거부하고 매장 트랜잭션 전체 롤백 |
+| **중복 차감 없음** | ① 매장 행 잠금으로 같은 매장 집계를 직렬화 ② `settlement_refunds.payment_refund_id`(V21), `settlement_carryovers.from_settlement_id` UNIQUE → 잠금이 빠져도 DB가 거부하고 매장 트랜잭션 전체 롤백 |
 | **차감은 원인보다 같거나 늦은 날짜에서만** | 환불: `refunded_at < 정산일+1`, 이월: `from.settlement_date < to.settlement_date` (`SettlementRefund`, `SettlementCarryover` 생성 시 검증) |
 | 날짜 역순 집계 (D-1을 D보다 늦게 집계) | D-1은 D의 이월분을 가져가지 않음 → D+1 이후 정산에서 차감. 총 지급액은 집계 순서와 무관 |
 | 정산 행 ↔ 연결 기록 일치 | 같은 트랜잭션에서 저장 → 함께 커밋되거나 함께 롤백 |
@@ -288,7 +290,7 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 ```
 1. stores 행 잠금 (SELECT ... FOR UPDATE)
 2. (store, D) 정산이 이미 있으면 건너뜀
-3. 판매 = findSettlementTargets(store, [D, D+1)),  환불 = findUnsettledRefunds(store, D+1)
+3. 판매 = findSettlementTargets(store, [D, D+1)),  환불 = PaymentRefundRepository.findUnsettledRefunds(store, D+1)
 4. 판매·환불이 모두 없으면 건너뜀
 5. 이월 = findUnsettledCarryovers(store, D)
 6. Settlement.aggregate(...) → INSERT
@@ -303,7 +305,7 @@ PENDING(확정 대기) ── confirm(confirmedAt) ──▶ CONFIRMED(확정) �
 
 | 경합 | 처리 |
 |---|---|
-| 같은 결제 동시 환불 | 결제 행 잠금(`PaymentRepository.findByIdForUpdate`) → 한 번만 성공, 나머지 409 |
+| 같은 결제 동시 환불 | 결제 행 잠금(`PaymentRepository.findByIdForUpdate`) → 전액 환불은 한 번만 성공(나머지 409), 부분 환불은 누적이 결제액을 넘는 요청만 400 `INVALID_REFUND_AMOUNT` (`PartialRefundIntegrationTest`) |
 | 고객 취소 ↔ 사장님 수락 | 주문 행 잠금(`OrderRepository.findByIdForUpdate`, 결제·취소·상태 변경 공통) → 한쪽만 성공, 주문·결제 상태 일치 |
 | 같은 매장의 여러 날짜 동시 집계 | 매장 행 잠금 + 연결 기록 UNIQUE |
 

@@ -97,6 +97,11 @@ services:
       # 알림 발송 채널 (#69) — 기본 log. slack으로 바꾸려면 .env에 NOTIFICATION_SENDER=slack, SLACK_WEBHOOK_URL=... (URL은 .env에만)
       NOTIFICATION_SENDER: ${NOTIFICATION_SENDER:-log}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      # 토스페이먼츠 테스트 모드 (V20) — 공개 테스트 키도 .env에만. 비어 있으면 토스 결제를 끄고 모의 결제만
+      TOSS_CLIENT_KEY: ${TOSS_CLIENT_KEY:-}
+      TOSS_SECRET_KEY: ${TOSS_SECRET_KEY:-}
+      # real(기본) | fake — fake는 토스에 접속하지 않는 가짜 PG (시연·장애 재현, V21)
+      TOSS_MODE: ${TOSS_MODE:-real}
     ports:
       - "${APP_PORT:-8080}:8080"
     # Actuator 관리 포트(8081, application-dev.yml)는 ports에 넣지 않음 → 호스트·외부에서 접근 불가,

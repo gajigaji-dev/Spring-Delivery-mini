@@ -27,6 +27,8 @@
 | `V16__add_refresh_token_family_expiry.sql` | Refresh Token 후속: `refresh_tokens.family_expires_at`(계열 절대 만료, NOT NULL, `expires_at <= family_expires_at` CHECK) 추가 — 기존 계열은 첫 발급 + 30일로 백필하되 이미 더 늦게 만료되는 토큰이 있으면 그 시각까지. 정리용 `idx_refresh_tokens_expires_at (expires_at)` 추가 |
 | `V17__add_owner_applications.sql` | 사장님 승인제(#70): `owner_applications`(신청자·처리자 FK → users, 상태 CHECK, 처리 시각·처리자 ⇔ 상태 CHECK, 거절 사유 ⇔ REJECTED CHECK) + 대기 중 신청 부분 유니크 `(user_id) WHERE status='REQUESTED'`, 목록용 `(status, id)`, 내 신청용 `(user_id, id)` 인덱스. 기존 OWNER 계정·행 변경 없음 |
 | `V19__add_order_delivery_request.sql` | 배달 요청사항(#77 후속): `orders.delivery_request varchar(100)`(NULL 허용, 기존 주문 NULL, 기본값 없음 → 기존 행 재작성 없음). 길이·제어 문자 검증은 Order 생성자 |
+| `V20__add_toss_payments.sql` | 토스페이먼츠 테스트 모드: `payments`에 PG 승인 정보 4컬럼(`pg_provider`·`pg_payment_key` UNIQUE·`pg_order_id` UNIQUE·`pg_approved_at`, 모두 NULL 허용 → 기존 결제·모의 결제는 NULL, 넷은 함께 있거나 함께 없음 CHECK), PG 결제 취소 요청 `pg_cancel_requests`(취소 금액·반영 후 잔액 `balance_after`, 환불 1건당 1행·전액 취소는 결제 키당 1행) |
+| `V21__add_partial_refunds.sql` | 부분 환불: `payment_refunds`(결제 1 : 환불 N) 생성, `payments.refunded_amount`·상태 `PARTIALLY_REFUNDED`(상태↔누적 환불액 CHECK), 기존 전액 환불을 환불 1건씩으로 **백필**하고 `settlement_refunds`를 `payment_refund_id`(UNIQUE)로 연결, `payment_id` UNIQUE 제거, 쓰지 않게 된 `idx_payments_refunded_at` 삭제. 주문 1 : 결제 1(`order_id` UNIQUE)은 유지 (`PartialRefundMigrationTest`) |
 | `V18__split_order_delivery_address.sql` | 배송 주소 분리(#77): `orders.zip_code varchar(5)`·`road_address varchar(150)`·`detail_address varchar(100)` 추가(NULL 허용, 기본값 없음 → 기존 행 재작성 없음) + `orders_address_parts_check`(셋 다 NULL이거나, 우편번호 숫자 5자리 + 도로명 있음). 기존 주문은 `delivery_address`만 유지하고 세 컬럼은 NULL(백필 안 함 — 한 줄 주소를 안전하게 나눌 수 없음) |
 
 - **빈 DB**: 애플리케이션 기동 시 V1부터 순서대로 실행
@@ -132,7 +134,7 @@
 | settlement_amount | bigint | NOT NULL | 사장님 정산액 (`amount - fee_amount`) |
 | payment_method | varchar(255) | NOT NULL | `CARD` |
 | paid_at | timestamp(6) | NOT NULL | 결제 시각 |
-| status | varchar(20) | NOT NULL, `COMPLETED` / `CANCELLED` / `REFUNDED` | 결제 상태 (V9, 기존 결제는 `COMPLETED`) |
+| status | varchar(20) | NOT NULL, `COMPLETED` / `CANCELLED` / `PARTIALLY_REFUNDED`(V21) / `REFUNDED` | 결제 상태 (V9, 기존 결제는 `COMPLETED`) |
 | cancelled_at | timestamp(6) | `CANCELLED`일 때만 NOT NULL (CHECK) | 배달 전 취소 시각 |
 | refunded_at | timestamp(6) | `REFUNDED`일 때만 NOT NULL (CHECK), 부분 인덱스 `WHERE status = 'REFUNDED'` | 배달 후 환불 시각 |
 | created_at | timestamp | | 기록 생성 시각 (BaseEntity, 이후 변경 불가) |
@@ -141,6 +143,15 @@
 > `fee_amount >= 0`, `settlement_amount >= 0`, `fee_amount + settlement_amount = amount`, `fee_rate` 0~1을 CHECK 제약으로 DB에서도 강제
 > 합계 비교는 `numeric`으로 올려서 계산 → bigint끼리 더할 때의 오버플로(`bigint out of range`) 없이 항상 CHECK 위반으로 거부됨
 > 금액 타입·반올림·수수료율 설정은 [금액 처리 정책](money-policy.md), 기간별 정산 집계 기준은 [정산 기준](settlement-policy.md) 참고
+
+| refunded_amount | bigint | NOT NULL, 기본 0 | 누적 환불액 (V21). `COMPLETED`·`CANCELLED` 0 / `PARTIALLY_REFUNDED` 0 < x < amount / `REFUNDED` = amount (CHECK) |
+| pg_provider | varchar(20) | `TOSS`만 (CHECK) | PG 공급자 (V20) — PG를 거친 결제만, 모의 결제는 NULL |
+| pg_payment_key | varchar(200) | **UNIQUE** | 토스 결제 키 — 같은 키의 승인 재요청이 두 번 기록되지 않음 |
+| pg_order_id | varchar(64) | **UNIQUE** | 결제창에 넘긴 토스 주문번호 `order-{주문 id}-{난수}` |
+| pg_approved_at | timestamp(6) | | 토스 승인 시각(Asia/Seoul). `paid_at`(서버 기록 시각, 정산 기준)과 따로 둠 |
+
+> PG 네 컬럼은 함께 있거나 함께 없음 (`ck_payments_pg_fields`). 승인 후 바뀌지 않음 (엔티티 `updatable = false`)
+> `paid_at`은 토스 결제도 서버가 기록한 시각: 승인 결과를 늦게 확인해 기록한 경우(시간 초과 후 재시도) 이미 집계된 날짜로 들어가 정산에서 빠지는 일이 없도록
 
 > `paid_at`과 `created_at`은 지금은 거의 같은 값이지만 의미가 다름. `created_at`은 DB에 기록된 시각(기술적 기록), `paid_at`은 결제가 승인된 시각(업무 데이터). PG 연동 시 승인 시각을 PG 응답값으로 받으면 두 값이 달라질 수 있어 별도로 유지
 
@@ -290,6 +301,43 @@
 
 > 결제와 같은 트랜잭션에 INSERT(키가 있는 결제만) → Redis 기록이 만료·유실되거나 Redis가 내려가 있어도 같은 키 재시도에 처음 응답을 재전송. 응답 본문은 저장하지 않고 결제 행의 불변 값으로 다시 만듦
 > 생성 후 변경 없음, 보관 기간(30일) 뒤 삭제 — `idx_payment_idempotency_keys_created_at (created_at)`. 동작은 [프로젝트 구조 · Redis](architecture.md#redis-41)
+
+### pg_cancel_requests — PG 결제 취소 요청 (V20)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| payment_id | bigint | FK → payments.id, NULL 허용 | 취소할 결제. 승인 후 결제 행을 만들지 못한 **보상 취소**는 NULL |
+| pg_provider | varchar(20) | NOT NULL, `TOSS` | |
+| payment_refund_id | bigint | FK → payment_refunds.id (V21), **UNIQUE**, NULL 허용 | 관리자 환불 1건에서 생긴 취소. 주문 취소·보상은 NULL |
+| payment_key | varchar(200) | NOT NULL, `payment_refund_id IS NULL`인 행끼리 UNIQUE(부분 인덱스) | 토스 결제 키 — 환불 없는 전액 취소는 결제 키당 1건 |
+| amount | bigint | NOT NULL, > 0 | 이번 취소 금액 → 토스 `cancelAmount` |
+| balance_after | bigint | NOT NULL, ≥ 0 | 이 취소가 반영된 뒤 토스 결제에 남아야 할 잔액 — 재시도 전 반영 여부 확인 기준 |
+| reason | varchar(200) | NOT NULL | 토스 `cancelReason` (고객 주문 취소 / 관리자 환불 / 보상 사유) |
+| status | varchar(20) | NOT NULL, `PENDING`/`DONE`/`FAILED` | `DONE`이면 `completed_at` 있음 (CHECK) |
+| attempts | integer | NOT NULL | 결과를 받은(또는 모르는 채 끝난) 시도 횟수 |
+| next_attempt_at | timestamp(6) | NOT NULL | 다음 시도 시각 / 처리 중이면 임대 만료 시각 |
+| last_error | varchar(500) | | 마지막 실패 원인 (토스 code·예외 종류만) |
+| requested_at · completed_at | timestamp(6) | | 요청(업무 트랜잭션 커밋) 시각 · 완료 시각 |
+| created_at · updated_at | timestamp(6) | | BaseEntity |
+
+> 주문 취소·관리자 환불·보상 취소 때 업무 트랜잭션 안에서 INSERT → 커밋 후 `PgCancelProcessor`가 토스 취소 API 호출 (Outbox와 같은 방식, [API · 토스페이먼츠 결제](api.md))
+> 처리 대상은 `FOR UPDATE SKIP LOCKED` + `next_attempt_at` 임대로 한 작업자만 가져감 — `idx_pg_cancel_requests_pending (next_attempt_at, id) WHERE status = 'PENDING'`, FAILED 확인용 `idx_pg_cancel_requests_failed`
+> 보관 기간 정리 대상 아님 (금전 처리 기록)
+
+### payment_refunds — 환불 1건 (V21)
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| id | bigint | PK | |
+| payment_id | bigint | NOT NULL, FK → payments.id | 결제 1 : 환불 N |
+| amount | bigint | NOT NULL, > 0 | 이번 환불 금액 |
+| fee_amount · settlement_amount | bigint | NOT NULL, ≥ 0, 합 = amount (CHECK) | 함께 취소된 수수료 · 정산에서 차감할 매장 정산액 (`PaymentFee.refundPortion`) |
+| reason | varchar(200) | NOT NULL | 환불 사유 (백필 행은 "전액 환불 (V21 이전 기록)") |
+| refunded_at | timestamp(6) | NOT NULL | 정산 차감 기준 시각 |
+| created_at · updated_at | timestamp(6) | | BaseEntity |
+
+> 생성 후 바뀌지 않음. 같은 결제의 합계 ≤ 결제액은 결제 행 잠금 + `payments.refunded_amount` CHECK로 보장
+> 인덱스: `(payment_id, id)`, `(refunded_at)` — 미차감 환불(`NOT EXISTS settlement_refunds`)·기간별 환불 조회
+> `settlement_refunds`: V21부터 `payment_refund_id`(NOT NULL, UNIQUE) = 차감 단위, `payment_id`는 조회용으로 남김(UNIQUE 제거, 일반 인덱스)
 
 ### refresh_tokens — Refresh Token (V15)
 | 컬럼 | 타입 | 제약 | 설명 |

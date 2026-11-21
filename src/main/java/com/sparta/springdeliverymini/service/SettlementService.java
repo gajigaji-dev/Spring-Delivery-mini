@@ -3,11 +3,13 @@ package com.sparta.springdeliverymini.service;
 import lombok.RequiredArgsConstructor;
 import com.sparta.springdeliverymini.dto.StoreSettlementResponse;
 import com.sparta.springdeliverymini.entity.Payment;
+import com.sparta.springdeliverymini.entity.PaymentRefund;
 import com.sparta.springdeliverymini.entity.Role;
 import com.sparta.springdeliverymini.entity.SettlementPeriod;
 import com.sparta.springdeliverymini.entity.Store;
 import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.exception.ApiException;
+import com.sparta.springdeliverymini.repository.PaymentRefundRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
 import org.springframework.http.HttpStatus;
@@ -26,6 +28,7 @@ import java.util.List;
 public class SettlementService {
 
     private final PaymentRepository paymentRepository;
+    private final PaymentRefundRepository paymentRefundRepository; // 환불 1건 단위 (V21)
     private final UserRepository userRepository;
     private final StoreService storeService;
     private final Clock clock; // 확정 여부 판단 기준 (config.TimeConfig, Asia/Seoul)
@@ -54,9 +57,10 @@ public class SettlementService {
         }
 
         // 5. 판매: 배달완료 시각이 [from 00:00, to+1 00:00)인 결제 (나중에 환불돼도 포함 → 조회 금액 불변)
-        //    환불: 환불 시각이 같은 구간인 결제
+        //    환불: 환불 시각이 같은 구간인 환불 1건들 (부분 환불 포함, V21)
         List<Payment> sales = paymentRepository.findSettlementTargets(store.getId(), period.start(), period.end());
-        List<Payment> refunds = paymentRepository.findRefundsInPeriod(store.getId(), period.start(), period.end());
+        List<PaymentRefund> refunds = paymentRefundRepository.findRefundsInPeriod(store.getId(), period.start(),
+                period.end());
         return StoreSettlementResponse.of(store, period, sales, refunds);
     }
 }

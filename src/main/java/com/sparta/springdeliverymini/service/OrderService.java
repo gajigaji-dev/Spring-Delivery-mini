@@ -45,6 +45,7 @@ public class OrderService {
     private final PaymentRepository paymentRepository;
     private final Clock clock; // 배달완료·결제 취소 시각 기준 (config.TimeConfig, Asia/Seoul)
     private final OutboxEventRecorder outboxEventRecorder; // 배달완료 이벤트 (#42)
+    private final PgCancelService pgCancelService; // 토스 결제 취소 요청 (V20)
 
     // 주문 목록 조회 — 페이지 단위, id 오름차순 (#40)
     public Slice<OrderResponse> getOrders(String username, PageQuery pageQuery) {
@@ -256,6 +257,13 @@ public class OrderService {
             // 결제 취소 상태 변경 로그 — 식별자·금액·상태만 기록 (회원 아이디 등 개인정보는 남기지 않음)
             log.info("결제 취소 paymentId={}, orderId={}, amount={}, status={}->{}",
                     payment.getId(), order.getId(), payment.getAmount(), before, payment.getStatus());
+
+            // 7. 토스를 거친 결제면 토스 결제 취소도 요청 (V20)
+            // 토스 호출은 커밋 후 (PgCancelProcessor) — 주문 행 잠금을 쥔 채 외부 응답을 기다리지 않고,
+            // 커밋이 실패했는데 돈만 돌려주는 일이 없도록. 실패·시간 초과는 백오프로 재시도
+            if (payment.isGatewayPayment()) {
+                pgCancelService.requestCancel(payment, "고객 주문 취소");
+            }
         }
     }
 

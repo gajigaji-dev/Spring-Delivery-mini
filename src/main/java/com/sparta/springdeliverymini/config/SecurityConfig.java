@@ -124,6 +124,8 @@ public class SecurityConfig {
 
                         // 결제 단건·내 결제 목록 조회도 CUSTOMER만 가능 (OWNER → 403), 본인 결제인지는 Service에서 확인
                         .requestMatchers(HttpMethod.GET, "/api/payments", "/api/payments/*").hasRole("CUSTOMER")
+                        // 토스 결제 사용 여부·클라이언트 키(공개 값)도 결제하는 CUSTOMER만 (V20)
+                        .requestMatchers(HttpMethod.GET, "/api/payments/toss/config").hasRole("CUSTOMER")
 
                         // 사장님 전환 신청은 CUSTOMER만 (V17 승인제, OWNER·ADMIN → 403). 내 신청 조회(GET /me)는 로그인만 확인
                         .requestMatchers(HttpMethod.POST, "/api/owner-applications").hasRole("CUSTOMER")

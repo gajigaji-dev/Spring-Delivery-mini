@@ -83,6 +83,7 @@ class OutboxKafkaIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
     @Autowired private OutboxEventRepository outboxEventRepository;
     @Autowired private ConsumedEventRepository consumedEventRepository;
     @Autowired private NotificationRepository notificationRepository;
@@ -107,6 +108,7 @@ class OutboxKafkaIntegrationTest {
         notificationRepository.deleteAllInBatch();
         consumedEventRepository.deleteAllInBatch();
         outboxEventRepository.deleteAllInBatch();
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();

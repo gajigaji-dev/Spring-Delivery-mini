@@ -57,7 +57,8 @@ public record OrderDetailResponse(
             PaymentStatus status,
             LocalDateTime paidAt,
             LocalDateTime cancelledAt,
-            LocalDateTime refundedAt) {
+            LocalDateTime refundedAt,
+            long refundedAmount) { // 누적 환불액 (V21 부분 환불)
 
         static PaymentSummary from(Payment payment) {
             return new PaymentSummary(
@@ -67,7 +68,8 @@ public record OrderDetailResponse(
                     payment.getStatus(),
                     payment.getPaidAt(),
                     payment.getCancelledAt(),
-                    payment.getRefundedAt()
+                    payment.getRefundedAt(),
+                    payment.getRefundedAmount()
             );
         }
     }

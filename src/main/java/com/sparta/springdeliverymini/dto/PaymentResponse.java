@@ -14,9 +14,10 @@ public record PaymentResponse(
         PaymentMethod paymentMethod,
         OrderStatus orderStatus, // 주문 상태 (결제 직후 PAYMENT_COMPLETED)
         LocalDateTime paidAt,
-        PaymentStatus status,          // COMPLETED / CANCELLED / REFUNDED
+        PaymentStatus status,          // COMPLETED / CANCELLED / PARTIALLY_REFUNDED / REFUNDED
         LocalDateTime cancelledAt,     // 취소 시각 (CANCELLED가 아니면 null)
-        LocalDateTime refundedAt) {    // 환불 시각 (REFUNDED가 아니면 null)
+        LocalDateTime refundedAt,      // 전액 환불이 끝난 시각 (REFUNDED가 아니면 null)
+        long refundedAmount) {         // 누적 환불액 (V21 부분 환불 포함, 환불 없으면 0)
 
     public static PaymentResponse from(Payment payment) {
         return new PaymentResponse(
@@ -28,7 +29,8 @@ public record PaymentResponse(
                 payment.getPaidAt(),
                 payment.getStatus(),
                 payment.getCancelledAt(),
-                payment.getRefundedAt()
+                payment.getRefundedAt(),
+                payment.getRefundedAmount()
         );
     }
 
@@ -45,7 +47,8 @@ public record PaymentResponse(
                 payment.getPaidAt(),
                 PaymentStatus.COMPLETED,
                 null,
-                null
+                null,
+                0
         );
     }
 }

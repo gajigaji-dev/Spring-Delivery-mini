@@ -28,6 +28,11 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     @Query("SELECT p FROM Payment p JOIN FETCH p.order WHERE p.id = :id")
     Optional<Payment> findWithOrderById(@Param("id") Long id);
 
+    // PG 결제 키로 결제 조회 (V20) — 같은 키의 승인 요청이 다시 왔을 때 처음 결과를 돌려주기 위함
+    // 응답·소유권 확인에 주문이 필요해 함께 조회 (uk_payments_pg_payment_key 인덱스 사용)
+    @Query("SELECT p FROM Payment p JOIN FETCH p.order WHERE p.pgPaymentKey = :paymentKey")
+    Optional<Payment> findWithOrderByPgPaymentKey(@Param("paymentKey") String paymentKey);
+
     // 내 결제 목록 (#62) — 주문자 기준(결제자 = 주문자), id 오름차순 페이지 (PageQuery.toPageable())
     // 응답에 주문 id·주문 상태가 들어가므로 주문을 같은 쿼리에서 함께 조회(@EntityGraph) → 결제마다 주문을 따로 조회하지 않음
     // 실행 계획: idx_orders_user_id_id(V12)로 본인 주문 → payments.order_id UNIQUE 인덱스로 결제 → id 정렬
@@ -81,47 +86,5 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
             @Param("start") LocalDateTime start,
             @Param("end") LocalDateTime end);
 
-    // 매장의 미차감 환불 — end 전에 환불됐고 아직 어떤 정산에서도 차감되지 않은 환불 (docs/settlement-policy.md 9장)
-    // 날짜 구간이 아니라 "차감 기록(settlement_refunds)이 없는지"로 찾음
-    //   → 환불일 정산이 먼저 만들어진 뒤 커밋된 환불, catch-up 기간을 넘긴 환불도 다음 집계에서 차감됨
-    // refunded_at < end → 환불보다 이른 날짜의 정산에서는 차감하지 않음
-    @Query("""
-            SELECT p FROM Payment p
-            JOIN FETCH p.order o
-            WHERE o.store.id = :storeId
-              AND p.status = com.sparta.springdeliverymini.entity.PaymentStatus.REFUNDED
-              AND p.refundedAt < :end
-              AND NOT EXISTS (SELECT 1 FROM SettlementRefund r WHERE r.payment = p)
-            ORDER BY p.refundedAt, p.id
-            """)
-    List<Payment> findUnsettledRefunds(
-            @Param("storeId") Long storeId,
-            @Param("end") LocalDateTime end);
-
-    // 미차감 환불이 있는 매장 id — 판매가 없는 날에도 환불을 차감할 정산을 만들기 위해 집계 대상에 포함
-    @Query("""
-            SELECT DISTINCT o.store.id FROM Payment p
-            JOIN p.order o
-            WHERE p.status = com.sparta.springdeliverymini.entity.PaymentStatus.REFUNDED
-              AND p.refundedAt < :end
-              AND NOT EXISTS (SELECT 1 FROM SettlementRefund r WHERE r.payment = p)
-            ORDER BY o.store.id
-            """)
-    List<Long> findUnsettledRefundStoreIds(@Param("end") LocalDateTime end);
-
-    // 사장님 정산 조회용 — 환불 시각이 [start, end) 구간인 매장의 환불 (환불이 발생한 날 기준)
-    // 실제로 어느 정산에서 차감됐는지와는 별개 (관리자 정산 API에서 확인)
-    @Query("""
-            SELECT p FROM Payment p
-            JOIN FETCH p.order o
-            WHERE o.store.id = :storeId
-              AND p.status = com.sparta.springdeliverymini.entity.PaymentStatus.REFUNDED
-              AND p.refundedAt >= :start
-              AND p.refundedAt < :end
-            ORDER BY p.refundedAt, p.id
-            """)
-    List<Payment> findRefundsInPeriod(
-            @Param("storeId") Long storeId,
-            @Param("start") LocalDateTime start,
-            @Param("end") LocalDateTime end);
+    // 환불 조회(미차감 환불·기간별 환불)는 PaymentRefundRepository (V21 — 환불 1건 단위)
 }

@@ -18,6 +18,7 @@ import java.util.List;
 // - API 문서(springdoc)가 켜져 있으면 기동 실패: 환경변수(SPRINGDOC_*)로 잘못 켜도 운영에 API 구조가 공개되지 않도록
 // - Flyway 자동 baseline이 켜져 있으면 기동 실패 (application-prod.yml)
 // - 알림 발송 채널이 slack(notification.sender)인데 SLACK_WEBHOOK_URL이 비어 있으면 기동 실패 (#69)
+// - 가짜 PG(toss.payments.mode=fake)면 기동 실패 — 운영에서 돈을 받지 않고 결제를 승인한 것처럼 기록하지 않도록
 // 오류 메시지에는 변수 이름만 넣고 값은 넣지 않음 (로그에 비밀 값이 남지 않도록)
 // 빈이 아니라 EnvironmentPostProcessor(META-INF/spring.factories 등록)로 검사 (#61):
 // 빈으로 두면 생성 순서가 보장되지 않아 DB_URL이 없을 때 DataSource가 먼저 실패하고 빠진 변수 목록이 나오지 않음
@@ -68,6 +69,11 @@ ProdProfileGuard implements EnvironmentPostProcessor, Ordered {
                 .toList();
         if (!enabled.isEmpty()) {
             problems.add("운영 프로필에서는 비활성이어야 합니다: " + String.join(", ", enabled));
+        }
+
+        // 가짜 PG는 토스에 접속하지 않고 결제를 승인한 것처럼 기록함 → 운영에서 켜지면 돈을 받지 않고 주문이 진행됨 (V21)
+        if ("fake".equalsIgnoreCase(environment.getProperty("toss.payments.mode", "real").trim())) {
+            problems.add("운영 프로필에서는 가짜 PG(toss.payments.mode=fake)를 쓸 수 없습니다");
         }
 
         if (!problems.isEmpty()) {

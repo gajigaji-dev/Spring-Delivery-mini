@@ -17,6 +17,8 @@ import type {
   Settlement,
   Store,
   TokenResponse,
+  TossCheckout,
+  TossConfig,
 } from './types';
 
 // 화면에서 쓰는 API 모음 — URL·파라미터 기준은 docs/api.md "API 목록"
@@ -89,6 +91,37 @@ export const paymentApi = {
     ).data,
   list: (page: number, size = 20) => getPage<Payment>('/api/payments', { page, size }),
   get: (id: number) => get<Payment>(`/api/payments/${id}`),
+};
+
+/** 토스페이먼츠 테스트 모드 결제 (V20, docs/api.md 토스페이먼츠 결제 장) */
+export const tossApi = {
+  config: () => get<TossConfig>('/api/payments/toss/config'),
+  checkout: async (orderId: number) =>
+    (await request<TossCheckout>('/api/payments/toss/checkout', { method: 'POST', body: { orderId } })).data,
+  /**
+   * 결제창 성공 후 서버 승인. Idempotency-Key는 토스 주문번호 — 새로 고침·재시도가 같은 키로 가서
+   * 서버가 처음 응답을 돌려줌 (승인은 한 번)
+   */
+  confirm: async (params: { orderId: number; paymentKey: string; tossOrderId: string; amount: number }) =>
+    (
+      await request<Payment>('/api/payments/toss/confirm', {
+        method: 'POST',
+        body: params,
+        headers: { 'Idempotency-Key': params.tossOrderId },
+      })
+    ).data,
+};
+
+/** 가짜 결제창의 인증 단계 — 서버가 toss.payments.mode=fake일 때만 있음 (V21) */
+export type FakeTossScenario = 'SUCCESS' | 'CARD_REJECTED' | 'RESPONSE_LOST' | 'PG_DELAYED';
+export const fakeTossApi = {
+  authorize: async (tossOrderId: string, amount: number, scenario: FakeTossScenario) =>
+    (
+      await request<{ paymentKey: string }>('/api/payments/fake-toss/authorize', {
+        method: 'POST',
+        body: { tossOrderId, amount, scenario },
+      })
+    ).data,
 };
 
 export const notificationApi = {

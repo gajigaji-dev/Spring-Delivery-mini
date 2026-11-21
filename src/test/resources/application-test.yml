@@ -30,3 +30,11 @@ retention:
 
 jwt:
   secret: dGVzdC1vbmx5LXNlY3JldC1rZXktZm9yLXNwcmluZy1kZWxpdmVyeS1taW5pLWp3dC0yNTZiaXQ=
+
+# 토스페이먼츠(V20): 키를 넣지 않음 → 기본은 꺼짐. 토스 테스트는 TossPaymentsClient를 가짜(@MockitoBean)로 바꾸거나
+# 로컬 HTTP 서버(TossPaymentsClientTest)로 확인 — 실제 토스 API를 부르지 않음
+# 취소 재시도 주기 작업도 끔 → 테스트가 PgCancelProcessor를 직접 호출
+toss:
+  payments:
+    cancel:
+      enabled: false

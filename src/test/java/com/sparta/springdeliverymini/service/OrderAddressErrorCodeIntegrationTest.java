@@ -9,6 +9,7 @@ import com.sparta.springdeliverymini.entity.User;
 import com.sparta.springdeliverymini.jwt.JwtProvider;
 import com.sparta.springdeliverymini.repository.MenuRepository;
 import com.sparta.springdeliverymini.repository.OrderRepository;
+import com.sparta.springdeliverymini.repository.PaymentRefundRepository;
 import com.sparta.springdeliverymini.repository.PaymentRepository;
 import com.sparta.springdeliverymini.repository.StoreRepository;
 import com.sparta.springdeliverymini.repository.UserRepository;
@@ -50,6 +51,7 @@ class OrderAddressErrorCodeIntegrationTest {
     @Autowired private MenuRepository menuRepository;
     @Autowired private OrderRepository orderRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private PaymentRefundRepository paymentRefundRepository;
 
     private User customer;
     private Store store;
@@ -66,6 +68,7 @@ class OrderAddressErrorCodeIntegrationTest {
     @AfterEach
     void tearDown() {
         // FK 순서대로 삭제: payments → orders(order_items는 ON DELETE CASCADE) → menus → stores → users
+        paymentRefundRepository.deleteAllInBatch(); // 환불 1건(V21)이 payments를 참조
         paymentRepository.deleteAllInBatch();
         orderRepository.deleteAllInBatch();
         menuRepository.deleteAllInBatch();
