@@ -120,7 +120,10 @@ public class SecurityConfig {
                         // 결제 단건·내 결제 목록 조회도 CUSTOMER만 가능 (OWNER → 403), 본인 결제인지는 Service에서 확인
                         .requestMatchers(HttpMethod.GET, "/api/payments", "/api/payments/*").hasRole("CUSTOMER")
 
-                        // 관리자 API(정산 확정·지급, 환불, 매장 수수료율 변경 등)는 ADMIN만 가능 (CUSTOMER·OWNER → 403)
+                        // 사장님 전환 신청은 CUSTOMER만 (V17 승인제, OWNER·ADMIN → 403). 내 신청 조회(GET /me)는 로그인만 확인
+                        .requestMatchers(HttpMethod.POST, "/api/owner-applications").hasRole("CUSTOMER")
+
+                        // 관리자 API(정산 확정·지급, 환불, 매장 수수료율 변경, 사장님 전환 승인 등)는 ADMIN만 가능 (CUSTOMER·OWNER → 403)
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
 
                         .anyRequest().authenticated()

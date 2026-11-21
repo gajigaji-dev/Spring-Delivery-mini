@@ -1,0 +1,42 @@
+# 프론트엔드 빌드·테스트 자동화 — frontend/** 가 바뀐 main 대상 PR과 main push에서만 실행
+# 백엔드는 ci.yml (경로가 겹치지 않아 한쪽만 바뀌면 다른 쪽은 돌지 않음)
+name: Frontend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # package-lock.json 그대로 설치 (로컬과 같은 버전)
+      - run: npm ci
+
+      # API 클라이언트 단위 테스트 (vitest)
+      - run: npm test
+
+      # tsc 타입 검사 + 프로덕션 빌드
+      - run: npm run build

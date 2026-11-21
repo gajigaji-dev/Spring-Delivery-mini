@@ -19,6 +19,7 @@ const loaders = {
   ownerSettlements: () => import('../pages/owner/OwnerSettlementsPage'),
   adminSettlements: () => import('../pages/admin/AdminSettlementsPage'),
   adminOutbox: () => import('../pages/admin/AdminOutboxPage'),
+  adminOwnerApplications: () => import('../pages/admin/AdminOwnerApplicationsPage'),
   notFound: () => import('../pages/NotFoundPage'),
 } satisfies Record<string, () => PageModule>;
 

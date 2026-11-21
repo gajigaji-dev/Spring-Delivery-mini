@@ -25,6 +25,8 @@ erDiagram
     users ||--o{ payment_idempotency_keys : "user_id"
     payments ||--o| payment_idempotency_keys : "payment_id (UNIQUE)"
     users ||--o{ refresh_tokens : "user_id"
+    users ||--o{ owner_applications : "user_id (신청자)"
+    users ||--o{ owner_applications : "decided_by (처리 관리자)"
 
     users {
         bigint id PK
@@ -180,6 +182,16 @@ erDiagram
         timestamp revoked_at "사유와 함께 NULL/NOT NULL"
         varchar revoke_reason "ROTATED/LOGOUT/REUSE_DETECTED"
     }
+    owner_applications {
+        bigint id PK
+        bigint user_id FK
+        varchar business_name
+        varchar status "REQUESTED/APPROVED/REJECTED"
+        varchar reject_reason "REJECTED만"
+        timestamp requested_at
+        timestamp decided_at
+        bigint decided_by FK
+    }
 ```
 
 ## 테이블 관계
@@ -204,6 +216,7 @@ erDiagram
 | users ─ payment_idempotency_keys | 1 : N | `payment_idempotency_keys.user_id` → `users.id` | 회원별 결제 멱등성 키 (회원·키당 1건) |
 | payments ─ payment_idempotency_keys | 1 : 0..1 | `payment_idempotency_keys.payment_id` → `payments.id` (unique) | 키가 있는 결제만 기록 1건 (V14) |
 | users ─ refresh_tokens | 1 : N | `refresh_tokens.user_id` → `users.id` | 로그인(계열)마다, 재발급마다 1건 (V15). 같은 `family_id` 행끼리가 한 로그인 |
+| users ─ owner_applications | 1 : N (신청자), 1 : N (처리자) | `owner_applications.user_id`, `decided_by` → `users.id` | 회원당 여러 번 신청 가능(거절 후 재신청), 대기 중은 1건 (V17 부분 유니크) |
 
 - **Outbox·알림 테이블(V13)은 FK 없음**: `outbox_events`·`consumed_events`·`notifications`는 `event_id`로만 이어지는 이벤트 기록 — 주문·회원 id는 발생 시점 스냅샷 값이라 원본이 지워져도 남음 ([데이터베이스](database.md#outbox_events--발행-대기-이벤트-v13))
 - **OWNER가 받은 주문 조회**: `orders → stores → users(owner)`로 본인 매장에 들어온 주문만 찾음 (`findAllByStoreOwnerId`), 매장 하나는 `findAllByStoreId`

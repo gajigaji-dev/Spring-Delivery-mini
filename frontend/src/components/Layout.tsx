@@ -23,6 +23,7 @@ const NAV: NavItem[] = [
   { to: '/owner/stores', label: '내 매장', page: 'ownerStores', roles: ['OWNER'] },
   { to: '/owner/settlements', label: '정산', page: 'ownerSettlements', roles: ['OWNER'] },
   { to: '/admin/settlements', label: '정산 관리', page: 'adminSettlements', roles: ['ADMIN'] },
+  { to: '/admin/owner-applications', label: '사장님 승인', page: 'adminOwnerApplications', roles: ['ADMIN'] },
   { to: '/admin/outbox', label: '이벤트', page: 'adminOutbox', roles: ['ADMIN'] },
 ];
 
@@ -30,7 +31,7 @@ const NAV: NavItem[] = [
 const IDLE_PRELOAD: Record<Role, PageName[]> = {
   CUSTOMER: ['storeDetail', 'cart', 'orders', 'orderDetail'],
   OWNER: ['orders', 'orderDetail', 'ownerStores', 'ownerSettlements'],
-  ADMIN: ['adminSettlements', 'adminOutbox'],
+  ADMIN: ['adminSettlements', 'adminOwnerApplications', 'adminOutbox'],
 };
 
 export function Layout() {

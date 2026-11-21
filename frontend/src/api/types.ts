@@ -144,6 +144,21 @@ export interface OutboxEvent {
   publishedAt: string | null;
 }
 
+export type OwnerApplicationStatus = 'REQUESTED' | 'APPROVED' | 'REJECTED';
+
+/** 사장님 전환 신청 (V17 승인제) */
+export interface OwnerApplication {
+  id: number;
+  userId: number;
+  username: string;
+  businessName: string;
+  status: OwnerApplicationStatus;
+  rejectReason: string | null;
+  requestedAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+}
+
 export interface ApiErrorBody {
   status: number;
   error: string;

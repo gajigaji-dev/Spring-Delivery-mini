@@ -20,7 +20,13 @@ npm run build             # tsc 타입 검사 + 프로덕션 빌드
 | `src/cart/` | 장바구니 — 한 매장 메뉴만, 같은 메뉴는 합침 (서버 400 규칙과 동일) |
 | `src/routes/pages.ts` | 화면별 지연 로딩 + 미리 받기(`preloadPage`, `preloadWhenIdle`) |
 | `src/components/` | `Layout`, `PrefetchLink`, `DelayedSpinner`(0.4초 지연), `Money`(tabular-nums), `ErrorMessage`(traceId 표시), `Pager` |
-| `src/pages/` | 고객: 매장·매장 상세·장바구니·주문(keyset)·주문 상세(결제·취소)·결제 내역 / 사장님: 내 매장·메뉴 등록·주문 상태 변경·정산 내역 / 관리자: 정산 확정·지급, Outbox 재발행 / 공통: 로그인·가입·알림·내 정보 |
+| `src/pages/` | 고객: 매장·매장 상세·장바구니·주문(keyset)·주문 상세(결제·취소)·결제 내역·사장님 전환 신청(내 정보) / 사장님: 내 매장·메뉴 등록·주문 상태 변경·정산 내역 / 관리자: 정산 확정·지급, 사장님 전환 승인·거절, Outbox 재발행 / 공통: 로그인·가입(항상 고객)·알림·내 정보 |
+
+### 사장님 승인제 (V17)
+- 가입 화면에 역할 선택 없음 — 서버가 고객으로만 가입시킴 (`role: OWNER`는 400)
+- 고객이 '내 정보'에서 상호로 신청 → 관리자 '사장님 승인' 화면에서 승인·거절(사유)
+- 승인돼도 지금 Access Token은 `role=CUSTOMER` → '사장님 화면으로 전환' 버튼이 `refresh` 후 `/me`를 다시 받아 OWNER 메뉴로 바뀜
+- 거절 사유 입력은 임시로 `window.prompt` — 디자인 확정 시 모달로 교체
 
 ## 연동 규칙 (docs/api.md "인증 토큰")
 - Access Token은 메모리에만 — localStorage 금지. 새로고침 후 `POST /api/users/refresh`로 복구
@@ -42,6 +48,9 @@ npm run build             # tsc 타입 검사 + 프로덕션 빌드
 | 색·간격 | `tokens.css` 변수만 참조 (직접 색 지정 금지) → 디자인 확정 시 이 파일 교체 |
 
 초기 빌드(2026-11-21): 초기 JS `index` 14.4 kB(gzip 5.4) + `vendor` 260.7 kB(gzip 82.9), CSS 5.0 kB(gzip 1.6).
+
+## CI
+`.github/workflows/frontend.yml` — `frontend/**`가 바뀐 main 대상 PR·push에서만 `npm ci` → `npm test` → `npm run build`. 백엔드(`ci.yml`)는 `src/**`·gradle 파일이 바뀔 때만
 
 ## 디자인 확정 후 할 일
 - `tokens.css` 값 교체, 웹폰트(사용 굵기만) 추가, 화면 전환(View Transitions) 검토

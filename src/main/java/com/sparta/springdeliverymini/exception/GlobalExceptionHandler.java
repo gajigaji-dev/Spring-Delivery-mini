@@ -62,6 +62,13 @@ public class GlobalExceptionHandler {
         return clientError(HttpStatus.CONFLICT, e.getMessage(), request);
     }
 
+    // 사장님 전환 신청의 상태 전이 규칙 위반 (예: 이미 처리된 신청 재승인, 고객이 아닌 회원 전환) → 409
+    @ExceptionHandler(InvalidOwnerApplicationStatusException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidOwnerApplicationStatus(
+            InvalidOwnerApplicationStatusException e, HttpServletRequest request) {
+        return clientError(HttpStatus.CONFLICT, e.getMessage(), request);
+    }
+
     // Service에서 따로 처리하지 못한 DB 제약 조건 위반 (NOT NULL, UNIQUE, FK 등)
     // 어느 API에서든 발생할 수 있으므로 특정 상황(예: 아이디 중복)을 가정한 메시지를 쓰지 않음
     // 아이디 중복·중복 결제처럼 예상 가능한 경우는 UserService, PaymentService에서 직접 잡아 구체적인 메시지로 응답

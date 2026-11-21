@@ -43,6 +43,7 @@ docker compose up -d redis kafka
 
 - 요청은 local·dev 프로필에서 켜지는 Swagger UI(`/swagger-ui.html`)로 보내는 것이 편함
 - 관리자 API 확인에는 ADMIN 계정이 필요 — 없으면 DB에서 `users.role`을 `ADMIN`으로 바꿈
+- 사장님 계정(V17 이후): 가입은 고객만 → `POST /api/owner-applications` 신청 → 관리자 `PATCH /api/admin/owner-applications/{id}/approve` → `POST /api/users/refresh`로 새 토큰 (가입 시 `role: OWNER`는 400). V17 이전에 만든 OWNER 계정은 그대로 사용 가능
 - 호스트의 6379(Redis)·9092(Kafka)는 다른 프로젝트 것일 수 있으므로 건드리지 않음
 
 ### 2-2. Redis — 결제 멱등성

@@ -1,6 +1,7 @@
 package com.sparta.springdeliverymini.repository;
 
 import com.sparta.springdeliverymini.entity.Order;
+import com.sparta.springdeliverymini.entity.OrderStatus;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Slice;
@@ -10,6 +11,7 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.Optional;
 
 public interface OrderRepository extends JpaRepository<Order, Long> {
@@ -52,4 +54,9 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT o FROM Order o WHERE o.id = :id")
     Optional<Order> findByIdForUpdate(@Param("id") Long id);
+
+    // 사장님 전환 신청·승인 전 확인 (V17) — 진행 중인 주문이 남은 고객은 전환하지 않음
+    // 전환 뒤에는 고객 API(취소·결제 조회)가 DB 역할 기준 403이 되어 그 주문을 다룰 수 없게 되므로
+    // 인덱스 idx_orders_user_id_id (V12)의 user_id 범위에서 상태만 확인
+    boolean existsByUserIdAndStatusIn(Long userId, Collection<OrderStatus> statuses);
 }

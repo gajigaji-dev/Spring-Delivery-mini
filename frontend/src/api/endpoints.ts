@@ -1,4 +1,4 @@
-import { get, getPage, request } from './client';
+import { ApiError, get, getPage, request } from './client';
 import type {
   AdminSettlement,
   Menu,
@@ -9,8 +9,9 @@ import type {
   OrderStatus,
   OutboxEvent,
   OutboxStatus,
+  OwnerApplication,
+  OwnerApplicationStatus,
   Payment,
-  Role,
   SettlementStatus,
   Settlement,
   Store,
@@ -19,8 +20,9 @@ import type {
 
 // 화면에서 쓰는 API 모음 — URL·파라미터 기준은 docs/api.md "API 목록"
 export const authApi = {
-  signup: (username: string, password: string, role: Exclude<Role, 'ADMIN'>) =>
-    request('/api/users/signup', { method: 'POST', body: { username, password, role }, auth: false }),
+  // 가입은 항상 고객 — 사장님은 가입 후 전환 신청 + 관리자 승인 (V17)
+  signup: (username: string, password: string) =>
+    request('/api/users/signup', { method: 'POST', body: { username, password }, auth: false }),
   login: async (username: string, password: string) =>
     (
       await request<TokenResponse>('/api/users/login', {
@@ -86,7 +88,28 @@ export const settlementApi = {
     getPage<Settlement>('/api/settlements', { ...q, size: q.size ?? 20 }),
 };
 
+export const ownerApplicationApi = {
+  apply: async (businessName: string) =>
+    (await request<OwnerApplication>('/api/owner-applications', { method: 'POST', body: { businessName } })).data,
+  /** 신청 내역이 없으면 null (서버 404) */
+  mine: async (): Promise<OwnerApplication | null> => {
+    try {
+      return await get<OwnerApplication>('/api/owner-applications/me');
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
+};
+
 export const adminApi = {
+  ownerApplications: (status: OwnerApplicationStatus, page: number, size = 20) =>
+    getPage<OwnerApplication>('/api/admin/owner-applications', { status, page, size }),
+  approveOwner: async (id: number) =>
+    (await request<OwnerApplication>(`/api/admin/owner-applications/${id}/approve`, { method: 'PATCH' })).data,
+  rejectOwner: async (id: number, reason: string) =>
+    (await request<OwnerApplication>(`/api/admin/owner-applications/${id}/reject`, { method: 'PATCH', body: { reason } }))
+      .data,
   settlements: (date: string, status?: SettlementStatus) =>
     get<AdminSettlement[]>('/api/admin/settlements', { date, status }),
   confirm: async (id: number) =>

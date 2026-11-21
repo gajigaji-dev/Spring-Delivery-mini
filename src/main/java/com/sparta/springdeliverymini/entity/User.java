@@ -1,5 +1,6 @@
 package com.sparta.springdeliverymini.entity;
 
+import com.sparta.springdeliverymini.exception.InvalidOwnerApplicationStatusException;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -30,5 +31,15 @@ public class User extends BaseEntity {
         this.username = username;
         this.password = password;
         this.role = role;
+    }
+
+    // 사장님 전환 — 관리자 승인(OwnerApplication.approve)에서만 호출 (V17 승인제)
+    // 이미 발급된 Access Token의 role은 그대로라 /api/users/refresh 이후부터 OWNER로 인가됨
+    // (그 사이에도 Service가 DB 역할을 다시 확인하므로 고객 권한으로 남는 일 없음)
+    public void promoteToOwner() {
+        if (role != Role.CUSTOMER) {
+            throw new InvalidOwnerApplicationStatusException("고객 계정만 사장님으로 전환할 수 있습니다. 현재 역할: " + role);
+        }
+        this.role = Role.OWNER;
     }
 }

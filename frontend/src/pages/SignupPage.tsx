@@ -7,8 +7,6 @@ export default function SignupPage() {
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  // ADMIN은 가입 불가(서버 400) → 선택지에서 제외
-  const [role, setRole] = useState<'CUSTOMER' | 'OWNER'>('CUSTOMER');
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -17,7 +15,7 @@ export default function SignupPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await authApi.signup(username, password, role);
+      await authApi.signup(username, password);
       navigate('/login');
     } catch (err) {
       setError(err);
@@ -46,13 +44,8 @@ export default function SignupPage() {
             required
           />
         </label>
-        <label>
-          유형
-          <select value={role} onChange={(e) => setRole(e.target.value as 'CUSTOMER' | 'OWNER')}>
-            <option value="CUSTOMER">고객</option>
-            <option value="OWNER">사장님</option>
-          </select>
-        </label>
+        {/* 역할은 고르지 않음 — 서버가 고객으로만 가입시키고, 사장님은 승인제 */}
+        <p className="muted">사장님은 가입 후 '내 정보'에서 사장님 전환을 신청하면 관리자 승인 뒤 이용할 수 있습니다.</p>
         <ErrorMessage error={error} />
         <button className="btn" disabled={submitting}>
           가입

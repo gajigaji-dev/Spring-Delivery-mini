@@ -2,7 +2,6 @@ package com.sparta.springdeliverymini.dto;
 
 import com.sparta.springdeliverymini.entity.Role;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 // 회원가입 요청
@@ -17,9 +16,9 @@ public record SignupRequest(
         @Size(min = 8, max = 72, message = "비밀번호는 8~72자여야 합니다.")
         String password,
 
-        // CUSTOMER(고객) 또는 OWNER(사장님) — ADMIN은 enum에는 있지만 가입 불가 (UserService에서 400)
-        // 그 외 문자열은 JSON → enum 변환에 실패해 HttpMessageNotReadableException → 400
-        @NotNull(message = "role은 CUSTOMER 또는 OWNER를 입력해야 합니다.")
+        // 선택값 — 생략하거나 CUSTOMER만 허용 (V17 승인제, OWNER·ADMIN은 UserService에서 400)
+        // 사장님은 가입 후 POST /api/owner-applications로 신청 → 관리자 승인
+        // 정의되지 않은 문자열은 JSON → enum 변환에 실패해 HttpMessageNotReadableException → 400
         Role role
 ) {
 }

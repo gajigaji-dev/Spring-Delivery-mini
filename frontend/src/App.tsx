@@ -26,6 +26,7 @@ export function App() {
 
         <Route path="admin/settlements" element={<RequireRole roles={['ADMIN']}><P.adminSettlements /></RequireRole>} />
         <Route path="admin/outbox" element={<RequireRole roles={['ADMIN']}><P.adminOutbox /></RequireRole>} />
+        <Route path="admin/owner-applications" element={<RequireRole roles={['ADMIN']}><P.adminOwnerApplications /></RequireRole>} />
 
         <Route path="*" element={<P.notFound />} />
       </Route>
